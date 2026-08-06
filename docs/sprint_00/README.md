@@ -34,7 +34,7 @@ Establecer una base reproducible, segura, observable y desplegable para la plata
 
 - [x] PBI-00-01: Inicializar y validar estructura del repositorio.
 - [x] PBI-00-02: Crear API mínima con health, version y correlation ID.
-- [ ] PBI-00-03: Crear Web mínima y Docker Compose.
+- [x] PBI-00-03: Crear Web mínima y Docker Compose.
 - [ ] PBI-00-04: Crear Bicep base y parámetros por ambiente.
 - [ ] PBI-00-05: Crear Cosmos DB Conversation Store.
 - [ ] PBI-00-06: Crear Key Vault, Managed Identities y guía Entra ID.
@@ -84,6 +84,9 @@ Evidence: `docs/sprint_00/evidence/pbi-00-01-structure-validation.txt`
 
 PBI-00-02: Minimal API foundation created (`apps/api`): FastAPI app with `GET /health`, `GET /version`, `X-Correlation-ID` middleware, structured JSON logging, Pydantic Settings, and a Dockerfile. 5/5 unit tests passed, ruff and mypy clean, live smoke test verified both endpoints and correlation-ID auto-generation/echo. Docker build not validated (Docker Desktop daemon not running locally; deferred to PBI-00-03). — 2026-08-06
 Evidence: `docs/sprint_00/evidence/pbi-00-02-api-foundation-validation.txt`
+
+PBI-00-03: Minimal Web application created (`apps/web`, React + TypeScript + Vite): chat-style layout with header (app name, API connectivity badge, API version), sidebar placeholder for conversation history, message area with synthetic welcome content, and an input+Send box (client-side only, canned placeholder reply — no real chat/agent processing). API client for `GET /health`/`GET /version`; responsive CSS. 7/7 unit tests passed, ESLint and `tsc --noEmit` clean, production build succeeded, runtime smoke test confirmed the built bundle correctly calls the running API. `docker-compose.yml` fixed (`VITE_API_URL` moved from a no-op runtime `environment` entry to a build-time `args` entry) and validated via `docker compose config`; actual `docker build`/`up` not validated (Docker Desktop daemon not running locally). — 2026-08-06
+Evidence: `docs/sprint_00/evidence/pbi-00-03-web-docker-validation.txt`
 
 ## Sprint validation
 
