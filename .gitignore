@@ -1,0 +1,56 @@
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+secrets/
+.local/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.venv/
+venv/
+
+# Node
+node_modules/
+dist/
+build/
+coverage/
+.pnpm-store/
+
+# IDE / OS
+.DS_Store
+Thumbs.db
+.vscode/*.log
+
+# Azure / IaC generated
+*.parameters.json
+ops/bicep/**/*.json
+.azure/
+bin/
+obj/
+
+# Test and runtime output
+reports/*
+!reports/.gitkeep
+artifacts/*
+!artifacts/.gitkeep
+*.log
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Sensitive or real business data
+data/raw/*
+!data/raw/.gitkeep
+data/external/*
+!data/external/.gitkeep

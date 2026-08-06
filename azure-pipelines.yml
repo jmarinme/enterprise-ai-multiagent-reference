@@ -1,0 +1,30 @@
+trigger:
+  branches:
+    include:
+      - develop
+      - main
+  paths:
+    exclude:
+      - docs/**
+      - "**/*.md"
+
+pr:
+  branches:
+    include:
+      - develop
+      - main
+
+stages:
+  - stage: Validate
+    displayName: Validate
+    jobs:
+      - job: StarterKitValidation
+        displayName: Starter kit validation
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+          - script: |
+              echo "Starter pipeline placeholder."
+              echo "Sprint 00 will replace this step with Bicep, backend, frontend and security validation."
+            displayName: Validate repository foundation
