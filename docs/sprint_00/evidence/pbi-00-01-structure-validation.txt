@@ -1,0 +1,83 @@
+PBI-00-01 — Repository structure and Starter Kit validation evidence
+Date: 2026-08-05
+
+--- Directory group checks (read-only, manual, against ops/scripts/init_structure.ps1 $requiredDirectories) ---
+
+Group 1 (.vscode, apps, configs/prompts):
+.vscode : OK
+apps/api/src : OK
+apps/web/src : OK
+artifacts : OK
+configs/prompts/supervisor : OK
+configs/prompts/claims : OK
+configs/prompts/broker_services : OK
+configs/prompts/commercial_intake : OK
+configs/security : OK
+
+Group 2 (data, docs/Architecture):
+data/external : OK
+data/interim : OK
+data/processed : OK
+data/raw : OK
+docs/Architecture/adr : OK
+docs/Architecture/diagrams : OK
+docs/Architecture/openapi : OK
+docs/sprint_00/evidence : OK
+
+Group 3 (models, notebooks, ops, reports):
+models : OK
+notebooks : OK
+ops/bicep/modules : OK
+ops/bicep/parameters : OK
+ops/docker : OK
+ops/k8s : OK
+ops/scripts : OK
+reports : OK
+
+Group 4 (src subfolders):
+src/agents : OK
+src/common : OK
+src/config : OK
+src/core : OK
+src/dl : OK
+src/domain : OK
+src/ml : OK
+src/observability : OK
+src/pipelines : OK
+src/rag : OK
+src/services : OK
+
+Group 5 (tests, azure-pipelines):
+tests/e2e : OK
+tests/integration : OK
+tests/unit : OK
+tests/conversational : OK
+azure-pipelines/templates : OK
+
+--- Starter Kit foundation files ---
+.gitignore : OK
+.env.example : OK
+README.md : OK
+CLAUDE.md : OK
+.vscode/settings.json : OK
+.vscode/extensions.json : OK
+docker-compose.yml : OK
+ops/scripts/init_structure.ps1 : OK
+
+--- Authoritative script execution ---
+Command: powershell -NoProfile -File "ops\scripts\init_structure.ps1" -RootPath "C:\MIGUEL\ARQUITECTURAIA\TF\TMX-Multiagente"
+
+Output:
+Initializing repository structure at: C:\MIGUEL\ARQUITECTURAIA\TF\TMX-Multiagente
+
+Repository initialization summary
+Created directories:      0
+Existing directories:     41
+Placeholders created:     0
+Failures:                 0
+
+PASS - mandatory repository structure exists.
+
+Exit code: 0
+
+Conclusion: All 41 required directories and all 8 Starter Kit foundation files are present. No directories were created, no .gitkeep placeholders were needed, and no failures occurred. No deviations identified.

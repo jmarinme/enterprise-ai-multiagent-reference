@@ -32,7 +32,7 @@ Establecer una base reproducible, segura, observable y desplegable para la plata
 
 ## Deliverables
 
-- [ ] PBI-00-01: Inicializar y validar estructura del repositorio.
+- [x] PBI-00-01: Inicializar y validar estructura del repositorio.
 - [x] PBI-00-02: Crear API mínima con health, version y correlation ID.
 - [ ] PBI-00-03: Crear Web mínima y Docker Compose.
 - [ ] PBI-00-04: Crear Bicep base y parámetros por ambiente.
@@ -78,6 +78,9 @@ Establecer una base reproducible, segura, observable y desplegable para la plata
 ## Deliverable Log
 
 <!-- Append entries. Do not remove previous entries. -->
+
+PBI-00-01: Repository structure and Starter Kit foundation files validated. Git installed and repository connected to GitHub (origin: https://github.com/jmarinme/enterprise-ai-multiagent-reference). `ops/scripts/init_structure.ps1` executed: 41/41 required directories existing, 0 created, 0 failures. All 8 Starter Kit foundation files present. No deviations. — 2026-08-05
+Evidence: `docs/sprint_00/evidence/pbi-00-01-structure-validation.txt`
 
 PBI-00-02: Minimal API foundation created (`apps/api`): FastAPI app with `GET /health`, `GET /version`, `X-Correlation-ID` middleware, structured JSON logging, Pydantic Settings, and a Dockerfile. 5/5 unit tests passed, ruff and mypy clean, live smoke test verified both endpoints and correlation-ID auto-generation/echo. Docker build not validated (Docker Desktop daemon not running locally; deferred to PBI-00-03). — 2026-08-06
 Evidence: `docs/sprint_00/evidence/pbi-00-02-api-foundation-validation.txt`
