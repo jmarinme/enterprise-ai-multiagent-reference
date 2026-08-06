@@ -1,0 +1,67 @@
+PBI-00-02 — Minimal API foundation validation evidence
+Date: 2026-08-05/06
+Branch: feat/pbi-00-02-api-foundation
+
+--- Environment note ---
+Local interpreter available: Python 3.11.9 (CLAUDE.md/pyproject requires >=3.12; see decisions.md deviation entry).
+Isolated venv created at apps/api/.venv (gitignored) using the available 3.11.9 interpreter to install and validate the project.
+
+--- Dependency installation ---
+fastapi, uvicorn[standard], pydantic, pydantic-settings, pytest, httpx, ruff, mypy installed into apps/api/.venv per apps/api/pyproject.toml dependency/dev-dependency lists.
+
+--- pytest ---
+Command: apps/api/.venv/Scripts/python.exe -m pytest tests/unit/api -v -p no:cacheprovider
+Result:
+tests/unit/api/test_correlation_id.py::test_generates_correlation_id_when_not_provided PASSED
+tests/unit/api/test_correlation_id.py::test_echoes_client_supplied_correlation_id PASSED
+tests/unit/api/test_health.py::test_health_returns_ok_status PASSED
+tests/unit/api/test_health.py::test_health_response_includes_correlation_id_header PASSED
+tests/unit/api/test_version.py::test_version_returns_expected_fields PASSED
+5 passed, 1 warning (StarletteDeprecationWarning re: httpx in TestClient — non-blocking) in 0.54s
+
+Note: an initial run failed with "ModuleNotFoundError: No module named 'api.middleware'" because
+tests/unit/api/__init__.py made pytest register a test package literally named "api", colliding
+with the application's own top-level "api" package (apps/api/src/api). Fixed by removing the
+unnecessary tests/unit/api/__init__.py (pytest does not require it for test discovery).
+
+--- ruff ---
+Command: apps/api/.venv/Scripts/python.exe -m ruff check .  (run from apps/api)
+Initial result: 1 error (B008 — Depends() in a function default), which is FastAPI's documented,
+idiomatic dependency-injection pattern. Resolved by adding
+[tool.ruff.lint.flake8-bugbear] extend-immutable-calls = ["fastapi.Depends"] to apps/api/pyproject.toml.
+Final result: All checks passed! (exit 0)
+
+--- mypy ---
+Command: apps/api/.venv/Scripts/python.exe -m mypy src  (run from apps/api)
+Result: Success: no issues found in 11 source files (exit 0)
+
+--- Runtime smoke test ---
+Command: apps/api/.venv/Scripts/python.exe -m uvicorn main:app --app-dir src --host 127.0.0.1 --port 8123
+
+GET /health -> HTTP/1.1 200 OK
+  x-correlation-id: 3e6e85ce-2bdd-43cc-884b-e5402d6b3615 (auto-generated, valid UUID4)
+  body: {"status":"ok"}
+
+GET /version -> HTTP/1.1 200 OK
+  x-correlation-id: b0e96436-3268-4e33-8a20-a35837b80a3e (auto-generated)
+  body: {"name":"tmx-enterprise-ai-reference-platform","version":"0.1.0","environment":"local"}
+
+GET /health with header "X-Correlation-ID: manual-test-abc" -> HTTP/1.1 200 OK
+  x-correlation-id: manual-test-abc (client-supplied value echoed back, not overwritten)
+
+Server stopped after verification.
+
+--- Docker build attempt ---
+Command: docker build -t tmx-api-pbi-00-02:validation apps/api
+Result: FAILED — Docker Desktop daemon is not running locally
+("failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine").
+The Dockerfile was authored per the required file tree and reviewed manually, but its build
+could not be validated in this environment. Docker Compose integration (starting the daemon,
+building both services, verifying compose health checks) is explicitly PBI-00-03 scope per
+docs/sprint_00/README.md and was not attempted here.
+
+--- Conclusion ---
+All planned validations passed: unit tests (5/5), lint (ruff), type check (mypy), and a live
+runtime smoke test of both endpoints and correlation-ID behavior (auto-generation and echo).
+Docker build/run was NOT executed in this PBI (deferred to PBI-00-03, which owns docker-compose.yml
+integration); the Dockerfile was authored per the required file tree but not built/tested here.

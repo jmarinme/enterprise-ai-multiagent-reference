@@ -33,7 +33,7 @@ Establecer una base reproducible, segura, observable y desplegable para la plata
 ## Deliverables
 
 - [ ] PBI-00-01: Inicializar y validar estructura del repositorio.
-- [ ] PBI-00-02: Crear API mínima con health, version y correlation ID.
+- [x] PBI-00-02: Crear API mínima con health, version y correlation ID.
 - [ ] PBI-00-03: Crear Web mínima y Docker Compose.
 - [ ] PBI-00-04: Crear Bicep base y parámetros por ambiente.
 - [ ] PBI-00-05: Crear Cosmos DB Conversation Store.
@@ -78,6 +78,9 @@ Establecer una base reproducible, segura, observable y desplegable para la plata
 ## Deliverable Log
 
 <!-- Append entries. Do not remove previous entries. -->
+
+PBI-00-02: Minimal API foundation created (`apps/api`): FastAPI app with `GET /health`, `GET /version`, `X-Correlation-ID` middleware, structured JSON logging, Pydantic Settings, and a Dockerfile. 5/5 unit tests passed, ruff and mypy clean, live smoke test verified both endpoints and correlation-ID auto-generation/echo. Docker build not validated (Docker Desktop daemon not running locally; deferred to PBI-00-03). — 2026-08-06
+Evidence: `docs/sprint_00/evidence/pbi-00-02-api-foundation-validation.txt`
 
 ## Sprint validation
 
