@@ -40,3 +40,20 @@ Conclusion: repository structure and Starter Kit foundation are fully compliant 
 Full output archived at `docs/sprint_00/evidence/pbi-00-02-api-foundation-validation.txt`.
 
 Conclusion: the minimal API foundation (`GET /health`, `GET /version`, correlation-ID middleware, structured logging, Pydantic Settings) is implemented, unit-tested, lint-clean, type-clean, and runtime-verified. Only the Docker image build is unverified due to a local environment limitation (Docker daemon not running), not a defect in the Dockerfile. No Web, Bicep, Azure deployment, agent, RAG, or Cosmos DB work was performed.
+
+## 2026-08-06 — PBI-00-03: Minimal Web application and Docker Compose
+
+| Command | Result |
+|---|---|
+| `npm install` (apps/web) | 283 packages installed; `package-lock.json` generated; `npm audit` reports 5 dev-only transitive vulnerabilities in the esbuild/vite dev-server chain (see decisions.md — accepted, non-blocking) |
+| `npm run lint` | 1 error initially (unused import), fixed; final: 0 errors |
+| `npm run typecheck` | 9 errors initially (`global` not declared under DOM lib), fixed by using `globalThis`; final: 0 errors |
+| `npm run test` (Vitest) | 3 test files, 7 tests, all passed |
+| `npm run build` | Production build succeeded: 39 modules, `dist/` output ~145 kB JS (47 kB gzip) |
+| Runtime smoke test: `uvicorn` (API, port 8000) + `vite preview` (Web, port 3000) | Web served `200 OK`; built JS bundle confirmed to contain the inlined API URL `http://localhost:8000`, matching the running API |
+| `docker compose config` (with a temporary local `.env` copied from `.env.example`, removed afterward) | Exit 0 — confirms `web.build.args.VITE_API_URL` resolves correctly, both healthchecks and `depends_on` are structurally valid |
+| `docker build` / `docker compose up` | NOT executed — Docker Desktop daemon not running locally (same limitation as PBI-00-02) |
+
+Full output archived at `docs/sprint_00/evidence/pbi-00-03-web-docker-validation.txt`.
+
+Conclusion: the minimal Web application (header with connectivity/version status, sidebar placeholder, message area with synthetic welcome content, input+Send with a canned placeholder reply) is implemented, lint-clean, type-clean, unit-tested (7/7), and builds successfully. `docker-compose.yml` was corrected (`VITE_API_URL` moved from a no-op runtime `environment` entry to a build-time `args` entry, since Vite inlines `VITE_*` variables at build time, not runtime) and structurally validated via `docker compose config`. Actual container builds remain unverified pending a running Docker daemon. No Bicep, Azure resources, agents, Cosmos DB, RAG, APIM, or authentication work was performed.

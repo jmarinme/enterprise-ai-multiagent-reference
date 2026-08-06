@@ -1,0 +1,82 @@
+PBI-00-03 — Minimal Web application and Docker Compose validation evidence
+Date: 2026-08-06
+Branch: feat/pbi-00-03-web-docker
+
+--- Environment ---
+Node.js v24.16.0, npm 11.13.0 (locally installed, matches TMX_initialprompt_Sprint0.md frontend requirements; no version deviation, unlike the Python 3.11.9/3.12 gap recorded for apps/api).
+
+--- npm install ---
+Command: npm install (apps/web)
+Result: 283 packages installed. package-lock.json generated.
+npm audit: 5 vulnerabilities (3 moderate, 1 high, 1 critical), all transitive, rooted in
+esbuild <=0.24.2 (GHSA-67mh-4wv8-2f99: dev server accepts arbitrary cross-origin requests),
+pulled in via vite/vitest/vite-node/@vitest/mocker dev tooling. Dev-server-only issue; does not
+affect the production build output or the Docker image (which runs `vite preview` against static
+files, not the dev server). A fix requires a breaking upgrade to vite@8. Not applied in this PBI
+(see decisions.md).
+
+--- eslint ---
+Command: npm run lint
+Initial result: 1 error — unused `beforeEach` import in src/api/client.test.ts. Fixed by removing
+the unused import.
+Final result: exit 0, no errors.
+
+--- typecheck ---
+Command: npm run typecheck (tsc --noEmit)
+Initial result: 9 errors — `Cannot find name 'global'` in client.test.ts and Header.test.tsx,
+because the tsconfig lib set (ES2022/DOM, no @types/node) does not declare Node's `global`.
+Fixed by using the standard, DOM-lib-safe `globalThis` instead of `global` in both test files.
+Final result: exit 0, no errors.
+
+--- vitest ---
+Command: npm run test
+Result:
+ src/api/client.test.ts (3 tests) - passed
+ src/components/Header.test.tsx (2 tests) - passed
+ src/components/MessageInput.test.tsx (2 tests) - passed
+Test Files: 3 passed (3) / Tests: 7 passed (7)
+
+--- production build ---
+Command: npm run build (tsc --noEmit && vite build)
+Result: 39 modules transformed, built in 615ms.
+  dist/index.html                 0.42 kB
+  dist/assets/index-*.css         2.27 kB
+  dist/assets/index-*.js        145.36 kB (46.87 kB gzip)
+
+--- runtime smoke test ---
+1. Started apps/api (uvicorn, port 8000) — GET /health -> {"status":"ok"}
+2. Started `npm run preview -- --host 127.0.0.1 --port 3000` (serves the production dist/ build)
+3. GET http://127.0.0.1:3000/ -> HTTP 200, returned index.html referencing the built JS/CSS assets
+4. Fetched the built JS bundle and confirmed the string "http://localhost:8000" is present
+   (1 occurrence) — proves VITE_API_URL was correctly inlined at build time and points at the
+   locally running API. (Full in-browser Header connectivity behavior is covered by the
+   Header.test.tsx unit tests using jsdom + mocked fetch, since no browser automation tool was
+   used for this manual smoke test.)
+5. Both dev processes (uvicorn, vite preview) were stopped after verification.
+
+--- docker compose config (syntax/structure validation, no daemon required) ---
+Command: cp .env.example .env && docker compose config && rm .env  (temporary .env created only
+for this validation step, then removed; .env is gitignored and was never committed)
+Result: exit 0. Rendered configuration confirms:
+  - web.build.args.VITE_API_URL = http://localhost:8000 (correctly resolved from ${API_PORT:-8000})
+  - web.healthcheck present (wget spider against http://localhost:3000/)
+  - web.depends_on.api condition: service_healthy
+  - api and web port mappings present and correct
+
+--- docker build / docker compose up ---
+Command: docker build (via `docker info`) / `docker compose up`
+Result: NOT EXECUTED — Docker Desktop daemon is not running locally
+("failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine"), the same
+limitation recorded for PBI-00-02. Dockerfiles for both apps/api and apps/web were authored per
+the required file trees and reviewed manually; docker-compose.yml was structurally validated via
+`docker compose config`. Actual image builds and container startup remain unverified pending a
+running Docker daemon.
+
+--- Conclusion ---
+The minimal Web application (chat-style layout: header with connectivity/version status, sidebar
+placeholder, message area with synthetic welcome content, input+Send) is implemented, lint-clean,
+type-clean, unit-tested (7/7), and builds successfully. The API-connectivity wiring was verified
+end-to-end at the network level (built bundle -> running API) short of a real browser. Docker
+Compose was fixed (VITE_API_URL moved from runtime `environment` to build-time `args`, since Vite
+inlines env vars at build time) and structurally validated; actual container builds are deferred
+until Docker Desktop's daemon is available in this environment.
