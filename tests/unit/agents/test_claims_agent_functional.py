@@ -12,6 +12,7 @@ from src.agents.claims_agent import ClaimsAgent
 from src.llm.mock_provider import MockLLMProvider
 from src.prompts.filesystem_provider import FileSystemPromptProvider
 from src.prompts.manager import PromptManager
+from src.rag.grounder import Grounder
 from src.rag.local_provider import LocalKnowledgeProvider
 from src.rag.retriever import KnowledgeRetriever
 from src.services.tools.adjuster_assignment_tool import AdjusterAssignmentTool
@@ -42,6 +43,7 @@ def _build_agent() -> ClaimsAgent:
         prompt_manager=prompt_manager,
         llm_provider=MockLLMProvider(),
         knowledge_retriever=knowledge_retriever,
+        grounder=Grounder(),
     )
 
 

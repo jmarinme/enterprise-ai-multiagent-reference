@@ -17,7 +17,9 @@ ranker (not justified — this is a small synthetic reference corpus).
 
 Assumed index schema (index creation/ingestion is a future PBI's concern, explicitly out of
 scope here): a key field "chunk_id", a searchable "content" field, and "source_id"/"title"/
-"category" fields matching KnowledgeMetadata's own field names.
+"category" fields matching KnowledgeMetadata's own field names. "section"/"source_path"
+(PBI-02-03's Grounding layer) are read optionally — an index that doesn't have them yet still
+produces a valid KnowledgeChunk, just with those two fields left None.
 """
 
 from __future__ import annotations
@@ -42,6 +44,12 @@ from src.rag.models import KnowledgeChunk, KnowledgeMetadata, KnowledgeQuery, Kn
 
 _PROVIDER_NAME = "azure_ai_search"
 _ENTRA_ID_SCOPE = "https://search.azure.com/.default"
+# Deliberately does NOT list "section"/"source_path" (PBI-02-03): Azure AI Search's `select`
+# clause errors (400) if it names a field the index schema doesn't define, and index
+# creation/ingestion remains a future PBI's concern — this stays limited to the fields the
+# assumed minimal schema guarantees. _to_chunk() reads section/source_path via dict.get(), so
+# the moment a future PBI's index actually has those fields AND adds them here, they start
+# flowing through with zero further code change.
 _SELECT_FIELDS: Sequence[str] = ("chunk_id", "content", "source_id", "title", "category")
 
 
@@ -132,6 +140,11 @@ class AzureAISearchProvider:
                 source_id=item["source_id"],
                 title=item["title"],
                 category=item["category"],
+                # Not in _SELECT_FIELDS yet (see comment above), so always None today via
+                # .get() — read opportunistically so nothing here needs to change once a real
+                # index does provide them.
+                section=item.get("section"),
+                source_path=item.get("source_path"),
             ),
             score=item.get("@search.score", 0.0),
         )

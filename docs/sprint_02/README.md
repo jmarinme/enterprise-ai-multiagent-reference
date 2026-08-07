@@ -20,6 +20,12 @@ without rewriting that agent's business workflow.
   (PBI-02-02), configuration-selected, local remains the default for dev/tests. Reusable Bicep
   module provisioning the Azure AI Search *service* only (no index, no ingestion, no
   deployment performed).
+- Grounding & Citations Framework (PBI-02-03): a reusable `Grounder` (`src/rag/grounder.py`)
+  and typed contracts (`src/rag/grounding_models.py`: `Citation`, `CitationReference`,
+  `GroundedContext`, `GroundedResponse`, `GroundingMetadata`) that turn retrieved
+  `KnowledgeChunk`s into deduplicated, deterministically ordered, top-k typed citations —
+  provider-agnostic (works with both `LocalKnowledgeProvider` and `AzureAISearchProvider`).
+  `POST /chat`'s response gains additive, optional `citations`/`groundingMetadata` fields.
 
 ## Out of scope
 
@@ -30,11 +36,13 @@ without rewriting that agent's business workflow.
 - APIM, authentication, Azure deployment.
 - Integrating Knowledge retrieval into Broker or Commercial Intake (deferred — only one agent
   was required this PBI; see `decisions.md`).
+- UI rendering of citations (PBI-02-03 is backend-only).
 
 ## Deliverables
 
 - [x] PBI-02-01: Build the reusable Knowledge / RAG Framework.
 - [x] PBI-02-02: Implement the Azure AI Search KnowledgeProvider.
+- [x] PBI-02-03: Build the Grounding & Citations Framework.
 
 ## Acceptance criteria
 
@@ -57,12 +65,25 @@ without rewriting that agent's business workflow.
 | AC-15 | Azure/provider failures (auth, timeout/connectivity, generic HTTP) are normalized into typed `Knowledge*` exceptions, never a raw SDK exception | `pytest` evidence — `tests/unit/rag/test_azure_ai_search_provider.py::test_authentication_failure_raises_knowledge_provider_error`, `::test_service_request_error_raises_knowledge_timeout_error`, `::test_generic_http_response_error_raises_knowledge_provider_error` |
 | AC-16 | `AzureAISearchProvider` is fully mocked in its own tests — never called against real Azure | Code review + `pytest` evidence — `tests/unit/rag/test_azure_ai_search_provider.py` (13 tests, all `@patch`-mocked) |
 | AC-17 | A reusable Bicep module provisions the Azure AI Search service (RBAC-only, conservative Free-tier default), wired into `main.bicep` and all 3 environment parameter files, with no deployment performed | `az bicep build`/`build-params` evidence — all exit 0, 0 errors, 0 warnings |
+| AC-18 | Grounding is a reusable component that works with both `LocalKnowledgeProvider` and `AzureAISearchProvider` output without provider-specific code | Code review — `src/rag/grounder.py` imports only `src/rag/models.py`/`src/rag/grounding_models.py`, never a concrete provider |
+| AC-19 | Citations preserve document id, section, score, title, and source path from the retrieved chunk metadata | `pytest` evidence — `tests/unit/rag/test_grounder.py::test_ground_preserves_document_id_section_score_title_and_source_path` |
+| AC-20 | Duplicate chunks are removed and citation ordering is deterministic (score descending, stable tiebreak) | `pytest` evidence — `tests/unit/rag/test_grounder.py::test_ground_removes_duplicate_chunk_ids_keeping_first_occurrence`, `::test_ground_orders_by_score_descending`, `::test_ground_breaks_score_ties_by_chunk_id_ascending` |
+| AC-21 | Citations are capped at a configurable top-k, independent of retrieval's own top-k | `pytest` evidence — `tests/unit/rag/test_grounder.py::test_ground_caps_citations_at_top_k` |
+| AC-22 | Empty retrieval produces a valid, empty `GroundedContext` (no error) | `pytest` evidence — `tests/unit/rag/test_grounder.py::test_ground_with_empty_chunks_returns_empty_grounded_context` |
+| AC-23 | All public grounding contracts are strongly typed Pydantic models — no dict, no JSON-encoded string, crossing the Grounder/PromptManager/API boundary | Code review — `src/rag/grounding_models.py`; `mypy` clean |
+| AC-24 | The LLM never invents a citation — `GroundedResponse.citations` is always exactly the citations `GroundedContext` made available, never LLM-derived | Code review — `src/rag/grounder.py::Grounder.build_response`; `pytest` evidence — `tests/unit/rag/test_grounder.py::test_build_response_attaches_exactly_the_grounded_context_citations` |
+| AC-25 | `POST /chat`'s response contract gains additive, optional `citations`/`groundingMetadata` fields with no breaking change | Code review — `apps/api/src/api/routes/chat.py::ChatResponse`; `pytest` evidence — full pre-existing `tests/unit/api/test_chat.py` regression suite passes unchanged |
+| AC-26 | A full `POST /chat` call for a relevant Claims message produces typed citations and grounding metadata through the real composition root | `pytest` evidence — `tests/unit/api/test_chat.py::test_chat_claims_response_includes_typed_citations_through_the_real_api`; live smoke test |
+| AC-27 | Claims/Broker/Commercial conversational flows remain backward-compatible after Grounder integration | `pytest` evidence — full pre-existing regression suite passes unchanged |
 
 ## Dependencies
 
 - Everything established in Sprint 01: Supervisor, Tool/Prompt/LLM frameworks, ClaimsAgent,
   BrokerAgent, CommercialIntakeAgent, `POST /chat`, `apps/api/src/api/dependencies.py`.
 - PBI-02-01's Knowledge/RAG framework (`src/rag/`).
+- PBI-02-03 depends on PBI-02-01's `KnowledgeChunk`/`KnowledgeMetadata` contracts (extended
+  additively with `section`/`source_path`) and is provider-agnostic with respect to PBI-02-02's
+  `AzureAISearchProvider`.
 
 ## Risks
 
@@ -80,6 +101,9 @@ Evidence: `docs/sprint_02/evidence/pbi-02-01-knowledge-framework-validation.txt`
 
 PBI-02-02: `AzureAISearchProvider` added (`src/rag/azure_ai_search_provider.py`), a second, production-shaped `KnowledgeProvider` implementing the exact same Protocol as `LocalKnowledgeProvider` — zero changes to `KnowledgeRetriever`, any Agent, or the Protocol itself. Structurally mirrors `AzureOpenAIProvider` (PBI-01-04) exactly: lazy `azure-search-documents`/`azure-identity` imports (never required unless `KNOWLEDGE_PROVIDER=azure_ai_search`), Entra ID (`DefaultAzureCredential`) as the default auth path, API-key auth only via the existing `SecretProvider` abstraction (never `os.environ`), and typed exception mapping (`ClientAuthenticationError`→`KnowledgeProviderError`, `ServiceRequestError`→new `KnowledgeTimeoutError`, generic `HttpResponseError`→`KnowledgeProviderError`, missing endpoint/index at construction→new `KnowledgeConfigurationError`). Plain keyword search only (`search_text=`) — no vector query (the existing `KnowledgeQuery`/`KnowledgeChunk` contract has no embedding fields, so vector search is not required) and no semantic ranker (not justified for a small synthetic corpus); results are mapped from an assumed index schema (`chunk_id`/`content`/`source_id`/`title`/`category`) into the existing typed `KnowledgeChunk`/`KnowledgeMetadata` contracts, preserving citation-ready source metadata. New `src/rag/factory.py` (`get_knowledge_provider`, mirrors `src/llm/factory.py`) and `KnowledgeSettings` (mirrors `LLMSettings`) make provider selection fully configuration-driven; `apps/api/src/api/dependencies.py`'s `get_knowledge_retriever()` routes through the factory with **local unchanged as the default** — verified by running the full regression suite immediately after this wiring change, before writing any Azure AI Search code. New reusable `ops/bicep/modules/ai-search.bicep` module (RBAC-only via the built-in "Search Index Data Reader" role on the shared Managed Identity, Free-tier default for dev — conservative and $0, appropriate since this PBI explicitly excludes semantic ranking/ingestion which Free doesn't support anyway; Basic for staging/prod to avoid the one-free-service-per-subscription constraint), wired into `main.bicep` (new `aiSearchSkuName` param + 3 new outputs) and all 3 environment parameter files — no index, no ingestion, no deployment. Replaced the dead, never-wired Sprint-0 `ENABLE_RAG` placeholder in `.env.example` with the real `KNOWLEDGE_PROVIDER`/`AZURE_AI_SEARCH_*` variables it was always meant to become. 320/320 tests pass deterministically with no Azure dependency (full Supervisor/Tool/Prompt/LLM/Claims/Broker/Commercial/RAG/`/chat` regression suite confirmed passing, one recurring pytest basename collision fixed the same way as every prior PBI); ruff and mypy clean; all 11 Bicep files (`main.bicep` + 10 modules) and all 3 parameter files compile with `az bicep build`/`build-params` at exit 0, 0 errors, 0 warnings; live local smoke test confirmed `KNOWLEDGE_PROVIDER` defaults to local with zero behavior change (`[knowledge=KB-CLAIMS-...]` annotation still produced with zero Azure connectivity) and Broker/Commercial/Fallback remain unaffected. No embeddings, vector databases, semantic ranking, RAG index/ingestion, real documents, citations UI, RAG evaluation, APIM, authentication, or Azure deployment implemented. — 2026-08-07
 Evidence: `docs/sprint_02/evidence/pbi-02-02-azure-ai-search-provider-validation.txt`
+
+PBI-02-03: Grounding & Citations Framework built as a reusable extension of the existing Knowledge/RAG package: `src/rag/grounding_models.py` (typed `Citation`, `CitationReference`, `GroundedContext`, `GroundedResponse`, `GroundingMetadata` — no dict, no JSON-encoded string, crosses any boundary) and `src/rag/grounder.py` (a stateless `Grounder` class, matching the codebase's established injected-component style). `Grounder.ground()` deduplicates retrieved `KnowledgeChunk`s by `chunk_id` (first-occurrence-wins), deterministically orders them (`(-score, chunk_id)`, so ties break on `chunk_id` ascending), caps them at a caller-supplied `top_k` independent of retrieval's own `top_k`, and produces typed `Citation`s preserving document id, section, score, title, and source path — provider-agnostic by construction (imports only `src.rag.models`/`src.rag.grounding_models`, never a concrete provider), so it works identically for `LocalKnowledgeProvider` and `AzureAISearchProvider` output. `KnowledgeMetadata` gained two additive optional fields (`section`, `source_path`); `LocalKnowledgeProvider` now populates `source_path`, `AzureAISearchProvider` reads both opportunistically via `.get()` (not added to `_SELECT_FIELDS`, since Azure AI Search's `select` clause errors on a field the still-nonexistent real index doesn't have — see `decisions.md`). "The LLM must never invent a citation" is guaranteed architecturally, not by runtime validation: `Grounder.build_response()` always attaches exactly `GroundedContext.citations`, never anything derived from LLM output. `ClaimsAgent` is the only agent integrated (mirroring PBI-02-01's own scope decision) — the earlier ad-hoc `[knowledge=<source_id>,...]` text annotation was fully replaced by the typed `citations`/`grounding_metadata` fields now carried on `AgentResponse` (`src/supervisor/models.py`, a data-contract-only dependency — `SupervisorOrchestrator` itself is untouched and still contains zero RAG-aware code) and `ChatResponse` (`apps/api/src/api/routes/chat.py`, new additive `citations: list[Citation] = []` / `groundingMetadata: GroundingMetadata | None = None` fields — verified backward-compatible via the full pre-existing regression suite and a live non-Claims smoke test showing `"citations":[],"groundingMetadata":null`). `GroundingMetadata.is_grounded` is a Pydantic `computed_field` (not a plain `@property`, which would have been silently dropped from JSON serialization) so API callers can read "grounded with N sources" directly off the wire. 338 tests pass deterministically (18 new: `tests/unit/rag/test_grounding_models.py`, `tests/unit/rag/test_grounder.py`; 5 existing Claims test files updated for the new `grounder` constructor argument; `tests/unit/agents/test_claims_agent_knowledge_integration.py` and `tests/unit/api/test_chat.py` rewritten to assert on typed `citations`/`groundingMetadata` instead of the removed bracket annotation); ruff and mypy clean, clean on the first run; live smoke test confirmed a relevant Claims message produces typed citations (`documentId` starting with `KB-CLAIMS-`) and `groundingMetadata.isGrounded: true` through the real running API, and a Broker message confirmed `citations: []`/`groundingMetadata: null` backward compatibility. No vector search, embeddings, semantic ranking, UI rendering, or Azure deployment implemented. — 2026-08-07
+Evidence: `docs/sprint_02/evidence/pbi-02-03-grounding-citations-validation.txt`
 
 ## Sprint validation
 

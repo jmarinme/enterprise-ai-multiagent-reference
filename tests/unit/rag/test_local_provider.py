@@ -96,6 +96,8 @@ async def test_chunks_carry_source_and_metadata_for_future_citations(
     assert chunk.metadata.title
     assert chunk.metadata.category == "claims_procedures"
     assert chunk.chunk_id == chunk.metadata.source_id
+    assert chunk.metadata.source_path is not None
+    assert chunk.metadata.source_path.endswith(".md")
 
 
 async def test_category_filter_excludes_non_matching_documents(

@@ -11,6 +11,7 @@ from enum import Enum
 from pydantic import BaseModel, Field
 
 from src.domain.conversation import Message
+from src.rag.grounding_models import Citation, GroundingMetadata
 
 
 class IntentCategory(str, Enum):
@@ -51,13 +52,23 @@ class ConversationContext(BaseModel):
 
 
 class AgentResponse(BaseModel):
-    """An Agent's reply, returned by the Supervisor to the caller."""
+    """An Agent's reply, returned by the Supervisor to the caller.
+
+    citations/grounding_metadata (PBI-02-03) are a typed pass-through, exactly like metadata
+    already was: SupervisorOrchestrator never constructs, inspects, or reasons about them — it
+    only ever returns whatever AgentResponse the selected Agent produced. Importing the
+    Citation/GroundingMetadata *types* here is a data-contract dependency, not a behavioral
+    one — the Supervisor still contains zero knowledge-retrieval code and never imports
+    KnowledgeProvider/KnowledgeRetriever/any concrete provider, which is what "Supervisor
+    remains unaware of the Knowledge implementation" (PBI-02-01) actually protects."""
 
     conversation_id: str
     agent: str
     intent: IntentCategory
     response: str
     metadata: dict[str, str] = Field(default_factory=dict)
+    citations: list[Citation] = Field(default_factory=list)
+    grounding_metadata: GroundingMetadata | None = None
 
 
 class SupervisorConfig(BaseModel):
