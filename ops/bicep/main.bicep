@@ -1,14 +1,25 @@
 // TMX Enterprise AI Reference Platform — Sprint 0 Bicep foundation (PBI-00-04, extended by
-// PBI-00-05 with the Cosmos DB conversation store, and by PBI-02-02 with an Azure AI Search
-// service backing the optional AzureAISearchProvider KnowledgeProvider).
+// PBI-00-05 with the Cosmos DB conversation store, by PBI-02-02 with an Azure AI Search service
+// backing the optional AzureAISearchProvider KnowledgeProvider, and by PBI-03-02 with an Azure
+// OpenAI account/deployment plus the Container App environment-variable wiring that actually
+// selects and points the API at these Azure-backed providers at runtime.
 //
 // Scope: Container Registry, Log Analytics, Application Insights, Container Apps environment,
 // API + Web Container Apps, a shared user-assigned Managed Identity, a Key Vault foundation,
-// a Cosmos DB for NoSQL conversation history store, and an Azure AI Search service (service
-// only — no index or document ingestion).
+// a Cosmos DB for NoSQL conversation history store, an Azure AI Search service (service only —
+// no index or document ingestion), and an Azure OpenAI account with one chat-completion model
+// deployment. Every RBAC role the API's Managed Identity needs against these services (Cognitive
+// Services OpenAI User, Search Index Data Reader, Cosmos DB Data Contributor, Key Vault Secrets
+// User, AcrPull) is wired here at least-privilege, data-plane scope only.
 //
-// Explicitly out of scope (later PBIs/ADRs): Azure OpenAI, API Management, Storage accounts,
-// agent business logic, RAG index creation/ingestion.
+// PBI-03-02 explicitly does NOT: create the AI Search index or ingest documents (so
+// knowledgeProvider still defaults to 'local', not 'azure_ai_search' — see
+// docs/sprint_03/decisions.md), implement VNet/private endpoints (see
+// docs/Architecture/adr/0001-networking-posture-and-vnet-deferral.md), or perform any deployment
+// (`az deployment ... create`/`what-if` were never run for this PBI).
+//
+// Explicitly out of scope (later PBIs/ADRs): API Management, Storage accounts, agent business
+// logic, RAG index creation/ingestion, VNet/private networking.
 //
 // Deploys into an existing resource group supplied at deploy time (`az deployment group create
 // --resource-group <rg>`) — the resource group name is intentionally never referenced here.
@@ -71,6 +82,41 @@ param cosmosConversationTtlSeconds int = -1
 @allowed(['free', 'basic', 'standard'])
 param aiSearchSkuName string = 'free'
 
+@description('Azure AI Search index name AzureAISearchProvider will query. Index creation/ingestion is out of scope for PBI-03-02 — this only plumbs the name through; leave the default placeholder until a future PBI actually creates the index.')
+param aiSearchIndexName string = 'tmxai-knowledge-index'
+
+@description('Azure OpenAI Cognitive Services pricing tier. S0 is the only tier Azure OpenAI deployments support.')
+@allowed(['S0'])
+param azureOpenAiSkuName string = 'S0'
+
+@description('Azure OpenAI model deployment name — becomes AZURE_OPENAI_DEPLOYMENT on the API Container App.')
+param azureOpenAiDeploymentName string = 'chat'
+
+@description('Azure OpenAI model name to deploy.')
+param azureOpenAiModelName string = 'gpt-4o-mini'
+
+@description('Azure OpenAI model version to deploy.')
+param azureOpenAiModelVersion string = '2024-07-18'
+
+@description('Azure OpenAI deployment capacity in units of 1,000 tokens-per-minute (TPM). Conservative default sized for dev/academic use.')
+@minValue(1)
+param azureOpenAiModelCapacity int = 10
+
+@description('Azure OpenAI REST API version the AzureOpenAIProvider SDK client targets.')
+param azureOpenAiApiVersion string = '2024-10-21'
+
+@description('Which LLMProvider the API Container App selects at runtime (src.config.settings.LLMSettings.llm_provider). All three Azure resources below are always provisioned regardless of this value — this only selects which one the running app actually calls.')
+@allowed(['mock', 'azure_openai', 'ollama'])
+param llmProvider string = 'azure_openai'
+
+@description('Which KnowledgeProvider the API Container App selects at runtime. Defaults to "local" — NOT "azure_ai_search" — because no AI Search index exists yet (out of scope for PBI-03-02); selecting azure_ai_search before an index exists would make AzureAISearchProvider fail at startup. Flip this once a future PBI creates and populates the index. See docs/sprint_03/decisions.md.')
+@allowed(['local', 'azure_ai_search'])
+param knowledgeProvider string = 'local'
+
+@description('Which ConversationRepository the API Container App selects at runtime. cosmos is safe as the default here because this template fully provisions the Cosmos database/container/RBAC — unlike the AI Search index, nothing further is required for it to work.')
+@allowed(['in_memory', 'cosmos'])
+param conversationStoreProvider string = 'cosmos'
+
 @description('API image repository name inside the registry.')
 param apiImageName string
 
@@ -132,6 +178,7 @@ var containerRegistryName = take('acr${replace(projectName, '-', '')}${environme
 var keyVaultName = take('kv-${namePrefix}-${uniqueSuffix}', 24)
 var cosmosAccountName = take('cosmos-${namePrefix}-${uniqueSuffix}', 44)
 var aiSearchName = take('srch-${namePrefix}-${uniqueSuffix}', 60)
+var azureOpenAiName = take('aoai-${namePrefix}-${uniqueSuffix}', 64)
 var appInsightsSecretName = 'appinsights-connection-string'
 
 module logAnalytics 'modules/log-analytics.bicep' = {
@@ -214,6 +261,21 @@ module aiSearch 'modules/ai-search.bicep' = {
   }
 }
 
+module azureOpenAi 'modules/azure-openai.bicep' = {
+  name: 'azure-openai-deployment'
+  params: {
+    location: location
+    name: azureOpenAiName
+    tags: tags
+    skuName: azureOpenAiSkuName
+    deploymentName: azureOpenAiDeploymentName
+    modelName: azureOpenAiModelName
+    modelVersion: azureOpenAiModelVersion
+    modelCapacity: azureOpenAiModelCapacity
+    openAiUserPrincipalId: managedIdentity.outputs.principalId
+  }
+}
+
 // App Insights connection string is placed in Key Vault so both Container Apps read it via a
 // Key Vault reference (Managed Identity-authenticated) instead of a plain-text env var.
 module appInsightsSecret 'modules/key-vault-secret.bicep' = {
@@ -263,6 +325,28 @@ module apiContainerApp 'modules/container-app.bicep' = {
       { name: 'ENVIRONMENT', value: environmentName }
       { name: 'PROJECT_NAME', value: projectName }
       { name: 'LOG_LEVEL', value: 'INFO' }
+      // Provider selection (PBI-03-02): every Azure resource below is always provisioned by
+      // this template regardless of these values — they only tell the running app which one
+      // to actually call. See the llmProvider/knowledgeProvider/conversationStoreProvider
+      // param descriptions above for why knowledgeProvider defaults to 'local'.
+      { name: 'LLM_PROVIDER', value: llmProvider }
+      { name: 'KNOWLEDGE_PROVIDER', value: knowledgeProvider }
+      { name: 'CONVERSATION_STORE_PROVIDER', value: conversationStoreProvider }
+      // Azure OpenAI — Managed Identity is the default auth path (AZURE_OPENAI_USE_API_KEY
+      // stays false); no API key is ever placed in a Container App env var.
+      { name: 'AZURE_OPENAI_ENDPOINT', value: azureOpenAi.outputs.endpoint }
+      { name: 'AZURE_OPENAI_DEPLOYMENT', value: azureOpenAi.outputs.deploymentName }
+      { name: 'AZURE_OPENAI_API_VERSION', value: azureOpenAiApiVersion }
+      { name: 'AZURE_OPENAI_USE_API_KEY', value: 'false' }
+      // Azure AI Search — same Managed-Identity-default posture.
+      { name: 'AZURE_AI_SEARCH_ENDPOINT', value: aiSearch.outputs.endpoint }
+      { name: 'AZURE_AI_SEARCH_INDEX_NAME', value: aiSearchIndexName }
+      { name: 'AZURE_AI_SEARCH_USE_API_KEY', value: 'false' }
+      // Cosmos DB — endpoint only; disableLocalAuth=true on the account means no connection
+      // string exists to leak (see ops/bicep/modules/cosmos-db.bicep).
+      { name: 'COSMOS_DB_ENDPOINT', value: cosmosDb.outputs.documentEndpoint }
+      { name: 'COSMOS_DB_DATABASE', value: cosmosDb.outputs.databaseName }
+      { name: 'COSMOS_DB_CONTAINER', value: cosmosDb.outputs.containerName }
     ]
     secrets: [
       { name: appInsightsSecretName, keyVaultUrl: appInsightsSecret.outputs.secretUri }
@@ -349,3 +433,8 @@ output cosmosAccountId string = cosmosDb.outputs.accountId
 output aiSearchName string = aiSearch.outputs.name
 output aiSearchEndpoint string = aiSearch.outputs.endpoint
 output aiSearchId string = aiSearch.outputs.id
+
+output azureOpenAiName string = azureOpenAi.outputs.name
+output azureOpenAiEndpoint string = azureOpenAi.outputs.endpoint
+output azureOpenAiDeploymentName string = azureOpenAi.outputs.deploymentName
+output azureOpenAiId string = azureOpenAi.outputs.id
