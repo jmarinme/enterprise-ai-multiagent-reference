@@ -112,6 +112,45 @@ def test_chat_drives_a_full_policy_status_conversation_end_to_end_through_the_re
     assert "active" in final_response.lower()
 
 
+def test_chat_drives_a_full_commercial_intake_conversation_end_to_end_through_the_real_api() -> (
+    None
+):
+    """PBI-01-07 success criteria: a complete commercial lead intake, entirely through
+    POST /chat, ending in a registered synthetic lead — proves Supervisor ->
+    CommercialIntakeAgent -> ToolExecutor -> LeadRegistrationTool -> ConversationRepository
+    metadata round trip all work together through the actual FastAPI app. Every follow-up
+    after the first message ("Acme Consulting LLC", "Jane Doe", "email please", ...) contains
+    no COMMERCIAL/CLAIMS/BROKER keyword, so this also exercises the Supervisor's
+    ambiguous-follow-up routing-continuity fallback (PBI-01-05) end to end for the third
+    agent it applies to."""
+    user_id = "user-commercial-e2e"
+    conversation_id: str | None = None
+    final_response = ""
+    agents_seen: list[str] = []
+
+    for message in [
+        "I'd like a quote for new business coverage",
+        "Acme Consulting LLC",
+        "Jane Doe",
+        "email please",
+        "jane@example.com",
+        "general liability",
+        "We provide small business consulting services.",
+    ]:
+        payload = {"message": message, "userId": user_id}
+        if conversation_id:
+            payload["conversationId"] = conversation_id
+        result = client.post("/chat", json=payload)
+        assert result.status_code == 200
+        body = result.json()
+        conversation_id = body["conversationId"]
+        final_response = body["response"]
+        agents_seen.append(body["agent"])
+
+    assert agents_seen == ["CommercialIntakeAgent"] * 7
+    assert "SYN-LEAD-" in final_response
+
+
 def test_chat_returns_fallback_agent_for_an_unmatched_message() -> None:
     response = client.post(
         "/chat",
