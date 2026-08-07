@@ -17,3 +17,19 @@ Record sprint-specific decisions and deviations. Cross-sprint decisions belong i
 **Deviation/status change:** A small, deliberate addition beyond the literal 3-agent list, flagged explicitly rather than silently included. Still a deterministic, no-business-logic mock agent, consistent with every constraint the PBI placed on the other three.
 
 **How to apply:** Any future intent category added to `IntentCategory` should have a registered agent (real or fallback) before being wired into the resolver, to preserve the "always resolvable, no branching" registry property this decision established.
+
+## 2026-08-07 — PBI-01-02: branch cut before PBI-01-01 was merged to `main`; resolved via fast-forward merge
+
+**Decision:** `feat/pbi-01-02-tool-framework` was created from `main` before `feat/pbi-01-01-supervisor-agent` (already committed) had been merged. At the start of PBI-01-02, `src/supervisor/`, `src/agents/`, `apps/api/src/api/dependencies.py`, `chat.py`, and the Docker build-context fix were all absent from the branch despite PBI-01-01 being marked complete in `docs/sprint_01/README.md`. Verified via `git merge-base HEAD feat/pbi-01-01-supervisor-agent` that the current branch tip *was* the merge-base (i.e., a pure fast-forward, zero divergence, zero conflict risk), then ran `git merge feat/pbi-01-01-supervisor-agent --ff-only`, which succeeded cleanly (32 files, no conflicts) before any PBI-01-02 code was written.
+
+**Deviation/status change:** Not a code deviation — a repository/branch-topology issue, the same class already documented for PBI-00-01/00-02 in `docs/sprint_00/decisions.md`. Nothing was lost, discarded, or reverted; this was purely a not-yet-merged-branch situation caught and fixed before work began.
+
+**How to apply:** Before starting a PBI whose scope explicitly builds on a previous PBI's files (as PBI-01-02's instructions explicitly did, listing `src/supervisor`, `src/agents`, `apps/api/src/api/dependencies.py` as inspection targets), verify those files actually exist on the current branch first — do not assume a prior PBI being "complete" in sprint docs means its commit is reachable from the branch in hand.
+
+## 2026-08-07 — PBI-01-02: `ToolResult` generic kept as `Generic[T]`, not PEP 695 syntax
+
+**Decision:** `ruff` (configured `target-version = "py312"`) flagged `class ToolResult(BaseModel, Generic[ToolOutputT]):` with `UP046`, recommending Python 3.12's newer `class ToolResult[ToolOutputT](BaseModel):` syntax. That syntax is a `SyntaxError` on Python 3.11, the only interpreter available to actually import/run/test this code in this environment (pre-existing R-01 gap, documented since Sprint 00). Kept the portable `Generic[T]` form — fully correct and supported on 3.12 too — and suppressed the rule locally with `# noqa: UP046` plus an inline comment explaining why.
+
+**Deviation/status change:** A pragmatic, explicitly-justified rule suppression, not a quality-gate weakening — `ruff check` is still clean overall, and the suppression is scoped to the one line it applies to, not a blanket repo-wide ignore.
+
+**How to apply:** Revisit this suppression once the local/CI Python interpreter gap (R-01) is actually closed (Python 3.12 installed) — at that point PEP 695 syntax becomes safe to adopt and the `noqa` can be removed. Any other generic class added before then should follow the same `Generic[T]` + justified `noqa` pattern for consistency.

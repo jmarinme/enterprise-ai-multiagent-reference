@@ -1,0 +1,108 @@
+PBI-01-02 — Reusable Agent Tool Framework validation evidence
+Date: 2026-08-07
+
+--- Branch topology note ---
+The branch feat/pbi-01-02-tool-framework was created from main before
+feat/pbi-01-01-supervisor-agent (already committed, commit cdb0ab0) had been merged into main.
+This meant src/supervisor, src/agents, apps/api/src/api/dependencies.py, chat.py, and the
+Docker build-context fix were all absent at the start of this PBI, even though PBI-01-01 was
+already marked complete in docs/sprint_01/README.md. Confirmed via `git merge-base HEAD
+feat/pbi-01-01-supervisor-agent` that the current branch's tip WAS the exact merge-base (i.e.
+feat/pbi-01-01-supervisor-agent is a single commit directly ahead, a pure fast-forward
+candidate with zero divergence/conflict risk). Resolved via
+`git merge feat/pbi-01-01-supervisor-agent --ff-only`, which succeeded cleanly (fast-forward,
+32 files, no conflicts) before any PBI-01-02 work began. Nothing was lost or reverted; this was
+purely a not-yet-merged-branch situation, the same class of issue already documented for
+PBI-00-01/00-02 in docs/sprint_00/decisions.md.
+
+--- Files created ---
+src/tools/{__init__,models,protocol,registry,executor,exceptions}.py
+src/services/tools/{__init__,policy_lookup_tool,claims_status_tool,broker_account_lookup_tool}.py
+src/services/tools/synthetic/{__init__,provider}.py
+tests/unit/tools/{test_tool_registry,test_executor,test_synthetic_tools}.py
+tests/unit/agents/test_claims_agent_tool_injection.py
+
+--- Files modified ---
+src/agents/claims_agent.py (ToolExecutor constructor injection; calls claims_status tool)
+apps/api/src/api/dependencies.py (extended composition root: get_tool_executor(), 3 tools
+  registered, ClaimsAgent now constructed with the executor)
+tests/unit/agents/test_mock_agents.py (ClaimsAgent construction updated for its new signature,
+  via a small factory function; other 3 agents unchanged)
+
+--- pytest ---
+Command: pytest tests/unit/api tests/unit/domain tests/unit/services tests/unit/supervisor
+  tests/unit/agents tests/unit/tools tests/integration -v
+Attempt 1: collection error — import file mismatch between tests/unit/tools/test_registry.py
+  and tests/unit/supervisor/test_registry.py (identical basename, pytest's rootless import
+  mode; the same recurring class of issue seen in PBI-00-02/00-06). Fixed by renaming to
+  tests/unit/tools/test_tool_registry.py.
+Attempt 2: 82 passed, 2 skipped (both live-integration scaffolds skip correctly, unrelated to
+  this PBI). New tests, all passing:
+  tests/unit/tools/test_tool_registry.py — 7 tests (register/resolve, ToolNotFoundError,
+    duplicate registration raises ToolAlreadyRegisteredError, unregister incl. no-op,
+    unregister-then-re-register succeeds, list returns ToolMetadata for all registered tools)
+  tests/unit/tools/test_executor.py — 6 tests (valid input execution with typed data, context
+    (correlationId/conversationId/userId) propagation, invalid input returns a failed
+    ToolResult rather than raising, execution failure normalized into a failed ToolResult,
+    missing tool returns a failed ToolResult rather than raising, ToolResult contract shape
+    on both success and failure)
+  tests/unit/tools/test_synthetic_tools.py — 7 tests (happy path + not-found path for each of
+    the 3 synthetic tools, plus registry listing all 3)
+  tests/unit/agents/test_claims_agent_tool_injection.py — 2 tests (tool result appears in the
+    agent's response; agent degrades gracefully — still returns a valid AgentResponse — when
+    the tool is not registered)
+  tests/unit/agents/test_mock_agents.py — unchanged assertions, ClaimsAgent construction fixed
+    via a local factory function using a real ToolExecutor + ClaimsStatusTool
+
+Regression confirmed: all pre-existing Supervisor tests (tests/unit/supervisor/*, 19 tests)
+and all POST /chat tests (tests/unit/api/test_chat.py, 4 tests) still pass unchanged — the
+Supervisor was not touched by this PBI.
+
+--- ruff ---
+Command: ruff check apps/api/src src tests
+Attempt 1: 1 error — UP046 ("Generic class `ToolResult` uses `Generic` subclass instead of
+  type parameters"), i.e. ruff (target-version py312) recommending PEP 695 syntax
+  (`class ToolResult[T](BaseModel):`). This syntax is a SyntaxError under Python 3.11, the only
+  interpreter available to actually run/import this code locally (pre-existing R-01 gap,
+  documented since Sprint 00). Suppressed with a targeted `# noqa: UP046` plus an inline
+  comment explaining why, rather than rewriting to syntax that would break local validation.
+Attempt 2: All checks passed!
+
+--- mypy ---
+Command: mypy apps/api/src
+Result: Success: no issues found in 13 source files.
+Command: mypy src
+Result: Success: no issues found in 41 source files.
+Command: mypy tests/unit/tools tests/unit/agents tests/unit/supervisor
+Result: Success: no issues found in 9 source files.
+(tests/unit/api excluded from mypy — pre-existing, unrelated static-analysis limitation
+documented since PBI-01-01/PBI-00-02: mypy cannot see conftest.py's runtime sys.path insertion.)
+
+--- Live smoke test ---
+Started the API via `uvicorn main:app --app-dir apps/api/src` and issued a real POST /chat
+request routed to the (now Tool-injected) ClaimsAgent:
+  POST /chat {"message":"I need to check my claim","userId":"demo-user"}
+  -> 200 {"conversationId":"...","agent":"ClaimsAgent","intent":"CLAIMS",
+          "response":"... (synthetic claim lookup: status=under_review)"}
+This confirms the full chain end-to-end through the real composed API: Agent -> ToolExecutor ->
+ToolRegistry -> ClaimsStatusTool -> typed input validation -> execution -> typed ToolResult ->
+Agent -> Supervisor -> Conversation Store -> JSON response. Server stopped after verification.
+
+--- Secrets / prohibited-content scan ---
+Searched src/tools, src/services/tools, apps/api/src/api/dependencies.py, and
+src/agents/claims_agent.py for hardcoded keys/passwords, references to Azure OpenAI/Semantic
+Kernel/AutoGen/LangGraph/CrewAI/Azure AI Search/APIM, and any real TMX data reference.
+Findings: none. All matches are comments/docstrings explicitly stating those are NOT used, or
+the synthetic-data provider's own disclaimer ("no real TMX customers...").
+
+--- Conclusion ---
+The Tool framework is implemented as a clean, interface-only pipeline mirroring the Supervisor
+framework's proven shape: ToolExecutor never contains business logic, ToolRegistry has no
+hardcoded routing and fails explicitly on duplicate registration or missing tools, and every
+public contract (ToolRequest, ToolResult, ToolMetadata, ToolExecutionContext) is a typed
+Pydantic model with exactly one deliberately-justified untyped boundary
+(ToolRequest.tool_input). ClaimsAgent now demonstrates real ToolExecutor injection without the
+Supervisor knowing anything about Tools. All 82 tests pass deterministically with no Azure
+dependency; ruff and mypy are clean; a live smoke test proves the full pipeline works through
+the real running API. No Azure OpenAI, RAG, APIM, real integrations, or real business data was
+implemented.
