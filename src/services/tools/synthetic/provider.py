@@ -139,3 +139,68 @@ SYNTHETIC_ADJUSTERS: list[SyntheticAdjusterRecord] = [
         adjuster_id="ADJ-SYN-03", adjuster_name="Synthetic Adjuster Okafor", region="central"
     ),
 ]
+
+
+class SyntheticTransactionRecord(BaseModel):
+    transaction_reference: str
+    status: Literal["pending", "processing", "completed", "rejected"]
+    description: str
+
+
+class SyntheticCommissionRecord(BaseModel):
+    broker_id: str
+    commission_period: str
+    amount: float
+    status: Literal["available", "paid", "pending"]
+
+
+# Broker-services scenarios (PBI-01-06), additive to SYNTHETIC_BROKERS above (new SYN-BRK-000x
+# ID format, alongside the pre-existing BRK-SYN-000x records from PBI-01-02, which are kept
+# unmodified since they are still referenced by PBI-01-02's own tests):
+#   SYN-BRK-0001 -> active broker account
+#   SYN-BRK-0002 -> active broker account (second broker, for cross-broker commission scenarios)
+# Any other broker id (e.g. SYN-BRK-9999) is simply absent -> "broker not found".
+SYNTHETIC_BROKERS["SYN-BRK-0001"] = SyntheticBrokerRecord(
+    broker_id="SYN-BRK-0001",
+    broker_name="Synthetic Brokerage One",
+    status="active",
+    commission_tier="gold",
+)
+SYNTHETIC_BROKERS["SYN-BRK-0002"] = SyntheticBrokerRecord(
+    broker_id="SYN-BRK-0002",
+    broker_name="Synthetic Brokerage Two",
+    status="active",
+    commission_tier="silver",
+)
+
+# Transaction-status scenarios: SYN-TXN-0001 completed, SYN-TXN-0002 pending. Any other
+# reference is absent -> "transaction not found".
+SYNTHETIC_TRANSACTIONS: dict[str, SyntheticTransactionRecord] = {
+    "SYN-TXN-0001": SyntheticTransactionRecord(
+        transaction_reference="SYN-TXN-0001",
+        status="completed",
+        description="Synthetic policy issuance request",
+    ),
+    "SYN-TXN-0002": SyntheticTransactionRecord(
+        transaction_reference="SYN-TXN-0002",
+        status="pending",
+        description="Synthetic endorsement request",
+    ),
+}
+
+# Commission scenarios, keyed by (broker_id, commission_period):
+#   SYN-BRK-0001 / 2026-Q1 -> available (earned, not yet requested — eligible for payment)
+#   SYN-BRK-0001 / 2026-Q2 -> paid (already paid out)
+#   SYN-BRK-0002 / 2026-Q1 -> pending (earned but not yet finalized — not yet eligible)
+# Any other (broker_id, commission_period) pair is absent -> "no commission found".
+SYNTHETIC_COMMISSIONS: dict[tuple[str, str], SyntheticCommissionRecord] = {
+    ("SYN-BRK-0001", "2026-Q1"): SyntheticCommissionRecord(
+        broker_id="SYN-BRK-0001", commission_period="2026-Q1", amount=1250.00, status="available"
+    ),
+    ("SYN-BRK-0001", "2026-Q2"): SyntheticCommissionRecord(
+        broker_id="SYN-BRK-0001", commission_period="2026-Q2", amount=980.50, status="paid"
+    ),
+    ("SYN-BRK-0002", "2026-Q1"): SyntheticCommissionRecord(
+        broker_id="SYN-BRK-0002", commission_period="2026-Q1", amount=430.00, status="pending"
+    ),
+}

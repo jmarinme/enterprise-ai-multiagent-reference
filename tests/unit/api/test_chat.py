@@ -57,6 +57,61 @@ def test_chat_drives_a_full_claim_report_end_to_end_through_the_real_api() -> No
     assert "assigned" in final_response.lower()
 
 
+def test_chat_drives_a_full_commission_conversation_end_to_end_through_the_real_api() -> None:
+    """PBI-01-06 success criteria: a complete commission inquiry, entirely through POST /chat,
+    ending in a registered synthetic commission-payment request — proves Supervisor ->
+    BrokerAgent -> ToolExecutor -> synthetic Tools -> ConversationRepository metadata round
+    trip all work together through the actual FastAPI app, including an ambiguous follow-up
+    ("SYN-BRK-0001 2026-Q1" has no BROKER keyword) staying routed to BrokerAgent."""
+    user_id = "user-commission-e2e"
+    conversation_id: str | None = None
+    final_response = ""
+    agents_seen: list[str] = []
+
+    for message in [
+        "I need to check my commissions.",
+        "SYN-BRK-0001 2026-Q1",
+        "yes",
+    ]:
+        payload = {"message": message, "userId": user_id}
+        if conversation_id:
+            payload["conversationId"] = conversation_id
+        result = client.post("/chat", json=payload)
+        assert result.status_code == 200
+        body = result.json()
+        conversation_id = body["conversationId"]
+        final_response = body["response"]
+        agents_seen.append(body["agent"])
+
+    assert agents_seen == ["BrokerAgent", "BrokerAgent", "BrokerAgent"]
+    assert "SYN-PAYREQ-" in final_response
+
+
+def test_chat_drives_a_full_policy_status_conversation_end_to_end_through_the_real_api() -> None:
+    """PBI-01-06's own literal example phrasing ("I want to know the status of a policy.")
+    must reach BrokerAgent through the real intent resolver — this exact scenario surfaced a
+    real RuleBasedIntentResolver gap during live validation (see decisions.md) before
+    _BROKER_KEYWORDS included a bare "policy" keyword."""
+    user_id = "user-policy-status-e2e"
+    conversation_id: str | None = None
+    final_response = ""
+    agents_seen: list[str] = []
+
+    for message in ["I want to know the status of a policy.", "SYN-POL-0001"]:
+        payload = {"message": message, "userId": user_id}
+        if conversation_id:
+            payload["conversationId"] = conversation_id
+        result = client.post("/chat", json=payload)
+        assert result.status_code == 200
+        body = result.json()
+        conversation_id = body["conversationId"]
+        final_response = body["response"]
+        agents_seen.append(body["agent"])
+
+    assert agents_seen == ["BrokerAgent", "BrokerAgent"]
+    assert "active" in final_response.lower()
+
+
 def test_chat_returns_fallback_agent_for_an_unmatched_message() -> None:
     response = client.post(
         "/chat",

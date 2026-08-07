@@ -28,8 +28,11 @@ from src.services.tools.adjuster_assignment_tool import AdjusterAssignmentTool
 from src.services.tools.broker_account_lookup_tool import BrokerAccountLookupTool
 from src.services.tools.claim_registration_tool import ClaimRegistrationTool
 from src.services.tools.claims_status_tool import ClaimsStatusTool
+from src.services.tools.commission_lookup_tool import CommissionLookupTool
+from src.services.tools.commission_payment_request_tool import CommissionPaymentRequestTool
 from src.services.tools.payment_status_tool import PaymentStatusTool
 from src.services.tools.policy_lookup_tool import PolicyLookupTool
+from src.services.tools.transaction_status_tool import TransactionStatusTool
 from src.supervisor.intent import RuleBasedIntentResolver
 from src.supervisor.models import IntentCategory
 from src.supervisor.orchestrator import SupervisorOrchestrator
@@ -58,6 +61,9 @@ def get_tool_executor() -> ToolExecutor:
     tool_registry.register(PaymentStatusTool())
     tool_registry.register(ClaimRegistrationTool())
     tool_registry.register(AdjusterAssignmentTool())
+    tool_registry.register(TransactionStatusTool())
+    tool_registry.register(CommissionLookupTool())
+    tool_registry.register(CommissionPaymentRequestTool())
     return ToolExecutor(tool_registry=tool_registry)
 
 
@@ -108,7 +114,14 @@ def get_supervisor() -> SupervisorOrchestrator:
             llm_provider=llm_provider,
         ),
     )
-    registry.register(IntentCategory.BROKER, BrokerAgent())
+    registry.register(
+        IntentCategory.BROKER,
+        BrokerAgent(
+            tool_executor=tool_executor,
+            prompt_manager=prompt_manager,
+            llm_provider=llm_provider,
+        ),
+    )
     registry.register(IntentCategory.COMMERCIAL, CommercialIntakeAgent())
     registry.register(IntentCategory.UNKNOWN, FallbackAgent())
 

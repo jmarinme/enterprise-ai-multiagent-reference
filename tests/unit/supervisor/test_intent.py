@@ -13,6 +13,10 @@ from src.supervisor.models import IntentCategory
         ("What is the status of my policy with my broker?", IntentCategory.BROKER),
         ("I'd like a quote for new business coverage options", IntentCategory.COMMERCIAL),
         ("Hello, how are you today?", IntentCategory.UNKNOWN),
+        # PBI-01-06's own example phrasing — "status of a/my policy" does not contain the
+        # literal substring "policy status", so the bare "policy" keyword is required.
+        ("I want to know the status of a policy.", IntentCategory.BROKER),
+        ("What is the status of my transaction?", IntentCategory.BROKER),
     ],
 )
 async def test_resolve_returns_expected_category(
