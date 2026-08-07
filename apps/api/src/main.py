@@ -3,7 +3,7 @@
 from fastapi import FastAPI
 
 from api.middleware.correlation_id import CorrelationIdMiddleware
-from api.routes import health, version
+from api.routes import chat, health, version
 from config.settings import get_settings
 from observability.logging import configure_logging
 
@@ -17,6 +17,7 @@ def create_app() -> FastAPI:
     app.add_middleware(CorrelationIdMiddleware)
     app.include_router(health.router)
     app.include_router(version.router)
+    app.include_router(chat.router)
     return app
 
 
