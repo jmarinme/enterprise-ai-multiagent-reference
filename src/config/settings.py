@@ -41,20 +41,29 @@ class LLMSettings(BaseSettings):
     """Selects and configures the LLMProvider implementation.
 
     Defaults to the mock provider so local development and unit tests never require Azure
-    OpenAI connectivity. Entra ID (DefaultAzureCredential) authentication is preferred for the
-    azure_openai provider; azure_openai_use_api_key opts into API-key auth instead, in which
-    case the key is read via SecretProvider (see apps/api/src/api/dependencies.py), never
-    directly from the environment inside the provider itself.
+    OpenAI or Ollama connectivity. Entra ID (DefaultAzureCredential) authentication is
+    preferred for the azure_openai provider; azure_openai_use_api_key opts into API-key auth
+    instead, in which case the key is read via SecretProvider (see
+    apps/api/src/api/dependencies.py), never directly from the environment inside the provider
+    itself.
+
+    ollama_base_url defaults to a plain host-local Ollama install (`http://localhost:11434`).
+    When the API runs inside Docker on Windows/Mac and Ollama runs on the host, set
+    OLLAMA_BASE_URL=http://host.docker.internal:11434 in `.env` — this is a deployment/runtime
+    configuration choice, never hardcoded here (PBI-03-01).
     """
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    llm_provider: Literal["mock", "azure_openai"] = "mock"
+    llm_provider: Literal["mock", "azure_openai", "ollama"] = "mock"
     azure_openai_endpoint: str | None = None
     azure_openai_deployment: str | None = None
     azure_openai_api_version: str = "2024-10-21"
     azure_openai_use_api_key: bool = False
     azure_openai_api_key_secret_name: str = "azure-openai-api-key"
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "llama3.1"
+    ollama_timeout_seconds: float = 60.0
 
 
 class ToolCallingSettings(BaseSettings):
