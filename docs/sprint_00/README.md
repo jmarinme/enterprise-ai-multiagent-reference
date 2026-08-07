@@ -35,7 +35,7 @@ Establecer una base reproducible, segura, observable y desplegable para la plata
 - [x] PBI-00-01: Inicializar y validar estructura del repositorio.
 - [x] PBI-00-02: Crear API mínima con health, version y correlation ID.
 - [x] PBI-00-03: Crear Web mínima y Docker Compose.
-- [ ] PBI-00-04: Crear Bicep base y parámetros por ambiente.
+- [x] PBI-00-04: Crear Bicep base y parámetros por ambiente.
 - [ ] PBI-00-05: Crear Cosmos DB Conversation Store.
 - [ ] PBI-00-06: Crear Key Vault, Managed Identities y guía Entra ID.
 - [ ] PBI-00-07: Crear pipeline CI/CD de Azure DevOps.
@@ -87,6 +87,9 @@ Evidence: `docs/sprint_00/evidence/pbi-00-02-api-foundation-validation.txt`
 
 PBI-00-03: Minimal Web application created (`apps/web`, React + TypeScript + Vite): chat-style layout with header (app name, API connectivity badge, API version), sidebar placeholder for conversation history, message area with synthetic welcome content, and an input+Send box (client-side only, canned placeholder reply — no real chat/agent processing). API client for `GET /health`/`GET /version`; responsive CSS. 7/7 unit tests passed, ESLint and `tsc --noEmit` clean, production build succeeded, runtime smoke test confirmed the built bundle correctly calls the running API. `docker-compose.yml` fixed (`VITE_API_URL` moved from a no-op runtime `environment` entry to a build-time `args` entry) and validated via `docker compose config`; actual `docker build`/`up` not validated (Docker Desktop daemon not running locally). — 2026-08-06
 Evidence: `docs/sprint_00/evidence/pbi-00-03-web-docker-validation.txt`
+
+PBI-00-04: Azure Bicep foundation created (`ops/bicep`): `main.bicep` orchestrating 8 reusable modules — Log Analytics, Application Insights (workspace-based), user-assigned Managed Identity, Key Vault (RBAC, foundation only), a Key Vault secret writer, Container Registry (admin user disabled, AcrPull via managed identity), a Container Apps (Consumption) environment, and one generic Container App module instantiated twice (API, Web). Fully parameterized (location, environment, naming, tags, image names/tags, scaling, CPU/memory); `dev`/`staging`/`prod` `.bicepparam` files with conservative dev scaling. No subscription/tenant/RG/secret/endpoint/image-tag values hardcoded. Cosmos DB, Azure OpenAI, AI Search, APIM, Storage, agents, and RAG kept out of scope. `az bicep build` clean (0 errors, 0 warnings) on `main.bicep` and all 8 modules; all 3 parameter files validated via `az bicep build-params`. No `az deployment create` executed — no Azure resources were deployed. — 2026-08-06
+Evidence: `docs/sprint_00/evidence/pbi-00-04-bicep-foundation-validation.txt`
 
 ## Sprint validation
 

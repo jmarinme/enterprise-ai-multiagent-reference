@@ -1,0 +1,62 @@
+PBI-00-04 — Azure Bicep foundation and environment parameter files validation evidence
+Date: 2026-08-06
+Branch: feat/pbi-00-04-bicep-foundation (or current working branch)
+
+--- Tooling ---
+az bicep install -> Bicep CLI v0.46.1 installed to C:\Users\jaser\.azure\bin\bicep.exe
+(local CLI tooling install; not an Azure resource deployment)
+
+--- az bicep build (main.bicep, transitively validates all modules) ---
+Command: az bicep build --file ops/bicep/main.bicep --outdir <tmp>
+Attempt 1: FAILED
+  - Warning secure-secrets-in-params on key-vault.bicep param 'secretsUserPrincipalId' (name
+    contained the substring "secret", tripping the linter's secret-name heuristic even though the
+    value itself is a non-secret principal ID). Fixed by renaming the parameter to
+    'keyVaultAccessPrincipalId'.
+  - Error BCP181 (x2) in main.bicep: reference()/listKeys() were called with
+    logAnalytics.outputs.id, a module-output-derived expression, which Bicep cannot treat as
+    "calculable at the start of deployment" even though its value is deterministic. Fixed by
+    building the resourceId() from the main.bicep-level `logAnalyticsName` variable instead
+    (a plain expression over input parameters), and added an explicit `dependsOn: [logAnalytics]`
+    on the containerAppsEnvironment module, since referencing the variable instead of the module
+    output removes the automatic dependency edge Bicep would otherwise infer.
+Attempt 2: PASSED — exit 0, no errors, no warnings.
+
+--- az bicep build (each module individually) ---
+Command: az bicep build --file <module> --stdout   (looped over all 8 files in ops/bicep/modules)
+Result: all 8 modules compiled with exit 0 and no warnings:
+  app-insights.bicep, container-app.bicep, container-apps-environment.bicep,
+  container-registry.bicep, key-vault.bicep, key-vault-secret.bicep, log-analytics.bicep,
+  managed-identity.bicep
+
+--- az bicep build-params (each environment parameter file) ---
+Command: az bicep build-params --file <file> --outfile <tmp>.json
+Result: dev.bicepparam, staging.bicepparam, prod.bicepparam — all exit 0, no errors.
+
+--- Manual "no hardcoded values" review ---
+Searched ops/bicep for: GUID-shaped literals, resource-group-name literals, hardcoded
+https:// endpoints, password/secret/apikey/connectionstring literal assignments, and literal
+image tags in parameter files.
+Findings:
+  - Two GUID literals found: '7f951dda-4ed3-4680-a7ca-43fe172d538d' (container-registry.bicep)
+    and '4633458b-17de-408a-b874-0445c86b69e6' (key-vault.bicep). Both are Microsoft's public,
+    fixed built-in RBAC role-definition IDs (AcrPull, Key Vault Secrets User respectively) —
+    not subscription/tenant IDs or secrets. This is the standard, expected way to reference
+    built-in roles in Bicep IaC.
+  - One https:// match: an illustrative CLI example inside a code comment in main.bicep
+    ("--build-arg VITE_API_URL=https://<apiContainerAppFqdn>"), not a real endpoint.
+  - No resource group name literals, no credentials/secrets, no company-internal names.
+  - apiImageTag/webImageTag in all three parameter files are the placeholder string
+    'pending-first-build', not a real image tag — parameterized and environment-supplied, and
+    explicitly documented as requiring replacement by the future CI/CD pipeline (PBI-00-07)
+    before any real deployment.
+
+--- Deployment-related commands ---
+`az deployment group create` / `az deployment group what-if`: NOT executed. No Azure resources
+were created, modified, or evaluated against a live subscription. This PBI is IaC-authoring and
+local/offline syntax validation only.
+
+--- Conclusion ---
+main.bicep, all 8 modules, and all 3 environment parameter files compile cleanly with zero
+errors and zero warnings under Bicep CLI 0.46.1. No prohibited hardcoded values were found.
+No Azure deployment of any kind was performed.

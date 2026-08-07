@@ -55,3 +55,29 @@ Record sprint-specific decisions and deviations. Cross-sprint decisions belong i
 **Deviation/status change:** Accepted as a known, non-blocking condition for Sprint 0 rather than performing an unplanned breaking dependency upgrade outside this PBI's scope.
 
 **How to apply:** Re-evaluate before any environment exposes the Vite dev server beyond localhost (it should never be exposed in Container Apps/Azure), and revisit the vite major-version upgrade in a dedicated PBI/ADR if the advisory scope changes.
+
+## 2026-08-06 — PBI-00-04: `VITE_API_URL` cannot be wired via Container App runtime env vars either
+
+**Decision:** The same build-time-vs-runtime constraint recorded for Docker Compose (PBI-00-03) applies to Azure Container Apps: the Web image already has `VITE_API_URL` baked in at `docker build` time, so a Container Apps runtime environment variable for it would be a silent no-op. `main.bicep` therefore does **not** set any such env var on the Web Container App. Instead, `apiContainerApp.outputs.fqdn` is exposed as a top-level output so a future pipeline can consume it.
+
+**Deviation/status change:** New architectural constraint surfaced by this PBI, not a defect. Creates an explicit build-then-deploy ordering dependency for later work: the API Container App must be deployed (or at least its FQDN known) before the Web image is built with `--build-arg VITE_API_URL=https://<apiContainerAppFqdn>`, before the Web Container App is deployed.
+
+**How to apply:** PBI-00-07 (Azure DevOps CI/CD pipeline) must sequence stages as: deploy/update API infra → resolve API FQDN → build Web image with that FQDN as a build arg → push → deploy/update Web Container App. Document this ordering in the pipeline design, not just in code.
+
+## 2026-08-06 — PBI-00-04: Bicep parameter/module fixes (BCP181, linter false positive)
+
+**Decision:** Two issues surfaced while validating `ops/bicep/main.bicep` with `az bicep build`:
+1. `key-vault.bicep`'s `secretsUserPrincipalId` parameter tripped the `secure-secrets-in-params` linter rule purely because its name contained the substring "secret" (the value itself, a principal ID, is not a secret). Renamed to `keyVaultAccessPrincipalId`.
+2. `main.bicep` failed with `BCP181` when calling `reference()`/`listKeys()` on `logAnalytics.outputs.id` (a module-output-derived expression) to wire the Log Analytics workspace into the Container Apps environment. Fixed by calling `resourceId('Microsoft.OperationalInsights/workspaces', logAnalyticsName)` using the compile-time `logAnalyticsName` variable instead, with an explicit `dependsOn: [logAnalytics]` added to the `containerAppsEnvironment` module (required because using the variable instead of the module output removes the dependency edge Bicep would otherwise infer automatically).
+
+**Deviation/status change:** Both are code-quality fixes within this PBI's own new files, not deviations from any prior decision.
+
+**How to apply:** Any future module that needs `listKeys()`/`reference()` on a resource created by another module in this template should follow the same pattern — build the `resourceId()` from a shared `var`, not from `.outputs.id`/`.outputs.name`, and add an explicit `dependsOn`.
+
+## 2026-08-06 — PBI-00-04: image tags left as explicit placeholders, not defaulted
+
+**Decision:** `apiImageTag`/`webImageTag` have no default value in `main.bicep` (required parameters) and are set to the literal placeholder `'pending-first-build'` in all three `.bicepparam` files, since no CI/CD pipeline exists yet (PBI-00-07) to have built and pushed a real image to the Container Registry this template creates.
+
+**Deviation/status change:** None — this satisfies the "do not hardcode image tags" requirement while keeping the parameter files deployment-shaped and buildable/validatable now.
+
+**How to apply:** PBI-00-07 must replace `'pending-first-build'` with a real, pipeline-supplied tag (e.g., a Git SHA or build ID) before any actual `az deployment group create` is run against these parameter files.
