@@ -1,0 +1,20 @@
+# Applies to builds whose context is the repo root (currently: apps/api's Docker build, see
+# docker-compose.yml). apps/web keeps its own apps/web/.dockerignore since its build context
+# remains ./apps/web.
+
+.git/
+.venv/
+apps/api/.venv/
+apps/web/node_modules/
+apps/web/dist/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.env
+docs/
+ops/
+tests/
+azure-pipelines.yml
+azure-pipelines/

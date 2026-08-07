@@ -1,0 +1,133 @@
+PBI-01-01 — Supervisor Agent orchestration framework validation evidence
+Date: 2026-08-07
+
+--- Governance note ---
+Sprint 00 still has PBI-00-08 and PBI-00-09 open. Per CLAUDE.md §14, the user explicitly
+accepted this risk before work began; see docs/sprint_00/decisions.md, "Sprint 01 started with
+PBI-00-08 and PBI-00-09 still open", for the verbatim rationale and the explicit note that those
+two PBIs' checkboxes were NOT marked complete as part of this decision (deliberately, per the
+user's "do not introduce unrelated changes" instruction).
+
+--- Files created ---
+src/supervisor/{__init__,models,exceptions,context,intent,registry,orchestrator,supervisor}.py
+src/agents/{__init__,claims_agent,broker_agent,commercial_intake_agent,fallback_agent}.py
+apps/api/src/api/dependencies.py (composition root)
+apps/api/src/api/routes/chat.py (POST /chat)
+tests/unit/supervisor/{test_registry,test_intent,test_context,test_orchestrator}.py
+tests/unit/agents/test_mock_agents.py
+tests/unit/api/test_chat.py
+.dockerignore (repo root, new — required by the Docker build-context fix below)
+docs/sprint_01/{README,implementation-plan,validation,decisions}.md, evidence/
+
+--- Files modified ---
+apps/api/src/main.py (registered the chat router)
+apps/api/Dockerfile (build-context fix, see below)
+docker-compose.yml (api service: context ./apps/api -> ., dockerfile: apps/api/Dockerfile)
+docs/sprint_00/decisions.md (sprint-transition decision logged)
+
+--- Files removed ---
+apps/api/.dockerignore (superseded by the new repo-root .dockerignore, since the api build
+  context is no longer ./apps/api)
+src/agents/.gitkeep (directory no longer empty)
+
+--- Docker build-context fix (prerequisite, not scope creep) ---
+Problem found during architecture inspection: apps/api/src/main.py needs to import
+src.supervisor.*/src.agents.*/src.domain.* for POST /chat, but the existing Dockerfile/compose
+build context (./apps/api) has no visibility into the top-level src/ package at all — the
+Docker image would have built (nothing referenced src.* yet before this PBI) but would break
+at runtime the moment chat.py's import chain executed inside a container.
+
+Fix: docker-compose.yml's api service build context changed to the repo root (`.`) with
+`dockerfile: apps/api/Dockerfile`. The Dockerfile now COPYs apps/api/src to /app/app_src
+(importable as bare main/api/config/observability via --app-dir, unchanged behavior) and the
+repo-root src/ to /app/src (importable as `src.*` via ENV PYTHONPATH=/app). No naming collision:
+one tree is imported bare, the other under the `src.` prefix — this mirrors how tests/unit/api's
+conftest.py (bare apps/api/src insertion) and the root pyproject.toml's pythonpath=["."]
+(src.* insertion) already coexist for local test runs. apps/api/.dockerignore was removed
+(Docker only reads .dockerignore from the build-context root, which is no longer apps/api/) and
+replaced with a root .dockerignore.
+
+Validated via: `docker compose config` (see below) — could not validate `docker build` itself,
+Docker daemon unavailable locally (see "Container build" section).
+
+--- pytest ---
+Command: pytest tests/unit/api tests/unit/domain tests/unit/services tests/unit/supervisor
+  tests/unit/agents tests/integration -v
+Result: 60 passed, 2 skipped (both live-integration scaffolds skip correctly without Azure
+config, unrelated to this PBI). New tests, all passing:
+  tests/unit/supervisor/test_registry.py — 6 tests (register/resolve, AgentNotFoundError,
+    unregister incl. no-op, list, overwrite-on-re-register)
+  tests/unit/supervisor/test_intent.py — 7 tests (parametrized CLAIMS/BROKER/COMMERCIAL/UNKNOWN,
+    case-insensitivity, confidence values)
+  tests/unit/supervisor/test_context.py — 5 tests (new conversation, not-found falls back to
+    new, existing conversation loaded, history truncation, truncation disabled at 0)
+  tests/unit/supervisor/test_orchestrator.py — 7 tests (registry-driven routing across two
+    distinct intents with no branching in the orchestrator, new-conversation persistence,
+    append-on-subsequent-turn persistence, UNKNOWN routing, DI via constructor inspection,
+    default config)
+  tests/unit/agents/test_mock_agents.py — 5 tests (parametrized over all 4 mock agents:
+    deterministic name/intent/conversation_id/non-empty response; response identical regardless
+    of input message)
+  tests/unit/api/test_chat.py — 4 tests (claims message shape, fallback-agent routing,
+    conversation_id persists and is reused across two POSTs, 422 on missing required fields)
+
+--- ruff ---
+Command: ruff check apps/api/src src tests
+Attempt 1: 4 errors — 3x I001 (import ordering) in the two new API files and the new chat test;
+  1x RUF059 (unused unpacked variable `agents` in a test that doesn't need it). Fixed: 3
+  auto-fixed via --fix, 1 fixed manually (renamed to `_agents`).
+Attempt 2: All checks passed!
+
+--- mypy ---
+Command: mypy apps/api/src
+Result: Success: no issues found in 13 source files.
+Command: mypy src
+Result: Success: no issues found in 29 source files.
+Command: mypy tests/unit/supervisor tests/unit/agents
+Result: Success: no issues found in 5 source files.
+Note: mypy tests/unit/api/test_chat.py (and, confirmed, every other file in tests/unit/api/)
+fails with "Cannot find implementation or library stub for module named 'main'" — mypy performs
+static analysis and does not execute tests/unit/api/conftest.py's runtime sys.path insertion.
+This is a PRE-EXISTING condition affecting the entire tests/unit/api/ directory since PBI-00-02,
+not introduced by this PBI; no prior PBI or the CI pipeline (PBI-00-07) has ever run mypy against
+tests/unit/api for the same reason. Not fixed here as out of scope for this PBI.
+
+--- Live smoke test ---
+Started the API via `uvicorn main:app --app-dir apps/api/src` (same invocation style used in
+every prior PBI's smoke test) and issued two real HTTP POST /chat requests:
+  POST /chat {"message":"I need to report a claim","userId":"demo-user"}
+    -> 200 {"conversationId":"...","agent":"ClaimsAgent","intent":"CLAIMS","response":"..."}
+  POST /chat {"message":"random unrelated text","userId":"demo-user"}
+    -> 200 {"conversationId":"...","agent":"FallbackAgent","intent":"UNKNOWN","response":"..."}
+This directly demonstrates the full success-criteria pipeline: POST /chat -> Supervisor ->
+Intent Resolver -> Registry -> Mock Agent -> Conversation Store -> JSON Response. Server stopped
+after verification.
+
+--- docker compose config ---
+Command: (temporary local .env copied from .env.example) docker compose config
+Result: exit 0. Rendered configuration confirms api.build.context is now the repo root and
+api.build.dockerfile is apps/api/Dockerfile, as intended.
+
+--- Container build ---
+Command: docker build (via docker info check first)
+Result: NOT executed — Docker Desktop daemon not running locally, the same recurring
+environmental limitation documented in PBI-00-02/03/07. Documented as an environmental
+limitation, not a code defect; docker-compose.yml structure was validated as above.
+
+--- Secrets / prohibited-framework scan ---
+Searched src/supervisor, src/agents, and the two new API files for hardcoded
+keys/passwords/connection strings, and for any reference to Azure OpenAI, Semantic Kernel,
+AutoGen, LangGraph, or CrewAI.
+Findings: no secrets. All "OpenAI"/"RAG" text matches are inside docstrings/comments explicitly
+stating those are NOT used in this PBI — never executable code or an import.
+
+--- Conclusion ---
+The Supervisor orchestration framework is implemented as a clean, interface-only pipeline:
+the Supervisor (orchestrator.py) never imports a concrete agent, agent selection is a single
+dict lookup inside the registry (no if/else/switch), and adding a new agent requires only a
+new class + one registry.register() call in the composition root (apps/api/src/api/dependencies.py)
+— zero changes to the framework itself. All 60 new+existing unit tests pass deterministically
+with no Azure dependency; ruff and mypy are clean on both trees. The prerequisite Docker
+build-context fix keeps the API image's shape correct for the new cross-package dependency,
+though the actual `docker build` remains unverified locally (daemon unavailable). No Azure
+OpenAI, RAG, APIM, or business logic was implemented.
