@@ -1,4 +1,5 @@
-"""Claims Agent: a synthetic after-hours claim-notice intake flow (PBI-01-05).
+"""Claims Agent: a synthetic after-hours claim-notice intake flow (PBI-01-05, RAG-enabled by
+PBI-02-01).
 
 Implements the Agent Protocol (src.supervisor.registry). Guides a caller through reporting a
 claim over multiple turns: collects the minimum required information, validates the policy and
@@ -19,6 +20,12 @@ etc.) is not core business truth — it is in-progress session notes, round-trip
 AgentResponse.metadata / ConversationContext.metadata via the shared
 src.agents.shared.state_persistence helper (see src.agents.claims.state for why this does not
 violate CLAUDE.md §4.3).
+
+KnowledgeRetriever (PBI-02-01) supplies documentary reference material only — general claims
+procedure/FAQ context for the LLM's prompt, never a business fact. It never touches
+ClaimsIntakeState and is never treated as a source for policy/payment/claim status, which
+always come from Tools (CLAUDE.md §4.4). Retrieval failure degrades gracefully, same as a
+Prompt/LLM failure — it never blocks the deterministic business flow.
 """
 
 from __future__ import annotations
@@ -30,6 +37,9 @@ from src.agents.shared.state_persistence import load_agent_state
 from src.llm.provider import LLMProvider
 from src.prompts.manager import PromptManager
 from src.prompts.models import PromptRenderContext
+from src.rag.exceptions import KnowledgeError
+from src.rag.models import KnowledgeChunk, KnowledgeQuery
+from src.rag.retriever import KnowledgeRetriever
 from src.supervisor.models import AgentRequest, AgentResponse, ConversationContext, IntentCategory
 from src.tools.executor import ToolExecutor
 
@@ -39,6 +49,7 @@ _SAFE_FALLBACK_MESSAGE = (
     "again, or contact support if the issue continues."
 )
 _NO_NOTICE_FALLBACK = "Thanks — please continue."
+_KNOWLEDGE_TOP_K = 2
 
 
 class ClaimsAgent:
@@ -47,11 +58,16 @@ class ClaimsAgent:
     name = "ClaimsAgent"
 
     def __init__(
-        self, tool_executor: ToolExecutor, prompt_manager: PromptManager, llm_provider: LLMProvider
+        self,
+        tool_executor: ToolExecutor,
+        prompt_manager: PromptManager,
+        llm_provider: LLMProvider,
+        knowledge_retriever: KnowledgeRetriever,
     ) -> None:
         self._tool_executor = tool_executor
         self._prompt_manager = prompt_manager
         self._llm_provider = llm_provider
+        self._knowledge_retriever = knowledge_retriever
 
     async def handle(self, request: AgentRequest, context: ConversationContext) -> AgentResponse:
         state = load_agent_state(context.metadata, _STATE_METADATA_KEY, ClaimsIntakeState)
@@ -81,6 +97,8 @@ class ClaimsAgent:
                 metadata={_STATE_METADATA_KEY: state.model_dump_json()},
             )
 
+        knowledge_chunks = await self._retrieve_knowledge(request.message)
+
         response_text = " ".join(notices) if notices else _NO_NOTICE_FALLBACK
         response_text = await annotate_with_prompt_and_llm(
             response_text=response_text,
@@ -94,12 +112,16 @@ class ClaimsAgent:
                 conversation_summary=context.summary,
                 tool_summaries=notices,
                 agent_name=self.name,
+                retrieved_knowledge=[chunk.text for chunk in knowledge_chunks],
             ),
             user_message=request.message,
             correlation_id=request.correlation_id,
             conversation_id=context.conversation_id,
             user_id=request.user_id,
         )
+        if knowledge_chunks:
+            source_ids = ",".join(chunk.metadata.source_id for chunk in knowledge_chunks)
+            response_text = f"{response_text} [knowledge={source_ids}]"
 
         return AgentResponse(
             conversation_id=context.conversation_id,
@@ -108,3 +130,14 @@ class ClaimsAgent:
             response=response_text,
             metadata={_STATE_METADATA_KEY: state.model_dump_json()},
         )
+
+    async def _retrieve_knowledge(self, message: str) -> list[KnowledgeChunk]:
+        """Best-effort documentary context for the prompt — never blocks or alters the
+        deterministic business flow if retrieval fails."""
+        try:
+            result = await self._knowledge_retriever.retrieve(
+                KnowledgeQuery(text=message, top_k=_KNOWLEDGE_TOP_K)
+            )
+        except KnowledgeError:
+            return []
+        return result.chunks

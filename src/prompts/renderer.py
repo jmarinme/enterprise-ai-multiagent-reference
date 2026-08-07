@@ -23,6 +23,9 @@ def _known_variables(context: PromptRenderContext) -> dict[str, str | None]:
         "conversationSummary": context.conversation_summary,
         "toolSummaries": "; ".join(context.tool_summaries) if context.tool_summaries else None,
         "agentName": context.agent_name,
+        "retrievedKnowledge": (
+            "; ".join(context.retrieved_knowledge) if context.retrieved_knowledge else None
+        ),
     }
 
 

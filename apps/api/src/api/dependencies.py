@@ -22,6 +22,8 @@ from src.llm.factory import get_llm_provider as build_llm_provider
 from src.llm.provider import LLMProvider
 from src.prompts.filesystem_provider import FileSystemPromptProvider
 from src.prompts.manager import PromptManager
+from src.rag.local_provider import LocalKnowledgeProvider
+from src.rag.retriever import KnowledgeRetriever
 from src.services.conversation_store.factory import get_conversation_repository
 from src.services.secret_store.factory import get_secret_provider as build_secret_provider
 from src.services.tools.adjuster_assignment_tool import AdjusterAssignmentTool
@@ -46,6 +48,7 @@ from src.config.settings import ConversationStoreSettings, LLMSettings, SecretPr
 # Relative to the process's working directory (repo root locally, /app in the Docker image —
 # see apps/api/Dockerfile), matching how the existing .env file is already resolved.
 _PROMPTS_ROOT = Path("configs/prompts")
+_KNOWLEDGE_BASE_ROOT = Path("configs/knowledge_base")
 
 
 @lru_cache
@@ -83,6 +86,19 @@ def get_prompt_manager() -> PromptManager:
 
 
 @lru_cache
+def get_knowledge_retriever() -> KnowledgeRetriever:
+    """Build and cache the process-wide KnowledgeRetriever, backed by the local
+    LocalKnowledgeProvider.
+
+    This is the only place any concrete KnowledgeProvider is chosen — Agents depend on
+    KnowledgeRetriever alone. Swapping in a future Azure AI Search-backed provider means
+    changing this one function, not any Agent.
+    """
+    provider = LocalKnowledgeProvider(documents_root=_KNOWLEDGE_BASE_ROOT)
+    return KnowledgeRetriever(provider=provider)
+
+
+@lru_cache
 def get_llm_provider() -> LLMProvider:
     """Build and cache the process-wide LLMProvider.
 
@@ -106,6 +122,7 @@ def get_supervisor() -> SupervisorOrchestrator:
     tool_executor = get_tool_executor()
     prompt_manager = get_prompt_manager()
     llm_provider = get_llm_provider()
+    knowledge_retriever = get_knowledge_retriever()
 
     registry = InMemoryAgentRegistry()
     registry.register(
@@ -114,6 +131,7 @@ def get_supervisor() -> SupervisorOrchestrator:
             tool_executor=tool_executor,
             prompt_manager=prompt_manager,
             llm_provider=llm_provider,
+            knowledge_retriever=knowledge_retriever,
         ),
     )
     registry.register(

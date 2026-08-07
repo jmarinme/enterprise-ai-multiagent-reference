@@ -12,6 +12,8 @@ from src.agents.fallback_agent import FallbackAgent
 from src.llm.mock_provider import MockLLMProvider
 from src.prompts.filesystem_provider import FileSystemPromptProvider
 from src.prompts.manager import PromptManager
+from src.rag.local_provider import LocalKnowledgeProvider
+from src.rag.retriever import KnowledgeRetriever
 from src.services.tools.policy_lookup_tool import PolicyLookupTool
 from src.supervisor.models import AgentRequest, ConversationContext, IntentCategory
 from src.tools.executor import ToolExecutor
@@ -24,10 +26,14 @@ def _build_claims_agent() -> ClaimsAgent:
     prompt_manager = PromptManager(
         provider=FileSystemPromptProvider(prompts_root=Path("configs/prompts"))
     )
+    knowledge_retriever = KnowledgeRetriever(
+        provider=LocalKnowledgeProvider(documents_root=Path("configs/knowledge_base"))
+    )
     return ClaimsAgent(
         tool_executor=ToolExecutor(tool_registry=tool_registry),
         prompt_manager=prompt_manager,
         llm_provider=MockLLMProvider(),
+        knowledge_retriever=knowledge_retriever,
     )
 
 
@@ -87,20 +93,21 @@ async def test_agent_response_is_stable_when_input_has_no_recognizable_claims_fi
     """As of PBI-01-05, ClaimsAgent's business-fact text is fully deterministic (derived from
     Tool/state-machine results, never LLM wording — see
     tests/unit/agents/test_claims_agent_llm_integration.py). Two different first messages that
-    neither one contains a recognizable field (e.g. a policy number) both simply prompt for
-    the same first missing field, so the full response is identical, not just its agent/intent
-    identity."""
+    neither one contains a recognizable field, nor any keyword the PBI-02-01 knowledge base
+    would match (a genuine, expected new source of input-dependence — see
+    docs/sprint_02/decisions.md), both simply prompt for the same first missing field, so the
+    full response is identical, not just its agent/intent identity."""
     agent = _build_claims_agent()
     context = ConversationContext(conversation_id="conv-1", user_id="user-1")
 
     first = await agent.handle(
-        AgentRequest(message="first message", user_id="user-1"), context
+        AgentRequest(message="banana kayak umbrella", user_id="user-1"), context
     )
     second = await agent.handle(
-        AgentRequest(message="completely different message", user_id="user-1"), context
+        AgentRequest(message="zebra trombone lighthouse", user_id="user-1"), context
     )
 
     assert first.agent == second.agent == "ClaimsAgent"
     assert first.intent == second.intent
     assert first.response == second.response
-    assert "[prompt=claims.system@2.0.0]" in first.response
+    assert "[prompt=claims.system@3.0.0]" in first.response
