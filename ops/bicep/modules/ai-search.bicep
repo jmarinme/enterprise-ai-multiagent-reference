@@ -41,6 +41,9 @@ param partitionCount int = 1
 @description('Principal ID of the identity granted the built-in "Search Index Data Reader" role. Empty string skips the role assignment.')
 param searchIndexDataReaderPrincipalId string = ''
 
+@description('Whether the service is reachable over its public endpoint. Set false once a Private Endpoint is provisioned for production hardening (PBI-03-04) — see main.bicep\'s enablePrivateNetworking param. NOTE: Azure AI Search\'s Free tier does not support Private Link at all — this must stay true unless skuName is basic/standard.')
+param enablePublicNetworkAccess bool = true
+
 var searchIndexDataReaderRoleId = '1407120a-92aa-4202-b7e9-c0e197c71c8f'
 var isFreeTier = skuName == 'free'
 
@@ -55,7 +58,7 @@ resource searchService 'Microsoft.Search/searchServices@2023-11-01' = {
     replicaCount: isFreeTier ? 1 : replicaCount
     partitionCount: isFreeTier ? 1 : partitionCount
     hostingMode: 'default'
-    publicNetworkAccess: 'enabled'
+    publicNetworkAccess: enablePublicNetworkAccess ? 'enabled' : 'disabled'
     disableLocalAuth: false
   }
 }

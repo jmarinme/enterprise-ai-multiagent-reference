@@ -38,6 +38,16 @@ param llmProvider = 'azure_openai'
 param knowledgeProvider = 'local'
 param conversationStoreProvider = 'cosmos'
 
+// Networking (PBI-03-04): enabled — production hardening is the whole point of this
+// parameter file. containerAppsEnvironmentInternal stays false (the main.bicep default) until
+// a future PBI adds Azure Front Door/Application Gateway in front — see
+// docs/Architecture/adr/0002-vnet-private-endpoints-hardening.md for the production
+// recommendation once one exists; flipping to true today would make prod unreachable.
+param enablePrivateNetworking = true
+param vnetAddressPrefix = '10.2.0.0/16'
+param containerAppsSubnetPrefix = '10.2.0.0/23'
+param privateEndpointsSubnetPrefix = '10.2.2.0/24'
+
 param apiImageName = 'tmx-api'
 param apiImageTag = 'pending-first-build'
 param apiCpuCores = '0.5'

@@ -45,6 +45,9 @@ param conversationTtlSeconds int = -1
 @description('Principal ID of the identity granted the built-in Cosmos DB "Data Contributor" data-plane role. Empty string skips the role assignment.')
 param dataContributorPrincipalId string = ''
 
+@description('Whether the account is reachable over its public endpoint. Set false once a Private Endpoint is provisioned for production hardening (PBI-03-04) — see main.bicep\'s enablePrivateNetworking param.')
+param enablePublicNetworkAccess bool = true
+
 var cosmosDataContributorRoleId = '00000000-0000-0000-0000-000000000002'
 
 resource account 'Microsoft.DocumentDB/databaseAccounts@2024-05-15' = {
@@ -75,7 +78,7 @@ resource account 'Microsoft.DocumentDB/databaseAccounts@2024-05-15' = {
     backupPolicy: {
       type: 'Periodic'
     }
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: enablePublicNetworkAccess ? 'Enabled' : 'Disabled'
     disableLocalAuth: true
   }
 }

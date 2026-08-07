@@ -1,25 +1,30 @@
 // TMX Enterprise AI Reference Platform — Sprint 0 Bicep foundation (PBI-00-04, extended by
 // PBI-00-05 with the Cosmos DB conversation store, by PBI-02-02 with an Azure AI Search service
-// backing the optional AzureAISearchProvider KnowledgeProvider, and by PBI-03-02 with an Azure
+// backing the optional AzureAISearchProvider KnowledgeProvider, by PBI-03-02 with an Azure
 // OpenAI account/deployment plus the Container App environment-variable wiring that actually
-// selects and points the API at these Azure-backed providers at runtime.
+// selects and points the API at these Azure-backed providers at runtime, and by PBI-03-04 with
+// a production-ready VNet, Private Endpoints, and Private DNS Zones for Azure OpenAI/AI Search/
+// Cosmos DB/Key Vault.
 //
 // Scope: Container Registry, Log Analytics, Application Insights, Container Apps environment,
 // API + Web Container Apps, a shared user-assigned Managed Identity, a Key Vault foundation,
 // a Cosmos DB for NoSQL conversation history store, an Azure AI Search service (service only —
-// no index or document ingestion), and an Azure OpenAI account with one chat-completion model
-// deployment. Every RBAC role the API's Managed Identity needs against these services (Cognitive
-// Services OpenAI User, Search Index Data Reader, Cosmos DB Data Contributor, Key Vault Secrets
-// User, AcrPull) is wired here at least-privilege, data-plane scope only.
+// no index or document ingestion), an Azure OpenAI account with one chat-completion model
+// deployment, and (opt-in via enablePrivateNetworking) a VNet with subnet separation, NSGs,
+// Private Endpoints, and Private DNS Zones for all four data-plane services. Every RBAC role
+// the API's Managed Identity needs against these services (Cognitive Services OpenAI User,
+// Search Index Data Reader, Cosmos DB Data Contributor, Key Vault Secrets User, AcrPull) is
+// wired here at least-privilege, data-plane scope only — audited in PBI-03-04, unchanged from
+// PBI-03-02 (see docs/sprint_03/decisions.md).
 //
-// PBI-03-02 explicitly does NOT: create the AI Search index or ingest documents (so
-// knowledgeProvider still defaults to 'local', not 'azure_ai_search' — see
-// docs/sprint_03/decisions.md), implement VNet/private endpoints (see
-// docs/Architecture/adr/0001-networking-posture-and-vnet-deferral.md), or perform any deployment
-// (`az deployment ... create`/`what-if` were never run for this PBI).
+// PBI-03-04 explicitly does NOT: implement Azure Front Door, Application Gateway, WAF, Azure
+// Firewall, a DDoS protection plan, hub-spoke topology, VPN, or ExpressRoute — see
+// docs/Architecture/adr/0002-vnet-private-endpoints-hardening.md for why each is deferred to
+// its own future infrastructure PBI. PBI-03-02/03-03's own exclusions (index creation, real
+// deployment) still apply unchanged.
 //
 // Explicitly out of scope (later PBIs/ADRs): API Management, Storage accounts, agent business
-// logic, RAG index creation/ingestion, VNet/private networking.
+// logic, RAG index creation/ingestion, Front Door/WAF/Azure Firewall/hub-spoke/VPN/ExpressRoute.
 //
 // Deploys into an existing resource group supplied at deploy time (`az deployment group create
 // --resource-group <rg>`) — the resource group name is intentionally never referenced here.
@@ -117,6 +122,21 @@ param knowledgeProvider string = 'local'
 @allowed(['in_memory', 'cosmos'])
 param conversationStoreProvider string = 'cosmos'
 
+@description('Production network hardening (PBI-03-04): provisions a VNet, subnet separation, NSGs, Private Endpoints, and Private DNS Zones for Azure OpenAI/AI Search/Cosmos DB/Key Vault, and disables each one\'s public endpoint. false (the default, matching dev\'s conservative-cost posture) leaves every resource exactly as PBI-03-02 shipped it — publicly reachable, RBAC-gated only. NOTE: if aiSearchSkuName is "free", this MUST stay false — Azure AI Search\'s Free tier does not support Private Link.')
+param enablePrivateNetworking bool = false
+
+@description('VNet address space. Never hardcoded — only read when enablePrivateNetworking is true.')
+param vnetAddressPrefix string = '10.0.0.0/16'
+
+@description('Container Apps Environment subnet address prefix. Must be at least /27.')
+param containerAppsSubnetPrefix string = '10.0.0.0/23'
+
+@description('Private Endpoints subnet address prefix.')
+param privateEndpointsSubnetPrefix string = '10.0.2.0/24'
+
+@description('Whether the Container Apps Environment is fully internal (no public IP) once VNet-integrated. Only meaningful when enablePrivateNetworking is true. Defaults to false: Azure Front Door/Application Gateway are out of scope for PBI-03-04, so true would make the platform completely unreachable today — see docs/Architecture/adr/0002-vnet-private-endpoints-hardening.md for the production recommendation once one exists.')
+param containerAppsEnvironmentInternal bool = false
+
 @description('API image repository name inside the registry.')
 param apiImageName string
 
@@ -180,6 +200,15 @@ var cosmosAccountName = take('cosmos-${namePrefix}-${uniqueSuffix}', 44)
 var aiSearchName = take('srch-${namePrefix}-${uniqueSuffix}', 60)
 var azureOpenAiName = take('aoai-${namePrefix}-${uniqueSuffix}', 64)
 var appInsightsSecretName = 'appinsights-connection-string'
+var vnetName = 'vnet-${namePrefix}'
+
+// Fixed Azure "privatelink.*" DNS suffixes (PBI-03-04) — global platform constants Azure
+// itself defines for each service, never environment-specific data. Same category as the
+// built-in RBAC role GUIDs already hardcoded as `var`s throughout ops/bicep/modules/.
+var azureOpenAiPrivateDnsZoneName = 'privatelink.openai.azure.com'
+var aiSearchPrivateDnsZoneName = 'privatelink.search.windows.net'
+var cosmosPrivateDnsZoneName = 'privatelink.documents.azure.com'
+var keyVaultPrivateDnsZoneName = 'privatelink.vaultcore.azure.net'
 
 module logAnalytics 'modules/log-analytics.bicep' = {
   name: 'log-analytics-deployment'
@@ -211,6 +240,18 @@ module managedIdentity 'modules/managed-identity.bicep' = {
   }
 }
 
+module virtualNetwork 'modules/virtual-network.bicep' = if (enablePrivateNetworking) {
+  name: 'virtual-network-deployment'
+  params: {
+    location: location
+    name: vnetName
+    tags: tags
+    addressPrefix: vnetAddressPrefix
+    containerAppsSubnetPrefix: containerAppsSubnetPrefix
+    privateEndpointsSubnetPrefix: privateEndpointsSubnetPrefix
+  }
+}
+
 module containerRegistry 'modules/container-registry.bicep' = {
   name: 'container-registry-deployment'
   params: {
@@ -230,6 +271,7 @@ module keyVault 'modules/key-vault.bicep' = {
     tags: tags
     enablePurgeProtection: keyVaultEnablePurgeProtection
     keyVaultAccessPrincipalId: managedIdentity.outputs.principalId
+    enablePublicNetworkAccess: !enablePrivateNetworking
   }
 }
 
@@ -247,6 +289,7 @@ module cosmosDb 'modules/cosmos-db.bicep' = {
     throughput: cosmosThroughput
     conversationTtlSeconds: cosmosConversationTtlSeconds
     dataContributorPrincipalId: managedIdentity.outputs.principalId
+    enablePublicNetworkAccess: !enablePrivateNetworking
   }
 }
 
@@ -258,6 +301,7 @@ module aiSearch 'modules/ai-search.bicep' = {
     tags: tags
     skuName: aiSearchSkuName
     searchIndexDataReaderPrincipalId: managedIdentity.outputs.principalId
+    enablePublicNetworkAccess: !enablePrivateNetworking
   }
 }
 
@@ -273,6 +317,102 @@ module azureOpenAi 'modules/azure-openai.bicep' = {
     modelVersion: azureOpenAiModelVersion
     modelCapacity: azureOpenAiModelCapacity
     openAiUserPrincipalId: managedIdentity.outputs.principalId
+    enablePublicNetworkAccess: !enablePrivateNetworking
+  }
+}
+
+// Private DNS Zones (PBI-03-04) — one per service, each linked to the VNet. See
+// modules/private-dns-zone.bicep's own header comment for why the zone names are fixed Azure
+// platform constants (vars above), not customer-specific data requiring a parameter.
+module azureOpenAiPrivateDnsZone 'modules/private-dns-zone.bicep' = if (enablePrivateNetworking) {
+  name: 'azure-openai-private-dns-zone-deployment'
+  params: {
+    zoneName: azureOpenAiPrivateDnsZoneName
+    vnetId: virtualNetwork.?outputs.?id ?? ''
+    tags: tags
+  }
+}
+
+module aiSearchPrivateDnsZone 'modules/private-dns-zone.bicep' = if (enablePrivateNetworking) {
+  name: 'ai-search-private-dns-zone-deployment'
+  params: {
+    zoneName: aiSearchPrivateDnsZoneName
+    vnetId: virtualNetwork.?outputs.?id ?? ''
+    tags: tags
+  }
+}
+
+module cosmosPrivateDnsZone 'modules/private-dns-zone.bicep' = if (enablePrivateNetworking) {
+  name: 'cosmos-private-dns-zone-deployment'
+  params: {
+    zoneName: cosmosPrivateDnsZoneName
+    vnetId: virtualNetwork.?outputs.?id ?? ''
+    tags: tags
+  }
+}
+
+module keyVaultPrivateDnsZone 'modules/private-dns-zone.bicep' = if (enablePrivateNetworking) {
+  name: 'key-vault-private-dns-zone-deployment'
+  params: {
+    zoneName: keyVaultPrivateDnsZoneName
+    vnetId: virtualNetwork.?outputs.?id ?? ''
+    tags: tags
+  }
+}
+
+// Private Endpoints (PBI-03-04) — one per service, in the private-endpoints subnet, each
+// registered in its own Private DNS Zone so the platform's existing DefaultAzureCredential
+// clients (AzureOpenAIProvider, AzureAISearchProvider, CosmosConversationRepository) resolve
+// straight to the private IP with zero code change.
+module azureOpenAiPrivateEndpoint 'modules/private-endpoint.bicep' = if (enablePrivateNetworking) {
+  name: 'azure-openai-private-endpoint-deployment'
+  params: {
+    location: location
+    name: 'pe-${azureOpenAiName}'
+    tags: tags
+    subnetId: virtualNetwork.?outputs.?privateEndpointsSubnetId ?? ''
+    targetResourceId: azureOpenAi.outputs.id
+    groupId: 'account'
+    privateDnsZoneId: azureOpenAiPrivateDnsZone.?outputs.?id ?? ''
+  }
+}
+
+module aiSearchPrivateEndpoint 'modules/private-endpoint.bicep' = if (enablePrivateNetworking) {
+  name: 'ai-search-private-endpoint-deployment'
+  params: {
+    location: location
+    name: 'pe-${aiSearchName}'
+    tags: tags
+    subnetId: virtualNetwork.?outputs.?privateEndpointsSubnetId ?? ''
+    targetResourceId: aiSearch.outputs.id
+    groupId: 'searchService'
+    privateDnsZoneId: aiSearchPrivateDnsZone.?outputs.?id ?? ''
+  }
+}
+
+module cosmosPrivateEndpoint 'modules/private-endpoint.bicep' = if (enablePrivateNetworking) {
+  name: 'cosmos-private-endpoint-deployment'
+  params: {
+    location: location
+    name: 'pe-${cosmosAccountName}'
+    tags: tags
+    subnetId: virtualNetwork.?outputs.?privateEndpointsSubnetId ?? ''
+    targetResourceId: cosmosDb.outputs.accountId
+    groupId: 'Sql'
+    privateDnsZoneId: cosmosPrivateDnsZone.?outputs.?id ?? ''
+  }
+}
+
+module keyVaultPrivateEndpoint 'modules/private-endpoint.bicep' = if (enablePrivateNetworking) {
+  name: 'key-vault-private-endpoint-deployment'
+  params: {
+    location: location
+    name: 'pe-${keyVaultName}'
+    tags: tags
+    subnetId: virtualNetwork.?outputs.?privateEndpointsSubnetId ?? ''
+    targetResourceId: keyVault.outputs.id
+    groupId: 'vault'
+    privateDnsZoneId: keyVaultPrivateDnsZone.?outputs.?id ?? ''
   }
 }
 
@@ -295,6 +435,8 @@ module containerAppsEnvironment 'modules/container-apps-environment.bicep' = {
     tags: tags
     logAnalyticsCustomerId: reference(resourceId('Microsoft.OperationalInsights/workspaces', logAnalyticsName), '2022-10-01').customerId
     logAnalyticsSharedKey: listKeys(resourceId('Microsoft.OperationalInsights/workspaces', logAnalyticsName), '2022-10-01').primarySharedKey
+    infrastructureSubnetId: virtualNetwork.?outputs.?containerAppsSubnetId ?? ''
+    internal: containerAppsEnvironmentInternal
   }
   // reference()/listKeys() above use the compile-time logAnalyticsName variable rather than
   // logAnalytics.outputs.name (required to satisfy BCP181), which means Bicep cannot infer the
@@ -438,3 +580,19 @@ output azureOpenAiName string = azureOpenAi.outputs.name
 output azureOpenAiEndpoint string = azureOpenAi.outputs.endpoint
 output azureOpenAiDeploymentName string = azureOpenAi.outputs.deploymentName
 output azureOpenAiId string = azureOpenAi.outputs.id
+
+output privateNetworkingEnabled bool = enablePrivateNetworking
+output vnetId string = virtualNetwork.?outputs.?id ?? ''
+output vnetName string = virtualNetwork.?outputs.?name ?? ''
+output containerAppsSubnetId string = virtualNetwork.?outputs.?containerAppsSubnetId ?? ''
+output privateEndpointsSubnetId string = virtualNetwork.?outputs.?privateEndpointsSubnetId ?? ''
+
+output azureOpenAiPrivateEndpointId string = azureOpenAiPrivateEndpoint.?outputs.?id ?? ''
+output aiSearchPrivateEndpointId string = aiSearchPrivateEndpoint.?outputs.?id ?? ''
+output cosmosPrivateEndpointId string = cosmosPrivateEndpoint.?outputs.?id ?? ''
+output keyVaultPrivateEndpointId string = keyVaultPrivateEndpoint.?outputs.?id ?? ''
+
+output azureOpenAiPrivateDnsZoneId string = azureOpenAiPrivateDnsZone.?outputs.?id ?? ''
+output aiSearchPrivateDnsZoneId string = aiSearchPrivateDnsZone.?outputs.?id ?? ''
+output cosmosPrivateDnsZoneId string = cosmosPrivateDnsZone.?outputs.?id ?? ''
+output keyVaultPrivateDnsZoneId string = keyVaultPrivateDnsZone.?outputs.?id ?? ''

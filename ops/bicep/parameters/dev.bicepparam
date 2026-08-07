@@ -35,6 +35,12 @@ param llmProvider = 'azure_openai'
 param knowledgeProvider = 'local'
 param conversationStoreProvider = 'cosmos'
 
+// Networking (PBI-03-04): disabled for dev — matches the same conservative-cost posture
+// already applied to Free-tier AI Search and Serverless Cosmos above. A disposable dev
+// sandbox does not need VNet/Private Endpoint planning; every resource stays publicly
+// reachable, RBAC-gated only, exactly as PBI-03-02 shipped it. See docs/sprint_03/decisions.md.
+param enablePrivateNetworking = false
+
 // Placeholder tags — a real deployment requires an image already pushed to the registry created
 // by this template. CI/CD (PBI-00-07) is responsible for building and pushing before deploying.
 param apiImageName = 'tmx-api'

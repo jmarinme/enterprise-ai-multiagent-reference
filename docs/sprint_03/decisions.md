@@ -81,3 +81,43 @@ Record sprint-specific decisions and deviations. Cross-sprint decisions belong i
 **Deviation/status change:** None — proactively applying a lesson already recorded in `docs/sprint_02/decisions.md`, not a new correction.
 
 **How to apply:** Any future derived field on a Pydantic model in this codebase that must appear in serialized output needs `@computed_field`, not a plain `@property` — this is now the second time this exact class of bug has been proactively avoided by referencing the prior PBI's decision.
+
+## 2026-08-07 — PBI-03-04: `enablePrivateNetworking` is a single toggle, not per-resource flags
+
+**Decision:** One Bicep param, `enablePrivateNetworking`, controls all of: the VNet/subnets/NSGs' existence, all four Private Endpoints' existence, all four Private DNS Zones' existence, each of the four services' `publicNetworkAccess`, and the Container Apps Environment's VNet integration. There is no way to enable networking hardening for, say, only Cosmos DB while leaving Azure OpenAI public.
+
+**Deviation/status change:** None — a deliberate simplification matching this PBI's own framing ("harden the Azure runtime for production," not "harden individual resources independently"). A production environment gains nothing from a half-hardened network posture, and per-resource toggles would have multiplied the parameter surface and the number of untested combinations for no real benefit at this stage.
+
+**How to apply:** If a future PBI needs finer-grained control (e.g., a resource that must stay public for a specific integration reason), split the single toggle into per-resource booleans at that point, defaulting all of them to the value `enablePrivateNetworking` currently controls — this preserves backward compatibility with today's two-state (`dev`=false, `staging`/`prod`=true) parameter files.
+
+## 2026-08-07 — PBI-03-04: Container Apps ingress stays external in every environment, including prod
+
+**Decision:** `containerAppsEnvironmentInternal` defaults to `false` in `main.bicep` and is left at that default in all three `.bicepparam` files (dev, staging, prod) — even though staging/prod otherwise enable full private networking. The Container Apps Environment's public ingress is therefore still reachable directly from the internet in every environment today.
+
+**Deviation/status change:** None — a direct, necessary consequence of this PBI's own explicit exclusion of Application Gateway, Azure Firewall, and WAF ("these belong to future infrastructure PBIs"). Setting `internal=true` without a Front Door or Application Gateway in front would make the platform completely unreachable — a strictly worse outcome than the current, honestly-documented state.
+
+**How to apply:** The future PBI that adds Azure Front Door or Application Gateway should, as one of its own last steps, flip `containerAppsEnvironmentInternal` to `true` in `staging`/`prod.bicepparam` (dev can reasonably stay external/simple) and verify the Front Door/Gateway becomes the only public entry point. See ADR-0002's "Container Apps ingress" section and its ADR-0002 review trigger for this exact scenario.
+
+## 2026-08-07 — PBI-03-04: Key Vault gets `networkAcls.bypass: 'AzureServices'` alongside the public-access toggle
+
+**Decision:** `key-vault.bicep`'s `networkAcls` block sets `bypass: 'AzureServices'` regardless of `enablePublicNetworkAccess`'s value, with only `defaultAction` toggling between `Allow`/`Deny`. This was not originally planned as part of the naive "add a public-access toggle to 4 modules" task — it was added after recognizing that `main.bicep` itself writes a secret into this vault (`modules/key-vault-secret.bicep`, the `appinsights-connection-string`) via a nested ARM template resource, and that operation needs to reach the vault's data plane through the ARM control plane even when `publicNetworkAccess: Disabled` is set.
+
+**Deviation/status change:** A necessary correctness addition discovered during implementation, not scope creep — without it, `enablePrivateNetworking=true` would have compiled successfully (Bicep cannot catch this at compile time) but silently broken the App Insights secret write at actual deployment time, a gap that would only have surfaced during a real deployment this PBI was explicitly told not to perform.
+
+**How to apply:** Any future Key Vault secret written via a Bicep-nested `Microsoft.KeyVault/vaults/secrets` resource (not this platform's own runtime `SecretProvider` code path, which already handles auth correctly) needs this same `bypass: AzureServices` setting to keep working once public network access is disabled — this is a general Azure IaC pattern, not specific to the App Insights secret.
+
+## 2026-08-07 — PBI-03-04: dev keeps `enablePrivateNetworking=false` — both for cost and for Azure AI Search Free-tier compatibility
+
+**Decision:** `dev.bicepparam` sets `enablePrivateNetworking = false`, matching the file's existing conservative-cost pattern (Free-tier AI Search, Serverless Cosmos, no Key Vault purge protection). This is a *doubly* justified choice: beyond cost, Azure AI Search's Free tier does not support Private Link at all — `aiSearchSkuName='free'` and `enablePrivateNetworking=true` together would fail at real deployment time, and dev is the only environment using the Free tier.
+
+**Deviation/status change:** None — consistent with every prior per-environment sizing decision already recorded in this file and `docs/sprint_02/decisions.md`.
+
+**How to apply:** If a future PBI ever needs dev to exercise the hardened network posture too, `aiSearchSkuName` must be bumped off `free` in that same change — the two params are coupled by a real Azure platform constraint, not just a stylistic choice, and this coupling is documented in `ai-search.bicep`'s own `enablePublicNetworkAccess` param description, `main.bicep`'s `enablePrivateNetworking` param description, and ADR-0002.
+
+## 2026-08-07 — PBI-03-04: NSG rules are honest starting points, not a claimed deny-by-default lockdown
+
+**Decision:** The two NSGs (`virtual-network.bicep`) add a small number of explicit ALLOW rules (health probes, HTTPS ingress, Private Endpoint access from the Container Apps subnet only) but do not add any explicit DENY rules overriding Azure's own default `AllowVnetInBound`/`AllowAzureLoadBalancerInBound` rules, which ARM does not allow removing. This means, for example, the private-endpoints subnet's explicit "allow 443 from the container-apps subnet" rule is, today, already implied by the broader default `AllowVnetInBound` rule — it exists to make the intended traffic pattern explicit and reviewable, not to actually restrict anything beyond what the defaults already allow.
+
+**Deviation/status change:** None — an honest, self-aware scope boundary consistent with CLAUDE.md's own "never claim a feature... succeeded unless it was actually executed" principle, applied here to a security *claim* rather than a test result. This PBI's own instructions say "Apply NSGs where appropriate," which the NSGs satisfy; they do not say "achieve a fully deny-by-default network posture," which would require live testing this PBI could not perform (no Docker daemon, no real Azure deployment).
+
+**How to apply:** A future, narrowly-scoped security-hardening PBI with the ability to actually deploy and test against real Azure resources should add explicit DENY rules (at a priority number between the custom ALLOW rules and Azure's 65000+ defaults) to make VNet-trust genuinely least-privilege rather than merely documented as an intent. Do not add such DENY rules speculatively without the ability to verify they don't break legitimate platform traffic (e.g. Container Apps' own internal control-plane communication).

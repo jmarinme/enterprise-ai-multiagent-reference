@@ -10,7 +10,9 @@ Azure providers (`AzureOpenAIProvider`, `AzureAISearchProvider`, `CosmosConversa
 together through configuration and completed Infrastructure as Code, without deploying anything
 (PBI-03-02). Then complete the Azure Knowledge platform by building the index definition and
 document-ingestion pipeline `AzureAISearchProvider` needs an index to actually query
-(PBI-03-03).
+(PBI-03-03). Finally, harden the Azure runtime for production with a VNet, Private Endpoints,
+Private DNS Zones, and subnet separation for the four data-plane services — fulfilling
+ADR-0001's own named follow-up — without changing any business logic (PBI-03-04).
 
 ## Scope
 
@@ -53,12 +55,27 @@ document-ingestion pipeline `AzureAISearchProvider` needs an index to actually q
   `source_path` — deliberately deferred in PBI-02-02 pending exactly this PBI. A new
   `ops/scripts/ingest_knowledge_base.py` CLI wires it all together (never executed against real
   Azure this PBI).
+- **PBI-03-04:** a production-ready VNet (`ops/bicep/modules/virtual-network.bicep`) with
+  subnet separation (`snet-container-apps`, delegated to `Microsoft.App/environments`;
+  `snet-private-endpoints`) and NSGs; two new reusable modules
+  (`private-dns-zone.bicep`/`private-endpoint.bicep`) instantiated four times each for Azure
+  OpenAI/AI Search/Cosmos DB/Key Vault, with the correct fixed `privatelink.*` DNS zone names
+  and Private Link group IDs; a single `enablePrivateNetworking` toggle controlling all of the
+  above plus each service's `publicNetworkAccess` (dev defaults `false`, staging/prod default
+  `true`); an RBAC audit confirming every existing role assignment was already least-privilege
+  (no code change needed); `containerAppsEnvironmentInternal` support (defaults `false`
+  everywhere — Front Door/App Gateway are out of scope, so `true` would make the platform
+  unreachable today). New ADR-0002 and a Mermaid networking diagram document the target
+  topology and what remains deferred.
 
 ## Out of scope
 
 - Azure deployment (`az deployment ... create`/`what-if` were never executed), APIM,
-  authentication, VNet/private networking (see
-  `docs/Architecture/adr/0001-networking-posture-and-vnet-deferral.md`).
+  authentication.
+- Azure Front Door, Application Gateway, WAF, Azure Firewall, a DDoS Protection Plan, hub-spoke
+  topology, VPN, ExpressRoute, and a Private Endpoint for ACR — all explicitly deferred to
+  future, separately-scoped infrastructure PBIs (see
+  `docs/Architecture/adr/0002-vnet-private-endpoints-hardening.md`).
 - Real company/customer data.
 - New agents, new RAG features beyond the ingestion pipeline itself, new Tool Calling
   capabilities.
@@ -66,7 +83,7 @@ document-ingestion pipeline `AzureAISearchProvider` needs an index to actually q
 - Real vector embeddings/vector search (the embedding pipeline is an abstraction only — see
   `decisions.md`); real PDF text extraction (the PDF loader is an abstraction only); a real
   SharePoint loader (the `DocumentLoader` Protocol is designed to support one, none is built).
-- Any change to Agents, Supervisor, Prompts, or Tools.
+- Any change to Agents, Supervisor, Prompts, Tools, or RAG business logic.
 - Any change to `knowledgeProvider`'s default (`local`) in Bicep — flipping it to
   `azure_ai_search` is still deferred to whichever PBI first runs `ingest_knowledge_base.py`
   against a real Azure AI Search service.
@@ -77,6 +94,7 @@ document-ingestion pipeline `AzureAISearchProvider` needs an index to actually q
 - [x] PBI-03-01: Add Ollama LLM Provider and complete the local runtime.
 - [x] PBI-03-02: Complete the Azure Runtime integration.
 - [x] PBI-03-03: Build the Azure AI Search Index & Knowledge Ingestion Pipeline.
+- [x] PBI-03-04: Azure Networking & Security Hardening.
 
 ## Acceptance criteria
 
@@ -115,6 +133,17 @@ document-ingestion pipeline `AzureAISearchProvider` needs an index to actually q
 | AC-31 | Grounding metadata remains compatible — `section`/`source_path` flow from ingestion through the index to retrieval | Code review — `AzureAISearchProvider._SELECT_FIELDS` now includes both; `pytest` evidence — `test_azure_ai_search_provider.py::test_retrieve_maps_section_and_source_path_when_present` |
 | AC-32 | No Agent, Supervisor, Prompt, or Tool code was changed | Code review — zero diff to `src/agents/`, `src/supervisor/`, `configs/prompts/`, `src/tools/`, `src/services/tools/` this PBI |
 | AC-33 | The `DocumentLoader` design supports a future SharePoint integration without requiring changes to the pipeline itself | Code review — `loaders.py`'s `DocumentLoader` Protocol + module docstring |
+| AC-34 | A production-ready VNet with subnet separation (Container Apps, Private Endpoints) exists and is configuration-driven (no hardcoded IP ranges) | Code review — `virtual-network.bicep`; `az bicep build` evidence |
+| AC-35 | NSGs are applied to both subnets with documented, reviewable rules | Code review — `virtual-network.bicep`'s two NSG resources + header comment on their honest scope |
+| AC-36 | Private Endpoints exist for Azure OpenAI, Azure AI Search, Cosmos DB, and Key Vault, using Private Link with the correct group IDs | Code review — `main.bicep`'s 4 `private-endpoint.bicep` instantiations; grep evidence — `groupId: 'account'/'searchService'/'Sql'/'vault'` |
+| AC-37 | Private DNS Zones for all four services are created and linked to the VNet | Code review — `main.bicep`'s 4 `private-dns-zone.bicep` instantiations; grep evidence — the 4 fixed `privatelink.*` zone name vars |
+| AC-38 | Every RBAC assignment reviewed; confirmed least-privilege (Cognitive Services OpenAI User, Search Index Data Reader, Cosmos DB Data Contributor, Key Vault Secrets User, AcrPull); no Owner, no unjustified Contributor | Code review + grep evidence — `docs/Architecture/adr/0002-vnet-private-endpoints-hardening.md`'s RBAC audit table; `grep -rn "Contributor\|Owner" ops/bicep/` shows only the correctly-scoped Cosmos "Data Contributor" data-plane role |
+| AC-39 | Container Apps ingress supports internal/external configuration; production recommendation documented | Code review — `container-apps-environment.bicep`'s `internal` param; ADR-0002's "Container Apps ingress" section |
+| AC-40 | Public access disabled where appropriate (opt-in via `enablePrivateNetworking`); no secrets in Bicep parameters; everything uses Managed Identity or Key Vault references | Code review — `enablePublicNetworkAccess` param on all 4 modules; `networkAcls.bypass: AzureServices` on Key Vault; no `@secure()` credential params added this PBI |
+| AC-41 | Everything environment-driven — no hardcoded subscription, tenant, resource group, VNet name, IP range, or endpoint | Code review — `vnetAddressPrefix`/`containerAppsSubnetPrefix`/`privateEndpointsSubnetPrefix` are all params with per-environment overrides in `dev`/`staging`/`prod.bicepparam` |
+| AC-42 | `az bicep build`/`build-params` pass for every affected file; no regression to pytest/ruff/mypy/`docker compose config` | Validation evidence — all exit 0, 0 errors, 0 warnings; 451 tests pass unchanged |
+| AC-43 | Application Gateway, Azure Firewall, DDoS Plan, WAF, hub-spoke, VPN, ExpressRoute explicitly NOT implemented | Code review — ADR-0002's "What remains deferred" section |
+| AC-44 | No Azure deployment executed | Validation log — only `az bicep build`/`build-params` (offline compilation) were run |
 
 ## Dependencies
 
@@ -131,6 +160,11 @@ document-ingestion pipeline `AzureAISearchProvider` needs an index to actually q
   PBI-02-02's `AzureAISearchProvider`/`azure-search-documents` dependency (already installed —
   no new dependency added), and PBI-02-03's Grounding field requirements (`section`,
   `source_path`) — it is the PBI that finally makes both fields real rather than always-`None`.
+- PBI-03-04 depends on, and directly fulfills, ADR-0001's (PBI-03-02) own named follow-up list
+  (VNet integration, Private Endpoints, NSGs) — it modifies the same four resource modules
+  PBI-03-02/02-02/00-05 already built (`cosmos-db.bicep`, `ai-search.bicep`,
+  `azure-openai.bicep`, `key-vault.bicep`) and the Container Apps Environment module from
+  Sprint 00, adding an opt-in toggle rather than changing their existing default behavior.
 
 ## Risks
 
@@ -142,6 +176,9 @@ document-ingestion pipeline `AzureAISearchProvider` needs an index to actually q
 | Defaulting `knowledgeProvider=azure_ai_search` before an index exists would crash-loop the API Container App | Avoided by design | Would have been High | `knowledgeProvider` defaults to `local` in `main.bicep` and every `.bicepparam` file until a future PBI creates and populates the AI Search index (see `decisions.md`) |
 | Ingestion pipeline never run against a real Azure AI Search index in this environment (no deployment performed) | Realized | Low | `KnowledgeIngestionPipeline` is fully unit-tested with mocked `SearchIndexClient`/`SearchClient` (never touches real Azure); the field-name contract it writes and `AzureAISearchProvider` reads is shared from one Python module (`index_schema.py`), removing the main risk of the two drifting apart undetected |
 | Two competing index-schema definitions (Bicep and Python) could drift apart over time | Avoided by design | Would have been Medium | The index schema is defined in Python only (`index_schema.py`); Bicep continues to provision the search *service*, never the index — see `decisions.md` |
+| VNet/Private Endpoint/NSG configuration never deployed or live-tested against real Azure | Realized | Medium | Fully validated via `az bicep build`/`build-params` (offline compilation, catches schema/reference errors); NSG rules are explicitly documented as an honest starting point, not a claimed final posture, precisely because live testing wasn't possible — see ADR-0002 |
+| Enabling `enablePrivateNetworking=true` with Azure AI Search's Free tier would fail at deployment (Free tier doesn't support Private Link) | Avoided by design | Would have been High | dev (the only environment using `free`) keeps `enablePrivateNetworking=false`; staging/prod (which enable private networking) already use `basic` — documented explicitly in both `ai-search.bicep`'s param description and ADR-0002 |
+| Container Apps Environment set fully internal without Front Door/App Gateway would make the platform unreachable | Avoided by design | Would have been High | `containerAppsEnvironmentInternal` defaults to `false` in every environment; flipping it is explicitly deferred until a future PBI adds Front Door/App Gateway — see ADR-0002 |
 
 ## Deliverable Log
 
@@ -155,6 +192,9 @@ Evidence: `docs/sprint_03/evidence/pbi-03-02-azure-runtime-integration-validatio
 
 PBI-03-03: Azure AI Search index and document-ingestion pipeline built in a new `src/pipelines/knowledge_ingestion/` package — the first occupant of CLAUDE.md §6's reserved, previously-empty `src/pipelines/`. The index schema (`index_schema.py::build_index_definition`) is defined once, in Python via `azure.search.documents.indexes.models` (the same SDK package `AzureAISearchProvider` already depends on), rather than duplicated in Bicep — a deliberate choice to keep a single source of truth for field names between what ingestion writes and what `AzureAISearchProvider._SELECT_FIELDS` reads back; Bicep continues to provision only the search *service* (unchanged this PBI). Fields: `chunk_id` (key), `content`, `source_id`, `title`, `category`, `section`, `source_path`, `version`, `content_hash` — every name matching `KnowledgeMetadata`'s own fields exactly, with `chunk_to_search_document()` doing the metadata mapping. `IngestionChunk` (`models.py`) is the typed chunk model, with `content_hash` as a Pydantic `computed_field` (SHA-256 of the chunk text) driving incremental ingestion. `DocumentLoader` is a narrow Protocol (`matches`/`load`) designed so a future SharePoint loader needs zero pipeline changes; `MarkdownDocumentLoader` is a full, real implementation — same frontmatter shape `LocalKnowledgeProvider` already reads (`source_id`/`title`/`category`, now also optional `version`), plus new `##`-header section chunking that makes `section` genuinely populated for the first time (stable, slug-derived `chunk_id`s across repeated loads); `PdfDocumentLoader` is a wired-in abstraction that raises a typed `UnsupportedDocumentTypeError` rather than performing real extraction, since no PDF-parsing dependency exists in this project and CLAUDE.md §7 forbids adding one speculatively. `EmbeddingProvider` (`embedding.py`) is the same abstraction-only pattern — `NullEmbeddingProvider` always returns `None`, no vector field exists on the index, and every prior RAG PBI's "no vector search" exclusion still holds. `KnowledgeIngestionPipeline` (`pipeline.py`) orchestrates `ensure_index()` (idempotent create-or-update) and `ingest()`: loads every supported file, computes each chunk's `content_hash`, diffs against the index's current hashes (fetched via `search_text="*"`) to upload only new/changed chunks (`merge_or_upload_documents`, never wiping the index), skip unchanged ones, and `delete_documents` for chunk_ids no longer produced by any loader — a single malformed document fails only that document (recorded in `IngestionReport.failed`), never aborting the run. `AzureAISearchProvider._SELECT_FIELDS` now requests `section`/`source_path` — explicitly deferred in PBI-02-02's own comment pending exactly this PBI's index. A new `ops/scripts/ingest_knowledge_base.py` CLI is the ingestion job's own composition root (mirrors `apps/api/src/api/dependencies.py`'s pattern: builds `SearchIndexClient`/`SearchClient` from `KnowledgeSettings`, Managed Identity by default, `SecretProvider`-backed API key opt-in) — present and importable, never executed against real Azure this PBI. 451 tests pass deterministically (34 new: 32 in `tests/unit/pipelines/knowledge_ingestion/` plus 2 new `AzureAISearchProvider` regression tests); ruff and mypy clean on the first attempt for every new file; `az bicep build` re-validated all 12 files (no Bicep changes this PBI, pure regression check) and `docker compose config` re-validated cleanly. No Agent, Supervisor, Prompt, or Tool code touched; no Azure resources deployed; no real embeddings, PDF extraction, or SharePoint integration implemented — all three remain documented abstractions ready for a future, separately-scoped PBI. — 2026-08-07
 Evidence: `docs/sprint_03/evidence/pbi-03-03-knowledge-ingestion-pipeline-validation.txt`
+
+PBI-03-04: Azure networking and security hardening — Bicep/docs only, zero Python/business-logic changes, fulfilling ADR-0001's own named follow-up. New `ops/bicep/modules/virtual-network.bicep` provisions a production-ready VNet with two subnets: `snet-container-apps` (`/23` default, delegated to `Microsoft.App/environments` as a Consumption-plan Container Apps Environment requires) and `snet-private-endpoints` (`/24` default, `privateEndpointNetworkPolicies: Disabled`), each with its own NSG — documented explicitly as honest, additive starter rules sitting beneath Azure's own non-removable default rules (`AllowVnetInBound`/`AllowAzureLoadBalancerInBound`), not a claimed full lockdown, since live testing wasn't possible this PBI. Two new reusable modules, `private-dns-zone.bicep` (zone + VNet link) and `private-endpoint.bicep` (PE + DNS zone group), are each instantiated four times in `main.bicep` for Azure OpenAI (`account`), Azure AI Search (`searchService`), Cosmos DB (`Sql`), and Key Vault (`vault`) — the four fixed `privatelink.*` DNS zone names are global Azure platform constants (documented as such, the same category as the built-in RBAC role GUIDs already hardcoded throughout `ops/bicep/modules/`), never customer-specific data. A single new `enablePrivateNetworking` param controls all of it plus each of the four services' `publicNetworkAccess` (`Disabled` when true) — when `false` (unchanged existing behavior), every resource remains byte-identical to what PBI-03-02 shipped. Key Vault additionally gained `networkAcls: { bypass: 'AzureServices', ... }` so this same template can still write the `appinsights-connection-string` secret through the ARM control plane even with the vault's data-plane public endpoint disabled — the standard, documented Azure pattern for this exact scenario, and a genuine, non-obvious correctness fix beyond a naive toggle. `container-apps-environment.bicep` gained opt-in `vnetConfiguration` support (`infrastructureSubnetId`/`internal` params, both empty/`false` by default — zero behavior change when unset). An RBAC audit (CLAUDE.md's own explicit "review every Azure resource" instruction) confirmed all five required roles (Cognitive Services OpenAI User, Search Index Data Reader, Cosmos DB Data Contributor, Key Vault Secrets User, AcrPull) were already correctly least-privilege, pre-dating this PBI — grep-confirmed zero `Contributor`/`Owner` usage anywhere in `ops/bicep/`, so no code change was needed there, only documentation of the audit result (ADR-0002's RBAC table). `containerAppsEnvironmentInternal` was added and defaults to `false` in every environment (including staging/prod) since Azure Front Door/Application Gateway are explicitly out of scope for this PBI — setting it `true` without one in front would make the platform completely unreachable; the production recommendation (flip once Front Door/App Gateway exists) is documented in ADR-0002. dev keeps `enablePrivateNetworking=false` (matching its existing Free-tier/Serverless conservative-cost posture — also a hard requirement, since Azure AI Search's Free tier does not support Private Link at all); staging/prod default to `true`, each with its own non-overlapping VNet CIDR (`10.1.0.0/16`/`10.2.0.0/16`) for future peering headroom. New `docs/Architecture/adr/0002-vnet-private-endpoints-hardening.md` (referenced forward from a new status note on ADR-0001, which is otherwise left unmodified as the accurate historical record for `enablePrivateNetworking=false`) and a new Mermaid diagram (`docs/Architecture/diagrams/networking-topology.md`) document the target topology, the RBAC audit, and — per this PBI's own explicit "Do NOT implement" list — exactly what remains deferred: Application Gateway, Azure Firewall, a DDoS Protection Plan, WAF, hub-spoke topology, VPN, ExpressRoute, and a Private Endpoint for ACR (not among the four services this PBI's target architecture named). Initial `az bicep build` on `main.bicep` surfaced 25 `BCP318` warnings ("value may be null") from the ternary pattern used to reference conditional modules' outputs from other same-condition conditional blocks — fixed by switching every such reference to Bicep's safe-dereference + null-coalescing operators (`module.?outputs.?property ?? ''`), the Microsoft-documented fix for this exact pattern; re-verified at 0 errors, 0 warnings. All 451 tests pass unchanged (zero Python touched); ruff and mypy clean; all 14 Bicep files (`main.bicep` + 13 modules, including the 3 new ones) and all 3 parameter files compile with `az bicep build`/`build-params` at exit 0, 0 errors, 0 warnings; `docker compose config` unaffected. No Azure resources were deployed; no Agent, Supervisor, Prompt, Tool, or RAG business logic touched. — 2026-08-07
+Evidence: `docs/sprint_03/evidence/pbi-03-04-networking-security-hardening-validation.txt`
 
 ## Sprint validation
 
