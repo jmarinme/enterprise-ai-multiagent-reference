@@ -34,3 +34,21 @@ Conclusion: the Supervisor orchestration framework is implemented, fully interfa
 Full output archived at `docs/sprint_01/evidence/pbi-01-02-tool-framework-validation.txt`.
 
 Conclusion: the Tool framework mirrors the Supervisor framework's proven interface-only shape; `ToolExecutor` never contains business logic and never raises to its caller; `ToolRegistry` fails explicitly on duplicate registration and on missing tools; every public contract is typed except one deliberately-justified boundary. `ClaimsAgent` now demonstrates real `ToolExecutor` injection with the Supervisor remaining completely unaware of Tools. All 82 tests pass deterministically with no Azure dependency (full regression of the existing Supervisor and `/chat` suites confirmed unchanged); ruff and mypy clean. No Azure OpenAI, RAG, APIM, real integrations, or real business data was implemented.
+
+## 2026-08-07 — PBI-01-03: Reusable Prompt Management Framework
+
+| Command | Result |
+|---|---|
+| Branch topology check (`git log`) | Confirmed both PBI-01-01 and PBI-01-02 already merged into this branch's history — no merge needed this time |
+| `pytest tests/unit/api tests/unit/domain tests/unit/services tests/unit/supervisor tests/unit/agents tests/unit/tools tests/unit/prompts tests/integration -v` | `108 passed, 2 skipped` — clean on the first run |
+| `ruff check apps/api/src src tests` | `All checks passed!` — clean on the first run |
+| `mypy apps/api/src` / `mypy src` | Both clean (13 and 48 files) |
+| `mypy tests/unit/prompts tests/unit/agents tests/unit/tools tests/unit/supervisor` | Clean (13 files). `tests/unit/api/*` excluded for the same pre-existing, unrelated reason as PBI-01-01/02 |
+| Live smoke test: `uvicorn` + real `POST /chat` call routed to `ClaimsAgent` | `200`, response includes `[prompt=claims.system@1.0.0]`, proving the full `Agent → PromptManager → PromptProvider → PromptDefinition → renderer → RenderedPrompt` chain end-to-end through the real composed API |
+| `docker compose config` (temporary local `.env`) | exit 0 — `api.build.context`/`dockerfile` unaffected and still correct after the Dockerfile edit |
+| `docker build` | NOT executed — Docker daemon unavailable locally (same recurring environmental limitation) |
+| Manual grep for secrets/keys, prohibited frameworks, and real TMX/business content in prompt files | Clean — all matches are comments/docstrings explicitly stating what is *not* used; all 5 prompt files are generic synthetic placeholder wording |
+
+Full output archived at `docs/sprint_01/evidence/pbi-01-03-prompt-framework-validation.txt`.
+
+Conclusion: the Prompt Management framework mirrors the Supervisor and Tool frameworks' proven interface-only shape; `PromptManager` makes no LLM calls, contains no business logic, and normalizes unexpected provider failures into a typed `PromptValidationError`. `FileSystemPromptProvider` is the only component aware of file paths/YAML/Markdown. Rendering is safe and deterministic (no `eval()`), failing explicitly for both missing required and unexpected/unknown variables. `ClaimsAgent` now demonstrates real `PromptManager` injection with zero embedded prompt text, verified by a dedicated test. All 108 tests pass deterministically with no Azure dependency (full regression of the existing Supervisor, Tool, and `/chat` suites confirmed unchanged); ruff and mypy clean. No Azure OpenAI, LLM calls, RAG, Semantic Kernel, LangGraph, CrewAI, AutoGen, APIM, or real business prompts were implemented.

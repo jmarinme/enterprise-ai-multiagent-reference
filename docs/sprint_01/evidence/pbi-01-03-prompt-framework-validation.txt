@@ -1,0 +1,113 @@
+PBI-01-03 — Reusable Prompt Management Framework validation evidence
+Date: 2026-08-07
+
+--- Branch topology check (lesson from PBI-01-02) ---
+Confirmed at the start of this PBI: feat/pbi-01-03-prompt-manager's HEAD already includes both
+PBI-01-01 and PBI-01-02 merged into main (git log showed both merge commits). No merge was
+necessary this time — working tree was clean, src/tools/ and src/supervisor/ were present.
+
+--- Files created ---
+src/prompts/{__init__,models,provider,renderer,manager,exceptions,filesystem_provider}.py
+configs/prompts/{supervisor,claims,broker_services,commercial_intake}/system.md (content added
+  to CLAUDE.md's already-reserved folders from PBI-00-01)
+configs/prompts/fallback/system.md (new subfolder, 5th prompt for FallbackAgent)
+tests/unit/prompts/{test_filesystem_provider,test_renderer,test_manager}.py
+tests/unit/agents/test_claims_agent_prompt_integration.py
+
+--- Files modified ---
+src/agents/claims_agent.py (PromptManager constructor injection added, alongside the existing
+  ToolExecutor; renders "claims.system" and surfaces its identifier/version in the response —
+  never embeds the actual prompt wording)
+apps/api/src/api/dependencies.py (new get_prompt_manager(), wired into ClaimsAgent)
+apps/api/Dockerfile (prerequisite fix: pyyaml added to pip install; COPY configs/prompts into
+  the image, previously not copied at all)
+pyproject.toml (pyyaml added to core dependencies — needed at runtime, not an optional Azure
+  extra like previous PBIs' additions; types-PyYAML added to the dev extra)
+tests/unit/agents/test_mock_agents.py, test_claims_agent_tool_injection.py (ClaimsAgent
+  construction updated for its new constructor signature, via a real FileSystemPromptProvider
+  pointed at the actual configs/prompts directory)
+
+--- pytest ---
+Command: pytest tests/unit/api tests/unit/domain tests/unit/services tests/unit/supervisor
+  tests/unit/agents tests/unit/tools tests/unit/prompts tests/integration -v
+Result: 108 passed, 2 skipped (both live-integration scaffolds skip correctly, unrelated to
+  this PBI) — passed cleanly on the first run, no collisions or fixes needed this time.
+
+New tests, all passing:
+  tests/unit/prompts/test_filesystem_provider.py — 12 tests (lookup, loading, metadata from
+    frontmatter, missing prompt for unknown namespace/missing file/malformed identifier,
+    invalid version format, 4 parametrized malformed-prompt cases (missing delimiter,
+    unterminated frontmatter, bad YAML syntax, non-mapping frontmatter), the
+    broker->broker_services namespace-to-directory mapping, and a dedicated test loading all
+    5 real shipped prompt files under configs/prompts/)
+  tests/unit/prompts/test_renderer.py — 6 tests (all known variables render correctly,
+    optional missing variable renders as empty string, missing required variable raises
+    PromptRenderError, unexpected/unknown variable raises PromptRenderError, rendering is
+    deterministic across repeated calls, a template with no placeholders renders unchanged)
+  tests/unit/prompts/test_manager.py — 6 tests (render returns RenderedPrompt with metadata,
+    render propagates PromptNotFoundError, get_metadata returns metadata without rendering,
+    get_metadata propagates PromptNotFoundError, an unexpected provider failure is normalized
+    into PromptValidationError, a missing required variable still fails explicitly through
+    the full manager.render() path)
+  tests/unit/agents/test_claims_agent_prompt_integration.py — 2 tests (the agent's response
+    references the rendered prompt's identifier/version; the agent's own source file contains
+    no embedded prompt wording, proving prompt content evolves independently of Agent code)
+
+Regression confirmed: all pre-existing Supervisor tests (19), all Tool framework tests (20),
+and all POST /chat tests (4) still pass unchanged.
+
+--- ruff ---
+Command: ruff check apps/api/src src tests
+Result: All checks passed! (clean on the first attempt, no fixes required this time)
+
+--- mypy ---
+Command: mypy apps/api/src
+Result: Success: no issues found in 13 source files.
+Command: mypy src
+Result: Success: no issues found in 48 source files.
+Command: mypy tests/unit/prompts tests/unit/agents tests/unit/tools tests/unit/supervisor
+Result: Success: no issues found in 13 source files.
+(tests/unit/api excluded — pre-existing, unrelated static-analysis limitation documented since
+PBI-01-01/PBI-00-02.)
+
+--- Live smoke test ---
+Started the API via `uvicorn main:app --app-dir apps/api/src` and issued a real POST /chat
+request routed to the (now Prompt- and Tool-injected) ClaimsAgent:
+  POST /chat {"message":"I need to check my claim","userId":"demo-user"}
+  -> 200 {"conversationId":"...","agent":"ClaimsAgent","intent":"CLAIMS",
+          "response":"... [prompt=claims.system@1.0.0]"}
+Confirms the full chain end-to-end through the real composed API: Agent -> PromptManager ->
+FileSystemPromptProvider -> PromptDefinition -> renderer -> RenderedPrompt -> Agent response.
+Server stopped after verification.
+
+--- docker compose config ---
+Command: (temporary local .env) docker compose config
+Result: exit 0 — api.build.context/dockerfile unaffected and still correct after the Dockerfile
+edit (pyyaml + configs/prompts COPY added).
+Command: docker build
+Result: NOT executed — Docker Desktop daemon not running locally (same recurring environmental
+limitation as every prior PBI since PBI-00-02).
+
+--- Secrets / prohibited-content scan ---
+Searched src/prompts, configs/prompts, apps/api/src/api/dependencies.py, and
+src/agents/claims_agent.py for hardcoded keys/passwords, references to Azure OpenAI/Semantic
+Kernel/AutoGen/LangGraph/CrewAI/Azure AI Search/APIM, and any real TMX/business-procedure
+content in the prompt files themselves.
+Findings: none. The one match is a comment in claims_agent.py explicitly stating Azure OpenAI
+is NOT used. All 5 prompt files contain only generic, synthetic placeholder wording.
+
+--- Conclusion ---
+The Prompt Management framework mirrors the Supervisor and Tool frameworks' proven
+interface-only shape: PromptManager never makes an LLM call, never contains business logic,
+and normalizes unexpected provider failures into a typed PromptValidationError.
+FileSystemPromptProvider is the only component aware of Markdown/YAML/file paths; prompts
+live in CLAUDE.md's already-reserved configs/prompts/ folders as Markdown with YAML
+frontmatter carrying exactly the metadata fields CLAUDE.md §9 requires (name/version/purpose/
+allowed tools/prohibited decisions/change notes). Rendering is a safe, deterministic regex
+substitution over a fixed 6-variable set — no eval, no arbitrary code execution — and fails
+explicitly for both missing required variables and unexpected/unknown ones. ClaimsAgent now
+demonstrates real PromptManager injection with zero embedded prompt text, and the Supervisor
+and Tool framework remain completely unaware of prompts. All 108 tests pass deterministically
+with no Azure dependency; ruff and mypy are clean; a live smoke test proves the full pipeline
+end-to-end through the real running API. No Azure OpenAI, LLM calls, RAG, Semantic Kernel,
+LangGraph, CrewAI, AutoGen, APIM, or real business prompts were implemented.

@@ -33,3 +33,19 @@ Record sprint-specific decisions and deviations. Cross-sprint decisions belong i
 **Deviation/status change:** A pragmatic, explicitly-justified rule suppression, not a quality-gate weakening — `ruff check` is still clean overall, and the suppression is scoped to the one line it applies to, not a blanket repo-wide ignore.
 
 **How to apply:** Revisit this suppression once the local/CI Python interpreter gap (R-01) is actually closed (Python 3.12 installed) — at that point PEP 695 syntax becomes safe to adopt and the `noqa` can be removed. Any other generic class added before then should follow the same `Generic[T]` + justified `noqa` pattern for consistency.
+
+## 2026-08-07 — PBI-01-03: prompts stored as Markdown with YAML frontmatter, in CLAUDE.md's existing `configs/prompts/` folders
+
+**Decision:** Each prompt is one Markdown file with a YAML frontmatter block (`version`, `purpose`, `allowed_tools`, `prohibited_decisions`, `change_notes`, `required_variables`) followed by the template body. Files live under the `configs/prompts/{supervisor,claims,broker_services,commercial_intake}/` folders CLAUDE.md §6 and PBI-00-01 already reserved (previously empty placeholders), plus one new `fallback/` folder. Logical identifiers (e.g. `broker.system`) map to these folder names via an explicit table in `FileSystemPromptProvider`, not a 1:1 rename — `broker` → `broker_services`, `commercial` → `commercial_intake` — proving the "Agents never know storage paths" abstraction is real.
+
+**Deviation/status change:** None — Markdown is what the PBI's own instructions preferred, and frontmatter is the standard, minimal-dependency way to carry typed metadata inside a single readable file without inventing a second sidecar-file convention.
+
+**How to apply:** Any new prompt (future agent, future intent) should follow this same one-file, frontmatter + body pattern and be added to `_NAMESPACE_TO_DIRECTORY` in `filesystem_provider.py` if its namespace doesn't already map to an existing folder.
+
+## 2026-08-07 — PBI-01-03: `PromptManager` raises typed exceptions rather than returning a Result object
+
+**Decision:** Unlike `ToolExecutor` (PBI-01-02), which always returns a `ToolResult` and never raises — because it must survive arbitrary, unpredictable Tool implementations — `PromptManager.render()`/`get_metadata()` raise `PromptNotFoundError`/`PromptValidationError`/`PromptRenderError` directly to the caller. Prompts are a simpler, fully first-party-controlled component; letting callers `except` a specific typed exception (or let it propagate) is more idiomatic here and avoids adding an unnecessary `success`/`error` wrapper type for a component with no external/unpredictable execution step.
+
+**Deviation/status change:** A deliberate architectural difference from the Tool framework's pattern, not an inconsistency — both frameworks still "normalize typed failures" as required, just via different, each contextually appropriate, mechanisms (`ToolExecutor`: always-succeeds-with-a-result; `PromptManager`: typed-exceptions). `PromptManager._load()` still normalizes any *unexpected* (non-Prompt-typed) provider exception into `PromptValidationError`, so no raw, provider-specific exception ever escapes the framework boundary either way.
+
+**How to apply:** Any Agent calling `PromptManager` should be prepared to catch `PromptNotFoundError`/`PromptValidationError`/`PromptRenderError` if it wants to degrade gracefully (the same way `ClaimsAgent` already does for `ToolExecutor` failures via the `ToolResult.success` flag) — a future PBI adding that graceful-degradation behavior to `ClaimsAgent` for prompt failures specifically was considered but not implemented here, to keep this PBI's Agent change minimal and focused on proving the wiring.

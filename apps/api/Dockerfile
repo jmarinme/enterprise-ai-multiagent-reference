@@ -8,6 +8,11 @@
 # config, observability) via --app-dir, exactly as before. Repo-root src/ is copied to
 # /app/src and made importable as `src.*` via PYTHONPATH=/app. The two never collide: one is
 # imported bare, the other under the `src.` prefix.
+#
+# configs/prompts is copied to /app/configs/prompts (PBI-01-03): FileSystemPromptProvider is
+# given the relative path "configs/prompts", resolved against the process's working directory
+# — WORKDIR /app here, matching how it resolves against the repo root when run locally from
+# there. No prompt file was previously packaged into this image at all.
 
 FROM python:3.12-slim
 
@@ -18,10 +23,12 @@ RUN pip install --no-cache-dir \
     "fastapi>=0.115,<1" \
     "uvicorn[standard]>=0.30,<1" \
     "pydantic>=2.7,<3" \
-    "pydantic-settings>=2.3,<3"
+    "pydantic-settings>=2.3,<3" \
+    "pyyaml>=6.0,<7"
 
 COPY apps/api/src ./app_src
 COPY src ./src
+COPY configs/prompts ./configs/prompts
 
 ENV PYTHONPATH=/app
 
