@@ -1,3 +1,13 @@
+# TMX Enterprise AI Reference Platform — Sprint 0 CI foundation (PBI-00-07).
+#
+# This pipeline validates the repository (backend, frontend, infrastructure-as-code, and
+# container images) on every push/PR to develop/main. It deploys nothing: there is no Azure
+# login, no `az deployment create`/`what-if`, and no image is pushed to a registry.
+#
+# A disabled `Deploy_Dev` stage at the bottom documents — but does not execute — the future
+# CD flow. See that stage's comments for the exact sequencing this pipeline is intentionally
+# NOT performing yet.
+
 trigger:
   branches:
     include:
@@ -14,17 +24,353 @@ pr:
       - develop
       - main
 
+# Pipeline-level parameters used only to drive the `${{ each }}` loops in
+# InfrastructureValidation below (see azure-pipelines/templates/steps/bicep-build*.yml).
+# Adding a new Bicep module or parameter file means adding one line here — no new pipeline
+# stage/job/step boilerplate required.
+parameters:
+  - name: bicepModuleFiles
+    type: object
+    default:
+      - ops/bicep/main.bicep
+      - ops/bicep/modules/app-insights.bicep
+      - ops/bicep/modules/container-app.bicep
+      - ops/bicep/modules/container-apps-environment.bicep
+      - ops/bicep/modules/container-registry.bicep
+      - ops/bicep/modules/cosmos-db.bicep
+      - ops/bicep/modules/key-vault.bicep
+      - ops/bicep/modules/key-vault-secret.bicep
+      - ops/bicep/modules/log-analytics.bicep
+      - ops/bicep/modules/managed-identity.bicep
+  - name: bicepParameterFiles
+    type: object
+    default:
+      - ops/bicep/parameters/dev.bicepparam
+      - ops/bicep/parameters/staging.bicepparam
+      - ops/bicep/parameters/prod.bicepparam
+
+variables:
+  pythonVersion: '3.12'
+  nodeVersion: '20.x'
+  apiImageName: 'tmx-api'
+  webImageName: 'tmx-web'
+  # Build.BuildId is always unique and always available with no configuration — a source-SHA
+  # tag is equally valid; BuildId was chosen so this pipeline never needs a service connection
+  # or extra setup just to compute a tag.
+  imageTag: '$(Build.BuildId)'
+  # Future extension point: once real deployment secrets exist (service connection names,
+  # ACR name, per-environment endpoints), add a `variables: - group: tmx-<env>-secrets` entry
+  # here. No variable group is declared or required for this pipeline to run today — every
+  # stage below works on a brand-new Azure DevOps project with zero prior configuration.
+
 stages:
-  - stage: Validate
-    displayName: Validate
+  # ============================================================================================
+  # STAGE 1 — Backend Quality
+  # Validates both Python projects in this repo (apps/api's transport layer and the root
+  # src/ domain library) in one shared environment, since CI has no need for the isolation
+  # local dev uses two separate venvs for.
+  # ============================================================================================
+  - stage: BackendQuality
+    displayName: '1 - Backend Quality'
     jobs:
-      - job: StarterKitValidation
-        displayName: Starter kit validation
+      - job: BackendQualityJob
+        displayName: Backend quality gate
         pool:
           vmImage: ubuntu-latest
         steps:
           - checkout: self
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+            displayName: 'Use Python $(pythonVersion)'
+
+          - script: python -m pip install --upgrade pip
+            displayName: 'Upgrade pip'
+
           - script: |
-              echo "Starter pipeline placeholder."
-              echo "Sprint 00 will replace this step with Bicep, backend, frontend and security validation."
-            displayName: Validate repository foundation
+              set -e
+              # apps/api/pyproject.toml dependencies + dev extras
+              pip install \
+                "fastapi>=0.115,<1" "uvicorn[standard]>=0.30,<1" \
+                "pydantic>=2.7,<3" "pydantic-settings>=2.3,<3" \
+                "pytest>=8.2,<9" "httpx>=0.27,<1" "ruff>=0.5,<1" "mypy>=1.10,<2"
+              # root pyproject.toml dependencies + dev/cosmos/keyvault extras
+              pip install \
+                "pytest-asyncio>=0.23,<1" \
+                "azure-cosmos>=4.7,<5" "azure-identity>=1.17,<2" \
+                "azure-keyvault-secrets>=4.8,<5" "aiohttp>=3.9,<4"
+              # coverage publication (Stage 1 requirement: "publish coverage if available")
+              pip install "pytest-cov>=5,<7"
+            displayName: 'Install backend and root project dependencies'
+
+          - script: |
+              set -e
+              mkdir -p "$(Build.ArtifactStagingDirectory)/backend-reports"
+              python -m pytest \
+                tests/unit/api tests/unit/domain tests/unit/services tests/integration \
+                -v \
+                --junitxml="$(Build.ArtifactStagingDirectory)/backend-reports/junit.xml" \
+                --cov=src --cov=apps/api/src \
+                --cov-report=xml:"$(Build.ArtifactStagingDirectory)/backend-reports/coverage.xml" \
+                --cov-report=term
+            displayName: 'Run API, domain/service, and integration tests (integration tests skip without Azure config)'
+
+          - script: |
+              set -e
+              # ruff resolves [tool.ruff] from the nearest ancestor pyproject.toml per file, so
+              # apps/api/src correctly picks up its own FastAPI Depends() lint exception while
+              # src/ and tests/ use the root config — one command covers both trees correctly.
+              python -m ruff check apps/api/src src tests
+            displayName: 'Run ruff'
+
+          - script: |
+              set -e
+              python -m mypy apps/api/src
+              python -m mypy src
+            displayName: 'Run mypy'
+
+          - task: PublishTestResults@2
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFormat: JUnit
+              testResultsFiles: '$(Build.ArtifactStagingDirectory)/backend-reports/junit.xml'
+              testRunTitle: 'Backend (API + domain/services + integration scaffolds)'
+            displayName: 'Publish backend test results'
+
+          - task: PublishCodeCoverageResults@2
+            condition: succeededOrFailed()
+            inputs:
+              summaryFileLocation: '$(Build.ArtifactStagingDirectory)/backend-reports/coverage.xml'
+            displayName: 'Publish backend coverage (if available)'
+
+          - task: PublishPipelineArtifact@1
+            condition: succeededOrFailed()
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)/backend-reports'
+              artifactName: 'backend-reports'
+            displayName: 'Publish backend-reports artifact'
+
+  # ============================================================================================
+  # STAGE 2 — Frontend Quality
+  # ============================================================================================
+  - stage: FrontendQuality
+    displayName: '2 - Frontend Quality'
+    jobs:
+      - job: FrontendQualityJob
+        displayName: Frontend quality gate
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+
+          - task: NodeTool@0
+            inputs:
+              versionSpec: '$(nodeVersion)'
+            displayName: 'Use Node $(nodeVersion)'
+
+          - script: npm ci
+            workingDirectory: apps/web
+            displayName: 'npm ci'
+
+          - script: npm run lint
+            workingDirectory: apps/web
+            displayName: 'Run frontend lint'
+
+          - script: npm run typecheck
+            workingDirectory: apps/web
+            displayName: 'Run frontend typecheck'
+
+          - script: |
+              set -e
+              mkdir -p "$(Build.ArtifactStagingDirectory)/frontend-reports"
+              npm run test -- --reporter=junit --outputFile="$(Build.ArtifactStagingDirectory)/frontend-reports/junit.xml"
+            workingDirectory: apps/web
+            displayName: 'Run frontend unit tests'
+
+          - script: npm run build
+            workingDirectory: apps/web
+            displayName: 'Run production build'
+
+          - task: PublishTestResults@2
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFormat: JUnit
+              testResultsFiles: '$(Build.ArtifactStagingDirectory)/frontend-reports/junit.xml'
+              testRunTitle: 'Frontend (Vitest)'
+            displayName: 'Publish frontend test results'
+
+          - task: PublishPipelineArtifact@1
+            condition: succeededOrFailed()
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)/frontend-reports'
+              artifactName: 'frontend-reports'
+            displayName: 'Publish frontend-reports artifact'
+
+          # Published here, not under the "ArtifactPublication" stage below, because the dist/
+          # output only exists on this job's agent right after `npm run build` runs — stages run
+          # on isolated agents, so this is the only place this artifact can be produced without
+          # rebuilding it a second time. See azure-pipelines.yml header comment / PBI-00-07
+          # evidence for the full artifact-placement rationale.
+          - task: PublishPipelineArtifact@1
+            condition: succeeded()
+            inputs:
+              targetPath: 'apps/web/dist'
+              artifactName: 'web-build'
+            displayName: 'Publish Web production build'
+
+  # ============================================================================================
+  # STAGE 3 — Infrastructure Validation
+  # Compiles every Bicep module, main.bicep, and all environment parameter files. No Azure
+  # login, no `az deployment create`, no `az deployment what-if`.
+  # ============================================================================================
+  - stage: InfrastructureValidation
+    displayName: '3 - Infrastructure Validation'
+    jobs:
+      - job: InfrastructureValidationJob
+        displayName: Validate Bicep
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+
+          - script: az bicep install
+            displayName: 'Install Bicep CLI'
+
+          - ${{ each bicepFile in parameters.bicepModuleFiles }}:
+              - template: azure-pipelines/templates/steps/bicep-build.yml
+                parameters:
+                  filePath: ${{ bicepFile }}
+
+          - ${{ each paramFile in parameters.bicepParameterFiles }}:
+              - template: azure-pipelines/templates/steps/bicep-build-params.yml
+                parameters:
+                  filePath: ${{ paramFile }}
+
+  # ============================================================================================
+  # STAGE 4 — Container Build Validation
+  # Proves both Dockerfiles build successfully. Depends on the two quality gates so CI minutes
+  # aren't spent building images from code already known to fail lint/type/tests. No image is
+  # pushed anywhere and no Azure service connection is used or required.
+  # ============================================================================================
+  - stage: ContainerBuildValidation
+    displayName: '4 - Container Build Validation'
+    dependsOn:
+      - BackendQuality
+      - FrontendQuality
+    jobs:
+      - job: ContainerBuildValidationJob
+        displayName: Build API and Web images
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+
+          - script: |
+              set -e
+              docker build -t "$(apiImageName):$(imageTag)" ./apps/api
+            displayName: 'Build API image'
+
+          - script: |
+              set -e
+              # VITE_API_URL here is a build-validation placeholder only (matches the Dockerfile's
+              # own local-dev default). The real per-environment API URL is resolved by the future,
+              # currently-disabled Deploy_Dev stage — see its comments below.
+              docker build \
+                --build-arg VITE_API_URL=http://localhost:8000 \
+                -t "$(webImageName):$(imageTag)" \
+                ./apps/web
+            displayName: 'Build Web image'
+
+  # ============================================================================================
+  # STAGE 5 — Artifact Publication
+  # Publishes the Bicep/IaC source tree and a short validation summary. The backend/frontend
+  # test-and-coverage reports and the Web production build are published directly in the stages
+  # that produce them (Stage 1 / Stage 2) rather than re-collected here, because Azure Pipelines
+  # stages run on isolated agents — re-downloading and re-publishing them here would add nothing
+  # but indirection. All artifacts from every stage are still visible together on the pipeline
+  # run's "Artifacts" tab regardless of which stage published them.
+  # ============================================================================================
+  - stage: ArtifactPublication
+    displayName: '5 - Artifact Publication'
+    dependsOn:
+      - InfrastructureValidation
+      - ContainerBuildValidation
+    jobs:
+      - job: ArtifactPublicationJob
+        displayName: Publish IaC and summary artifacts
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+
+          - task: PublishPipelineArtifact@1
+            inputs:
+              targetPath: 'ops/bicep'
+              artifactName: 'bicep-templates'
+            displayName: 'Publish Bicep/IaC content'
+
+          - script: |
+              set -e
+              mkdir -p "$(Build.ArtifactStagingDirectory)/summary"
+              {
+                echo "# Pipeline validation summary"
+                echo "Build: $(Build.BuildId)  Commit: $(Build.SourceVersion)"
+                echo ""
+                echo "- Backend quality: tests, ruff, mypy — see the backend-reports artifact"
+                echo "- Frontend quality: lint, typecheck, tests, build — see frontend-reports / web-build artifacts"
+                echo "- Infrastructure: all Bicep modules, main.bicep, and dev/staging/prod parameter files compiled"
+                echo "- Container images: $(apiImageName):$(imageTag) and $(webImageName):$(imageTag) built locally, not pushed"
+                echo ""
+                echo "No Azure resource was deployed by this pipeline run."
+              } > "$(Build.ArtifactStagingDirectory)/summary/PIPELINE-SUMMARY.md"
+            displayName: 'Generate validation summary'
+
+          - task: PublishPipelineArtifact@1
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)/summary'
+              artifactName: 'pipeline-summary'
+            displayName: 'Publish validation summary'
+
+  # ============================================================================================
+  # FUTURE — Deploy_Dev (prepared, NOT enabled)
+  #
+  # condition: false permanently skips this stage regardless of branch/trigger. It exists so the
+  # intended CD shape is visible in the pipeline graph and reviewable in code, without being
+  # executable. Enabling it is a deliberate, separate, future change — not a side effect of
+  # anything in this PBI — and requires infrastructure this Sprint 0 pipeline does not set up
+  # (an Azure DevOps service connection using Workload Identity Federation, per
+  # docs/sprint_00/security-baseline.md §6).
+  #
+  # Intended future flow, once explicitly authorized and enabled:
+  #   1. Authenticate via Azure DevOps Workload Identity Federation (OIDC) against the platform's
+  #      existing user-assigned Managed Identity — no stored client secret, ever.
+  #   2. Deploy/update infrastructure: `az deployment group create` using ops/bicep/main.bicep and
+  #      the appropriate environment's ops/bicep/parameters/<env>.bicepparam file.
+  #   3. Resolve the API Container App FQDN from that deployment's `apiContainerAppFqdn` output.
+  #   4. Build the Web image with `--build-arg VITE_API_URL=https://<apiContainerAppFqdn>` — Vite
+  #      inlines VITE_* variables at build time, not container runtime (see
+  #      docs/sprint_00/decisions.md, PBI-00-03/PBI-00-04), so this must happen after step 3, not
+  #      in Stage 4 above.
+  #   5. Push both images to the Azure Container Registry created by
+  #      ops/bicep/modules/container-registry.bicep.
+  #   6. Deploy/update the API and Web Container Apps to reference the newly pushed image tags.
+  # ============================================================================================
+  - stage: Deploy_Dev
+    displayName: '(Future) Deploy to Dev — disabled'
+    condition: false
+    dependsOn:
+      - BackendQuality
+      - FrontendQuality
+      - InfrastructureValidation
+      - ContainerBuildValidation
+    jobs:
+      - job: FutureDeployJob
+        displayName: 'Not executed — documentation only'
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - script: |
+              echo "This stage is intentionally disabled (condition: false) and will not run."
+              echo "See the Deploy_Dev stage comments in azure-pipelines.yml for the documented future flow."
+            displayName: 'Documented future CD flow (not executed)'

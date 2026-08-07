@@ -1,0 +1,13 @@
+# Reusable step: compiles a single .bicep file with `az bicep build`.
+# No Azure login and no deployment happens here — this is pure local/offline syntax
+# and type validation, identical to what a developer runs before opening a PR.
+parameters:
+  - name: filePath
+    type: string
+
+steps:
+  - script: |
+      set -e
+      echo "Validating ${{ parameters.filePath }}"
+      az bicep build --file "${{ parameters.filePath }}" --stdout > /dev/null
+    displayName: 'bicep build: ${{ parameters.filePath }}'

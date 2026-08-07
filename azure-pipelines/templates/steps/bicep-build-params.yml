@@ -1,0 +1,14 @@
+# Reusable step: compiles a single .bicepparam file with `az bicep build-params`.
+# No Azure login and no deployment happens here — this only proves the parameter file
+# resolves against main.bicep's parameter contract.
+parameters:
+  - name: filePath
+    type: string
+
+steps:
+  - script: |
+      set -e
+      echo "Validating ${{ parameters.filePath }}"
+      outFile="$(Agent.TempDirectory)/$(basename "${{ parameters.filePath }}").parameters.json"
+      az bicep build-params --file "${{ parameters.filePath }}" --outfile "$outFile"
+    displayName: 'bicep build-params: ${{ parameters.filePath }}'

@@ -38,7 +38,7 @@ Establecer una base reproducible, segura, observable y desplegable para la plata
 - [x] PBI-00-04: Crear Bicep base y parámetros por ambiente.
 - [x] PBI-00-05: Crear Cosmos DB Conversation Store.
 - [x] PBI-00-06: Crear Key Vault, Managed Identities y guía Entra ID.
-- [ ] PBI-00-07: Crear pipeline CI/CD de Azure DevOps.
+- [x] PBI-00-07: Crear pipeline CI/CD de Azure DevOps.
 - [ ] PBI-00-08: Crear pruebas de infraestructura y scripts de validación.
 - [ ] PBI-00-09: Consolidar ADRs, justificaciones y evidencia del sprint.
 
@@ -96,6 +96,9 @@ Evidence: `docs/sprint_00/evidence/pbi-00-05-cosmos-conversation-store-validatio
 
 PBI-00-06: Key Vault and Managed Identity security foundation completed. Infra reviewed and confirmed already RBAC-only Key Vault, single shared Managed Identity, and minimum-role grants (AcrPull, Key Vault Secrets User, Cosmos Data Contributor) from PBI-00-04/05; Container Apps already authenticate via that identity. Added a `tenantId` output to `key-vault.bicep`/`main.bicep` for future pipeline use. Backend: `SecretProvider` Protocol + typed `SecretNotFoundError`, `EnvironmentSecretProvider` (default, local), `AzureKeyVaultSecretProvider` (`DefaultAzureCredential`, no keys), selected via a new `SECRET_PROVIDER` setting. No real secret values created — only a documented reserved-secret-name convention for future Azure OpenAI config. New `docs/sprint_00/security-baseline.md` documents local/Container-Apps/future-Azure-DevOps authentication and explicitly scopes out Entra ID end-user login. 21/21 new+existing unit tests passed (2 live-integration scaffolds correctly skipped), ruff and mypy clean. Two real issues found and fixed: a missing `aiohttp` transport dependency (also retrofitted into PBI-00-05's `cosmos` extra) and a `.gitignore` `secrets/` rule silently matching the new module directory (renamed to `secret_store/`). `az bicep build` clean; no Azure deployment performed. — 2026-08-07
 Evidence: `docs/sprint_00/evidence/pbi-00-06-key-vault-managed-identity-validation.txt`
+
+PBI-00-07: Azure DevOps CI/CD pipeline foundation created. `azure-pipelines.yml` rewritten into 5 active stages (Backend Quality, Frontend Quality, Infrastructure Validation, Container Build Validation, Artifact Publication) plus one permanently-disabled (`condition: false`) `Deploy_Dev` stage documenting the future 6-step CD flow (OIDC auth → Bicep deploy → resolve API FQDN → build Web with that FQDN → push to ACR → deploy Container Apps) without executing any of it. Two new reusable templates (`azure-pipelines/templates/steps/bicep-build{,-params}.yml`) validate all 10 Bicep files and all 3 parameter files via `${{ each }}` loops. No Azure login, no service connection, no variable group, and no `docker push` anywhere; no `az deployment create`/`what-if` executed. Every stage's embedded command was validated directly against the repo (26 backend tests + 2 skipped, frontend lint/typecheck/tests/build, all Bicep files, all parameter files) — all passing. Two real pre-existing gaps found and fixed: a `ruff` import-order issue in `tests/unit/api/` never covered by any prior PBI's narrower lint invocation, and confirmation that the "single shared CI environment" combined dependency-install design works end-to-end. Docker image builds not locally validated (Docker daemon unavailable, same recurring environmental limitation as PBI-00-02/03; Dockerfiles themselves unchanged). — 2026-08-07
+Evidence: `docs/sprint_00/evidence/pbi-00-07-cicd-pipeline-validation.txt`
 
 ## Sprint validation
 

@@ -1,7 +1,6 @@
 """Unit tests for GET /health."""
 
 from fastapi.testclient import TestClient
-
 from main import app
 
 client = TestClient(app)
