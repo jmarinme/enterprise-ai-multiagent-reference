@@ -37,7 +37,7 @@ Establecer una base reproducible, segura, observable y desplegable para la plata
 - [x] PBI-00-03: Crear Web mínima y Docker Compose.
 - [x] PBI-00-04: Crear Bicep base y parámetros por ambiente.
 - [x] PBI-00-05: Crear Cosmos DB Conversation Store.
-- [ ] PBI-00-06: Crear Key Vault, Managed Identities y guía Entra ID.
+- [x] PBI-00-06: Crear Key Vault, Managed Identities y guía Entra ID.
 - [ ] PBI-00-07: Crear pipeline CI/CD de Azure DevOps.
 - [ ] PBI-00-08: Crear pruebas de infraestructura y scripts de validación.
 - [ ] PBI-00-09: Consolidar ADRs, justificaciones y evidencia del sprint.
@@ -93,6 +93,9 @@ Evidence: `docs/sprint_00/evidence/pbi-00-04-bicep-foundation-validation.txt`
 
 PBI-00-05: Cosmos DB Conversation Store foundation created. Infra: `ops/bicep/modules/cosmos-db.bicep` (single `conversations` container, partition key `/userId`, `disableLocalAuth: true`, Managed Identity granted the built-in Cosmos "Data Contributor" data-plane role, Serverless dev/staging, Provisioned 400 RU/s prod, TTL provisioned but inactive pending a retention ADR), wired into `main.bicep` and all 3 parameter files. Backend: typed `Conversation`/`Message` Pydantic models (camelCase wire format matching `CLAUDE.md` §4.3), a `ConversationRepository` Protocol, an in-memory adapter (default, no Azure required), and a Cosmos adapter authenticating via `DefaultAzureCredential` only (no keys/connection strings anywhere) — selected via a new `CONVERSATION_STORE_PROVIDER` setting. 11/11 unit tests passed locally with no Azure dependency; the Cosmos integration test scaffold correctly skips without `COSMOS_DB_ENDPOINT`. ruff and mypy clean (including the Cosmos adapter). `az bicep build` clean on the new module and `main.bicep`; all 3 parameter files validated. No Azure deployment performed. — 2026-08-06
 Evidence: `docs/sprint_00/evidence/pbi-00-05-cosmos-conversation-store-validation.txt`
+
+PBI-00-06: Key Vault and Managed Identity security foundation completed. Infra reviewed and confirmed already RBAC-only Key Vault, single shared Managed Identity, and minimum-role grants (AcrPull, Key Vault Secrets User, Cosmos Data Contributor) from PBI-00-04/05; Container Apps already authenticate via that identity. Added a `tenantId` output to `key-vault.bicep`/`main.bicep` for future pipeline use. Backend: `SecretProvider` Protocol + typed `SecretNotFoundError`, `EnvironmentSecretProvider` (default, local), `AzureKeyVaultSecretProvider` (`DefaultAzureCredential`, no keys), selected via a new `SECRET_PROVIDER` setting. No real secret values created — only a documented reserved-secret-name convention for future Azure OpenAI config. New `docs/sprint_00/security-baseline.md` documents local/Container-Apps/future-Azure-DevOps authentication and explicitly scopes out Entra ID end-user login. 21/21 new+existing unit tests passed (2 live-integration scaffolds correctly skipped), ruff and mypy clean. Two real issues found and fixed: a missing `aiohttp` transport dependency (also retrofitted into PBI-00-05's `cosmos` extra) and a `.gitignore` `secrets/` rule silently matching the new module directory (renamed to `secret_store/`). `az bicep build` clean; no Azure deployment performed. — 2026-08-07
+Evidence: `docs/sprint_00/evidence/pbi-00-06-key-vault-managed-identity-validation.txt`
 
 ## Sprint validation
 

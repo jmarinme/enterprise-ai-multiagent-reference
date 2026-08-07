@@ -303,6 +303,7 @@ output appInsightsId string = appInsights.outputs.id
 output keyVaultName string = keyVault.outputs.name
 output keyVaultUri string = keyVault.outputs.uri
 output keyVaultId string = keyVault.outputs.id
+output keyVaultTenantId string = keyVault.outputs.tenantId
 
 output managedIdentityName string = managedIdentity.outputs.name
 output managedIdentityId string = managedIdentity.outputs.id

@@ -105,3 +105,19 @@ Record sprint-specific decisions and deviations. Cross-sprint decisions belong i
 **Deviation/status change:** Minor, non-breaking side effect observed: running `pytest` from the repo root now always picks up the root `pyproject.toml`'s ini section (pytest uses the nearest ancestor ini file from the invocation directory), which apps/api's own tests were not previously using anyway (they rely on `tests/unit/api/conftest.py`'s manual `sys.path` insertion, independent of ini discovery). Running the existing `apps/api` suite through `apps/api/.venv` now prints one harmless warning (`Unknown config option: asyncio_mode`, since that venv lacks `pytest-asyncio`); all 5 apps/api tests still pass, since none of them are `async def`.
 
 **How to apply:** If a future PBI adds async tests to `apps/api`, add `pytest-asyncio` to `apps/api/pyproject.toml`'s dev extras at that point to silence the warning — not needed today.
+
+## 2026-08-07 — PBI-00-06: `src/services/secrets/` renamed to `src/services/secret_store/` (`.gitignore` collision)
+
+**Decision:** The repository's `.gitignore` has a rule `secrets/` (line 8, under "Local environment and secrets") intended to prevent a developer's local secret files from being committed. Because the rule has no leading slash, it matches a directory named `secrets` at *any* depth — including the new `src/services/secrets/` source module created for this PBI's `SecretProvider` adapters. `git status` silently never listed any file in that directory (not staged, not shown as untracked), confirmed via `git check-ignore -v`. Renamed the module to `src/services/secret_store/`, mirroring the existing `src/services/conversation_store/` naming from PBI-00-05, rather than editing the security-relevant `.gitignore` rule.
+
+**Deviation/status change:** New finding surfaced by this PBI, fixed within it. Not a deviation from any prior decision — no code needed `src/services/secrets` specifically as a name.
+
+**How to apply:** Never create a top-level or nested directory literally named `secrets` (or any other name matching an existing `.gitignore` rule) for source code going forward — check `git status`/`git check-ignore` after adding new directories with security-adjacent names, since a silent gitignore match is easy to miss.
+
+## 2026-08-07 — PBI-00-06: `aiohttp` added to the `cosmos` and `keyvault` extras
+
+**Decision:** Constructing `AzureKeyVaultSecretProvider` (which builds an async `DefaultAzureCredential`) failed with `ImportError: aiohttp package is not installed`. The async `azure-identity` credential chain requires `aiohttp` for its default async HTTP transport; it is not a transitive dependency of `azure-identity`, `azure-cosmos`, or `azure-keyvault-secrets`. Added `aiohttp>=3.9,<4` to both the `keyvault` extra (this PBI) and the `cosmos` extra (retroactively — the same gap existed in PBI-00-05 but was never exercised there, since no PBI-00-05 unit test constructed a real, unmocked `CosmosConversationRepository`/`DefaultAzureCredential`).
+
+**Deviation/status change:** Bug fix affecting a PBI-00-05-authored file (`pyproject.toml`'s `cosmos` extra), applied here because this PBI's testing was the first to actually exercise the async credential construction path. Not a scope violation — no Cosmos business logic was touched.
+
+**How to apply:** Any future optional extra that uses `azure-identity`'s async credentials (`azure.identity.aio`) must also depend on `aiohttp`, or construction will fail at runtime with an unclear `ImportError` deep in the SDK's transport-selection code.

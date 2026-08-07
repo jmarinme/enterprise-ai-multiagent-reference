@@ -91,3 +91,25 @@ Conclusion: `main.bicep`, 8 reusable modules (Log Analytics, App Insights, Manag
 Full output archived at `docs/sprint_00/evidence/pbi-00-05-cosmos-conversation-store-validation.txt`.
 
 Conclusion: the Cosmos DB conversation store foundation (infra + domain models + repository abstraction) is implemented, compiles cleanly, and is fully unit-tested without requiring Azure or Cosmos DB locally. No agents, Azure OpenAI, RAG, APIM, authentication, or CI/CD deployment work was performed.
+
+## 2026-08-07 — PBI-00-06: Key Vault, Managed Identity, and SecretProvider foundation
+
+| Command | Result |
+|---|---|
+| Infra review: `key-vault.bicep`, `managed-identity.bicep`, `container-app.bicep`, `container-registry.bicep`, `cosmos-db.bicep` | Confirmed already RBAC-only Key Vault, single shared Managed Identity, minimum-role grants, and Managed-Identity-based Container Apps auth — all from PBI-00-04/05, no defects found |
+| `az bicep build` on `key-vault.bicep` (added `tenantId` output) and `main.bicep` | Both exit 0, 0 errors, 0 warnings |
+| `az bicep build-params` on `dev`/`staging`/`prod` | All exit 0 (no parameter file changes were necessary) |
+| `pip install azure-keyvault-secrets` (root `.venv`) | Installed 4.11.0 |
+| `pytest tests/unit/services test_secret_provider_factory... -v` | First run: `ImportError: aiohttp package is not installed` when constructing an unmocked `AzureKeyVaultSecretProvider` (async `DefaultAzureCredential` needs `aiohttp` for its transport — a latent gap also present in PBI-00-05's `cosmos` extra). Fixed by adding `aiohttp>=3.9,<4` to both the `cosmos` and `keyvault` extras and installing it |
+| `pytest tests/unit/services tests/unit/domain tests/integration -v` | First full run after the aiohttp fix: collection error — `import file mismatch` between two same-named `test_key_vault_secret_provider.py` files in `tests/unit/services/` and `tests/integration/` (pytest rootless import-mode collision, same class of issue as PBI-00-02). Fixed by renaming the integration file to `tests/integration/test_key_vault_live.py`. Final: `21 passed, 2 skipped` |
+| `apps/api/.venv` regression check: `pytest tests/unit/api -v` | Still `5 passed` |
+| `ruff check src tests/unit/services tests/unit/domain tests/integration` | `All checks passed!` |
+| `mypy src` / `mypy` on new tests | Both clean (16 and 7 files respectively) |
+| Manual grep for secrets/credentials/connection strings/hardcoded GUIDs | Clean. `.env.example` additions are empty placeholders only |
+| `az deployment group create` / `what-if` | NOT executed |
+
+Real, non-code-quality finding: the new `src/services/secrets/` module directory was silently matched by the repository's own `.gitignore` rule `secrets/` (intended to block accidentally-committed local secret files) — `git status` never listed its files, they were never at risk of being committed but also never trackable. Fixed by renaming the module to `src/services/secret_store/` (mirroring the existing `conversation_store/` naming), not by editing the security-relevant `.gitignore` rule. Verified via `git check-ignore -v` before and after.
+
+Full output archived at `docs/sprint_00/evidence/pbi-00-06-key-vault-managed-identity-validation.txt`.
+
+Conclusion: Key Vault and Managed Identity infrastructure were confirmed already compliant (RBAC-only, minimum roles, Managed Identity-based Container Apps auth) with one small output addition. The `SecretProvider` abstraction is implemented, fully unit-tested without Azure connectivity, lint-clean, and mypy-clean. No real secret values were created anywhere. No agents, Azure OpenAI, RAG, APIM, CI/CD deployment, or Entra ID end-user authentication work was performed.
