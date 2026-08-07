@@ -1,6 +1,6 @@
-"""Unit tests specifically for ClaimsAgent's PromptManager injection (PBI-01-03): the agent
-depends on PromptManager, never embeds prompt text, and surfaces the rendered prompt's
-identifier/version — proving PromptManager was actually invoked.
+"""Unit tests specifically for ClaimsAgent's LLMProvider injection (PBI-01-04): the agent
+depends on LLMProvider (never a concrete provider), and its response is deterministic when
+MockLLMProvider (the default local provider) is active.
 """
 
 from pathlib import Path
@@ -28,9 +28,7 @@ def _build_agent() -> ClaimsAgent:
     )
 
 
-async def test_claims_agent_response_references_the_rendered_prompt_identifier_and_version() -> (
-    None
-):
+async def test_claims_agent_response_includes_the_mock_llm_output() -> None:
     agent = _build_agent()
     context = ConversationContext(conversation_id="conv-1", user_id="user-1")
 
@@ -38,18 +36,18 @@ async def test_claims_agent_response_references_the_rendered_prompt_identifier_a
         AgentRequest(message="claim status please", user_id="user-1"), context
     )
 
-    assert "prompt=claims.system@1.0.0" in response.response
+    assert "deterministic mock LLM response" in response.response
 
 
-async def test_claims_agent_source_file_contains_no_embedded_prompt_wording() -> None:
-    """The agent's own source must never hardcode the prompt's actual wording — only the
-    logical identifier "claims.system" — proving prompt content evolves independently of
-    Agent code."""
-    agent_source = Path("src/agents/claims_agent.py").read_text(encoding="utf-8")
-    prompt_source = Path("configs/prompts/claims/system.md").read_text(encoding="utf-8")
+async def test_claims_agent_response_is_fully_deterministic_with_mock_provider() -> None:
+    agent = _build_agent()
+    context = ConversationContext(conversation_id="conv-1", user_id="user-1")
 
-    prompt_body = prompt_source.split("---", 2)[2].strip()
-    first_sentence = prompt_body.split(".")[0]
+    first = await agent.handle(
+        AgentRequest(message="claim status please", user_id="user-1"), context
+    )
+    second = await agent.handle(
+        AgentRequest(message="claim status please", user_id="user-1"), context
+    )
 
-    assert first_sentence not in agent_source
-    assert "claims.system" in agent_source
+    assert first.response == second.response

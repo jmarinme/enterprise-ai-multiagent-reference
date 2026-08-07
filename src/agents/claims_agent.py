@@ -1,16 +1,19 @@
 """Mock Claims Agent. Deterministic response only — validates the orchestration architecture.
 No insurance logic, no Azure OpenAI, no RAG. Implements the Agent Protocol (src.supervisor.registry).
 
-Also demonstrates ToolExecutor injection (PBI-01-02) and PromptManager injection (PBI-01-03):
-this agent depends on ToolExecutor and PromptManager — never on a concrete Tool, a concrete
-PromptProvider, a database, or an integration — the same way a future real Claims Agent would
-call ClaimsStatusTool and render "claims.system" without knowing how either is implemented.
-No prompt text is embedded here: the actual wording lives only in
-configs/prompts/claims/system.md.
+Demonstrates ToolExecutor injection (PBI-01-02), PromptManager injection (PBI-01-03), and
+LLMProvider injection (PBI-01-04): this agent depends on ToolExecutor, PromptManager, and
+LLMProvider — never on a concrete Tool, PromptProvider, Azure OpenAI, the OpenAI SDK, a
+database, or any other integration. The same way a future real Claims Agent would call
+ClaimsStatusTool, render "claims.system", and call an LLM without knowing how any of the
+three are implemented. Still no embedded prompt text and no embedded LLM configuration —
+both come from PromptManager and the injected LLMGenerationSettings default.
 """
 
 from __future__ import annotations
 
+from src.llm.models import LLMGenerationSettings, LLMMessage, LLMMessageRole, LLMRequest
+from src.llm.provider import LLMProvider
 from src.prompts.manager import PromptManager
 from src.prompts.models import PromptRenderContext
 from src.supervisor.models import AgentRequest, AgentResponse, ConversationContext, IntentCategory
@@ -23,9 +26,15 @@ class ClaimsAgent:
 
     name = "ClaimsAgent"
 
-    def __init__(self, tool_executor: ToolExecutor, prompt_manager: PromptManager) -> None:
+    def __init__(
+        self,
+        tool_executor: ToolExecutor,
+        prompt_manager: PromptManager,
+        llm_provider: LLMProvider,
+    ) -> None:
         self._tool_executor = tool_executor
         self._prompt_manager = prompt_manager
+        self._llm_provider = llm_provider
 
     async def handle(self, request: AgentRequest, context: ConversationContext) -> AgentResponse:
         tool_result = await self._tool_executor.execute(
@@ -55,13 +64,26 @@ class ClaimsAgent:
             ),
         )
 
+        llm_response = await self._llm_provider.generate(
+            LLMRequest(
+                messages=[
+                    LLMMessage(role=LLMMessageRole.SYSTEM, content=rendered_prompt.text),
+                    LLMMessage(role=LLMMessageRole.USER, content=request.message),
+                ],
+                settings=LLMGenerationSettings(),
+                correlation_id=request.correlation_id,
+                conversation_id=context.conversation_id,
+                user_id=request.user_id,
+            )
+        )
+
         return AgentResponse(
             conversation_id=context.conversation_id,
             agent=self.name,
             intent=IntentCategory.CLAIMS,
             response=(
-                "This is a mock Claims Agent response. Claims business logic is not "
-                f"implemented in this PBI. ({tool_summary}) "
-                f"[prompt={rendered_prompt.identifier}@{rendered_prompt.metadata.version}]"
+                f"{llm_response.text} "
+                f"[prompt={rendered_prompt.identifier}@{rendered_prompt.metadata.version}] "
+                f"[{tool_summary}]"
             ),
         )

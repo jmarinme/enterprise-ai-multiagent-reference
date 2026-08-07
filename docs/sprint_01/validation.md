@@ -52,3 +52,21 @@ Conclusion: the Tool framework mirrors the Supervisor framework's proven interfa
 Full output archived at `docs/sprint_01/evidence/pbi-01-03-prompt-framework-validation.txt`.
 
 Conclusion: the Prompt Management framework mirrors the Supervisor and Tool frameworks' proven interface-only shape; `PromptManager` makes no LLM calls, contains no business logic, and normalizes unexpected provider failures into a typed `PromptValidationError`. `FileSystemPromptProvider` is the only component aware of file paths/YAML/Markdown. Rendering is safe and deterministic (no `eval()`), failing explicitly for both missing required and unexpected/unknown variables. `ClaimsAgent` now demonstrates real `PromptManager` injection with zero embedded prompt text, verified by a dedicated test. All 108 tests pass deterministically with no Azure dependency (full regression of the existing Supervisor, Tool, and `/chat` suites confirmed unchanged); ruff and mypy clean. No Azure OpenAI, LLM calls, RAG, Semantic Kernel, LangGraph, CrewAI, AutoGen, APIM, or real business prompts were implemented.
+
+## 2026-08-07 — PBI-01-04: Reusable LLM Adapter Framework
+
+| Command | Result |
+|---|---|
+| Branch topology check (`git log`) | Confirmed PBI-01-01/02/03 already merged into this branch's history — no merge needed |
+| `pytest tests/unit/api tests/unit/domain tests/unit/services tests/unit/supervisor tests/unit/agents tests/unit/tools tests/unit/prompts tests/unit/llm tests/integration -v` | Attempt 1: `135 passed, 1 failed, 2 skipped` — one *expected* behavior-change failure (see decisions.md), not a regression bug. Fixed the outdated test assertion. Attempt 2: `136 passed, 2 skipped` |
+| `ruff check apps/api/src src tests` | Attempt 1: 2 errors (a `TYPE_CHECKING`-resolvable forward-reference name, plus one import-ordering issue). Fixed. Attempt 2: `All checks passed!` |
+| `mypy apps/api/src` / `mypy src` | Attempt 1: 2 errors in `azure_openai_provider.py` (ambiguous `TypedDict` match for the `openai` SDK's chat message params). Fixed with an explicit, justified `cast()`. Attempt 2: both clean (13 and 55 files) |
+| `mypy tests/unit/llm tests/unit/agents tests/unit/tools tests/unit/prompts tests/unit/supervisor` | Attempt 1: 1 error (unused `type: ignore`). Fixed. Attempt 2: clean (18 files) |
+| Live smoke test: `uvicorn` + real `POST /chat` call routed to `ClaimsAgent` | `200`, response includes the deterministic mock LLM text plus `[prompt=claims.system@1.0.0]` and the tool-lookup summary, proving the full `Agent → PromptManager → RenderedPrompt → LLMProvider → MockLLMProvider → LLMResponse` chain end-to-end through the real composed API |
+| `docker compose config` (temporary local `.env`) | exit 0 — unaffected, no Dockerfile changes this PBI |
+| `docker build` | NOT executed — Docker daemon unavailable locally; not required this PBI (no image content changed) |
+| Manual grep for secrets/keys, hardcoded endpoints, and prohibited frameworks/services (RAG/Azure AI Search/APIM/Semantic Kernel/AutoGen/LangGraph/CrewAI/embeddings/vector DBs) | Clean — only obviously-fake test fixture values (`example.openai.azure.com`, `mock-secret-value-not-a-real-key`) |
+
+Full output archived at `docs/sprint_01/evidence/pbi-01-04-llm-adapter-validation.txt`.
+
+Conclusion: the LLM Adapter framework mirrors the Supervisor/Tool/Prompt frameworks' proven interface-only shape a fourth time; `MockLLMProvider` is fully deterministic and is the default, so all 136 tests run with zero Azure connectivity. `AzureOpenAIProvider` is production-shaped and fully mocked in its own 9 dedicated tests — never called against real Azure. `ClaimsAgent` now demonstrates real `LLMProvider` injection, and one outdated pre-PBI-01-04 test assertion was correctly updated to reflect the agent's new (intended) input-dependent behavior. ruff and mypy clean after two well-understood, justified fixes. No RAG, Azure AI Search, embeddings, vector databases, Semantic Kernel, AutoGen, LangGraph, CrewAI, APIM, or authentication was implemented.

@@ -9,6 +9,7 @@ from src.agents.broker_agent import BrokerAgent
 from src.agents.claims_agent import ClaimsAgent
 from src.agents.commercial_intake_agent import CommercialIntakeAgent
 from src.agents.fallback_agent import FallbackAgent
+from src.llm.mock_provider import MockLLMProvider
 from src.prompts.filesystem_provider import FileSystemPromptProvider
 from src.prompts.manager import PromptManager
 from src.services.tools.claims_status_tool import ClaimsStatusTool
@@ -26,6 +27,7 @@ def _build_claims_agent() -> ClaimsAgent:
     return ClaimsAgent(
         tool_executor=ToolExecutor(tool_registry=tool_registry),
         prompt_manager=prompt_manager,
+        llm_provider=MockLLMProvider(),
     )
 
 
@@ -55,7 +57,12 @@ async def test_agent_returns_deterministic_response(
     assert len(response.response) > 0
 
 
-async def test_agent_response_is_identical_regardless_of_input_message() -> None:
+async def test_agent_non_llm_response_metadata_is_stable_across_different_messages() -> None:
+    """As of PBI-01-04, ClaimsAgent's response legitimately varies with the input message
+    (its text now comes from an LLM call over that message) — see
+    tests/unit/agents/test_claims_agent_llm_integration.py for that determinism-per-input
+    coverage. This test instead checks what is still invariant: agent identity, intent, and
+    the non-LLM-derived prompt/tool annotations."""
     agent = _build_claims_agent()
     context = ConversationContext(conversation_id="conv-1", user_id="user-1")
 
@@ -66,4 +73,7 @@ async def test_agent_response_is_identical_regardless_of_input_message() -> None
         AgentRequest(message="completely different message", user_id="user-1"), context
     )
 
-    assert first.response == second.response
+    assert first.agent == second.agent == "ClaimsAgent"
+    assert first.intent == second.intent
+    assert "[prompt=claims.system@1.0.0]" in first.response
+    assert "[prompt=claims.system@1.0.0]" in second.response
