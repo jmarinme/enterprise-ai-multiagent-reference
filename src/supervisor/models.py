@@ -46,6 +46,8 @@ class ConversationContext(BaseModel):
     messages: list[Message] = Field(default_factory=list)
     summary: str | None = None
     is_new: bool = False
+    metadata: dict[str, str] = Field(default_factory=dict)
+    current_agent: str | None = None
 
 
 class AgentResponse(BaseModel):

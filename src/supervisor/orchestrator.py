@@ -16,17 +16,23 @@ from src.supervisor.models import (
     AgentRequest,
     AgentResponse,
     ConversationContext,
+    Intent,
+    IntentCategory,
     SupervisorConfig,
 )
-from src.supervisor.registry import AgentRegistry
+from src.supervisor.registry import Agent, AgentRegistry
 
 
 class SupervisorOrchestrator:
     """Registry-driven Supervisor.
 
     Pipeline: load ConversationContext -> resolve Intent -> resolve Agent from the registry
-    -> invoke Agent -> persist the turn -> return AgentResponse. No if/else or switch
-    statements select the agent — resolution is a single dict lookup inside AgentRegistry.
+    -> invoke Agent -> persist the turn -> return AgentResponse. Agent selection is a single
+    dict lookup inside AgentRegistry, with one uniform, agent-agnostic fallback: a follow-up
+    message that the keyword-based IntentResolver cannot classify (e.g. a bare policy number
+    or a plain "yes"/"no" answer mid claims-intake) stays with whichever Agent is already
+    handling this conversation, rather than being misrouted to FallbackAgent — this is not
+    per-agent-type branching, it applies identically regardless of which Agent that is.
     """
 
     def __init__(
@@ -50,12 +56,20 @@ class SupervisorOrchestrator:
         )
 
         intent = await self._intent_resolver.resolve(request.message)
-        agent = self._agent_registry.resolve(intent.category)
+        agent = self._resolve_agent(intent, context)
         response = await agent.handle(request=request, context=context)
 
         await self._persist_turn(context=context, request=request, response=response)
 
         return response
+
+    def _resolve_agent(self, intent: Intent, context: ConversationContext) -> Agent:
+        if intent.category != IntentCategory.UNKNOWN or context.current_agent is None:
+            return self._agent_registry.resolve(intent.category)
+        for agent in self._agent_registry.list():
+            if agent.name == context.current_agent:
+                return agent
+        return self._agent_registry.resolve(intent.category)
 
     async def _persist_turn(
         self,
@@ -81,6 +95,7 @@ class SupervisorOrchestrator:
                 messages=[user_message, agent_message],
                 current_agent=response.agent,
                 correlation_id=request.correlation_id,
+                metadata=response.metadata,
             )
             await self._conversation_repository.create_conversation(conversation)
             return
@@ -89,5 +104,5 @@ class SupervisorOrchestrator:
             context.user_id, context.conversation_id, user_message
         )
         await self._conversation_repository.append_message(
-            context.user_id, context.conversation_id, agent_message
+            context.user_id, context.conversation_id, agent_message, metadata=response.metadata
         )

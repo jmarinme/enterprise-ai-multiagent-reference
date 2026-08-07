@@ -8,7 +8,7 @@ result back into an HTTP response.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 from src.supervisor.models import AgentRequest
 from src.supervisor.orchestrator import SupervisorOrchestrator
@@ -33,6 +33,11 @@ class ChatResponse(_CamelModel):
     agent: str
     intent: str
     response: str
+    # Deliberately generic (not claims-specific typed fields): keeps this route free of any
+    # business logic, per this file's own docstring. An Agent may use it to expose working
+    # state (e.g. ClaimsAgent's claimsIntakeState) to a future richer client; existing clients
+    # that ignore unknown fields are unaffected.
+    metadata: dict[str, str] = Field(default_factory=dict)
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -54,4 +59,5 @@ async def post_chat(
         agent=agent_response.agent,
         intent=agent_response.intent.value,
         response=agent_response.response,
+        metadata=agent_response.metadata,
     )

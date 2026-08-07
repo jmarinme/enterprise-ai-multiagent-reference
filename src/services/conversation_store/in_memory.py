@@ -35,12 +35,18 @@ class InMemoryConversationRepository:
         return [c.model_copy(deep=True) for c in matches]
 
     async def append_message(
-        self, user_id: str, conversation_id: str, message: Message
+        self,
+        user_id: str,
+        conversation_id: str,
+        message: Message,
+        metadata: dict[str, str] | None = None,
     ) -> Conversation:
         key = (user_id, conversation_id)
         stored = self._conversations.get(key)
         if stored is None:
             raise ValueError(f"Conversation {conversation_id} not found for user {user_id}")
         stored.messages.append(message)
+        if metadata is not None:
+            stored.metadata = metadata
         stored.updated_at = datetime.now(UTC)
         return stored.model_copy(deep=True)

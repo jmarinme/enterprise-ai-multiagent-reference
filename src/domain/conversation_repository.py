@@ -25,7 +25,16 @@ class ConversationRepository(Protocol):
         ...
 
     async def append_message(
-        self, user_id: str, conversation_id: str, message: Message
+        self,
+        user_id: str,
+        conversation_id: str,
+        message: Message,
+        metadata: dict[str, str] | None = None,
     ) -> Conversation:
-        """Append a message to an existing conversation and return the updated conversation."""
+        """Append a message to an existing conversation and return the updated conversation.
+
+        When metadata is provided, it replaces the conversation's stored metadata (the
+        Agent's latest working-state snapshot) — never merged, since the Agent always sends
+        its complete current state, not a partial patch.
+        """
         ...

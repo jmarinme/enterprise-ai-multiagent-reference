@@ -46,6 +46,31 @@ async def test_returns_existing_context_when_conversation_found() -> None:
     assert context.messages[0].content == "hi"
 
 
+async def test_new_context_has_empty_metadata() -> None:
+    repository = InMemoryConversationRepository()
+
+    context = await load_conversation_context(repository, user_id="user-1", conversation_id=None)
+
+    assert context.metadata == {}
+
+
+async def test_existing_conversations_metadata_is_loaded_into_context() -> None:
+    """Round-trips an Agent's stored working state (e.g. ClaimsAgent's claimsIntakeState,
+    PBI-01-05) back into ConversationContext so a multi-turn Agent can resume where it left
+    off — see src.agents.claims.state for why this is session state, not core business truth
+    (CLAUDE.md §4.3)."""
+    repository = InMemoryConversationRepository()
+    conversation = await repository.create_conversation(
+        Conversation(user_id="user-1", metadata={"claimsIntakeState": '{"status": "new"}'})
+    )
+
+    context = await load_conversation_context(
+        repository, user_id="user-1", conversation_id=conversation.id
+    )
+
+    assert context.metadata == {"claimsIntakeState": '{"status": "new"}'}
+
+
 async def test_truncates_history_to_max_history_messages() -> None:
     repository = InMemoryConversationRepository()
     messages = [Message(role=MessageRole.USER, content=str(i)) for i in range(5)]

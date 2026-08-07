@@ -1,0 +1,104 @@
+"""Unit tests for deterministic claims-intake field extraction. No LLM involved — every case
+here must be resolvable by regex/keyword rules alone (MockLLMProvider cannot do real NLU).
+"""
+
+from src.agents.claims.extraction import extract_fields
+from src.agents.claims.state import ClaimsIntakeState
+
+
+def test_extracts_policy_number_in_either_case() -> None:
+    state = extract_fields("my policy is syn-pol-0001", ClaimsIntakeState())
+
+    assert state.policy_number == "SYN-POL-0001"
+
+
+def test_policy_number_is_refreshed_even_if_already_set() -> None:
+    state = ClaimsIntakeState(policy_number="SYN-POL-9999")
+
+    updated = extract_fields("actually it's SYN-POL-0001", state)
+
+    assert updated.policy_number == "SYN-POL-0001"
+
+
+def test_extracts_event_date_in_iso_format() -> None:
+    state = extract_fields("it happened on 2026-08-01", ClaimsIntakeState())
+
+    assert state.event_date == "2026-08-01"
+
+
+def test_a_date_is_never_mistaken_for_a_phone_number() -> None:
+    state = extract_fields("2026-08-01", ClaimsIntakeState())
+
+    assert state.event_date == "2026-08-01"
+    assert state.contact_phone is None
+
+
+def test_extracts_phone_number() -> None:
+    state = extract_fields("you can reach me at 555-123-4567", ClaimsIntakeState())
+
+    assert state.contact_phone is not None
+    assert "555" in state.contact_phone
+
+
+def test_extracts_email() -> None:
+    state = extract_fields("email me at jane@example.com please", ClaimsIntakeState())
+
+    assert state.contact_email == "jane@example.com"
+
+
+def test_extracts_loss_type_from_keyword() -> None:
+    state = extract_fields("there was a collision on the highway", ClaimsIntakeState())
+
+    assert state.loss_type == "collision"
+
+
+def test_yes_no_answer_is_only_interpreted_for_the_last_asked_yes_no_field() -> None:
+    state = ClaimsIntakeState(last_asked_field="injuries_reported")
+
+    updated = extract_fields("no", state)
+
+    assert updated.injuries_reported is False
+    assert updated.third_parties_involved is None
+
+
+def test_yes_answer_sets_the_field_true() -> None:
+    state = ClaimsIntakeState(last_asked_field="third_parties_involved")
+
+    updated = extract_fields("yes, another driver", state)
+
+    assert updated.third_parties_involved is True
+
+
+def test_free_text_fallback_fills_the_last_asked_free_text_field() -> None:
+    state = ClaimsIntakeState(last_asked_field="event_location")
+
+    updated = extract_fields("in the parking lot of my office", state)
+
+    assert updated.event_location == "in the parking lot of my office"
+
+
+def test_free_text_fallback_does_not_apply_to_structured_fields() -> None:
+    """A malformed date answer must not silently land in event_date — it should stay missing
+    so the workflow re-prompts, per PBI-01-05's 'invalid date/time format' edge case."""
+    state = ClaimsIntakeState(last_asked_field="event_date")
+
+    updated = extract_fields("last Tuesday sometime", state)
+
+    assert updated.event_date is None
+
+
+def test_free_text_fallback_is_skipped_when_a_structured_field_matched_instead() -> None:
+    state = ClaimsIntakeState(last_asked_field="contact_name")
+
+    updated = extract_fields("it's SYN-POL-0002", state)
+
+    assert updated.contact_name is None
+    assert updated.policy_number == "SYN-POL-0002"
+
+
+def test_free_text_fallback_never_overwrites_an_already_filled_field() -> None:
+    state = ClaimsIntakeState(last_asked_field="event_location", event_location="already set")
+
+    updated = extract_fields("something else entirely", state)
+
+    assert updated.event_location == "already set"

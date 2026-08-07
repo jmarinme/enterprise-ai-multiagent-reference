@@ -1,9 +1,12 @@
 """Synthetic sample records for the Tool framework's proof-of-architecture Tools.
 
 All data here is fabricated for demonstration only — no real TMX customers, policies, claims,
-or brokers, and no real credentials. Deliberately small (two records per domain); this is not
-a dataset, it exists only to prove PolicyLookupTool/ClaimsStatusTool/BrokerAccountLookupTool
-can return typed results end-to-end.
+or brokers, and no real credentials. Deliberately small; this is not a dataset, it exists only
+to prove the synthetic Tools (PolicyLookupTool, ClaimsStatusTool, BrokerAccountLookupTool,
+PaymentStatusTool, ClaimRegistrationTool, AdjusterAssignmentTool) can return typed results
+end-to-end. The SYN-POL-000x records additionally cover the four claims-intake scenarios
+PBI-01-05 requires: active+paid, active+payment-issue, inactive, and not-found (any
+unrecognized number).
 """
 
 from __future__ import annotations
@@ -75,3 +78,64 @@ SYNTHETIC_BROKERS: dict[str, SyntheticBrokerRecord] = {
         commission_tier="bronze",
     ),
 }
+
+
+class SyntheticPaymentStatusRecord(BaseModel):
+    policy_number: str
+    payment_current: bool
+    last_payment_date: str | None = None
+
+
+class SyntheticAdjusterRecord(BaseModel):
+    adjuster_id: str
+    adjuster_name: str
+    region: str
+
+
+# Claims-intake policy scenarios (PBI-01-05), additive to SYNTHETIC_POLICIES above:
+#   SYN-POL-0001 -> active, payment current      (valid, no notices)
+#   SYN-POL-0002 -> active, payment issue         (valid, surfaced as a fact, not a gate)
+#   SYN-POL-0003 -> inactive (lapsed)              (surfaced as a fact, not a gate)
+# Any other policy number (e.g. SYN-POL-9999) is simply absent -> "policy not found".
+SYNTHETIC_POLICIES["SYN-POL-0001"] = SyntheticPolicyRecord(
+    policy_number="SYN-POL-0001",
+    status="active",
+    holder_name="Synthetic Claimant One",
+    line_of_business="auto",
+)
+SYNTHETIC_POLICIES["SYN-POL-0002"] = SyntheticPolicyRecord(
+    policy_number="SYN-POL-0002",
+    status="active",
+    holder_name="Synthetic Claimant Two",
+    line_of_business="auto",
+)
+SYNTHETIC_POLICIES["SYN-POL-0003"] = SyntheticPolicyRecord(
+    policy_number="SYN-POL-0003",
+    status="lapsed",
+    holder_name="Synthetic Claimant Three",
+    line_of_business="property",
+)
+
+SYNTHETIC_PAYMENT_STATUSES: dict[str, SyntheticPaymentStatusRecord] = {
+    "SYN-POL-0001": SyntheticPaymentStatusRecord(
+        policy_number="SYN-POL-0001", payment_current=True, last_payment_date="2026-07-01"
+    ),
+    "SYN-POL-0002": SyntheticPaymentStatusRecord(
+        policy_number="SYN-POL-0002", payment_current=False, last_payment_date="2026-04-01"
+    ),
+    "SYN-POL-0003": SyntheticPaymentStatusRecord(
+        policy_number="SYN-POL-0003", payment_current=False, last_payment_date=None
+    ),
+}
+
+SYNTHETIC_ADJUSTERS: list[SyntheticAdjusterRecord] = [
+    SyntheticAdjusterRecord(
+        adjuster_id="ADJ-SYN-01", adjuster_name="Synthetic Adjuster Rivera", region="north"
+    ),
+    SyntheticAdjusterRecord(
+        adjuster_id="ADJ-SYN-02", adjuster_name="Synthetic Adjuster Chen", region="south"
+    ),
+    SyntheticAdjusterRecord(
+        adjuster_id="ADJ-SYN-03", adjuster_name="Synthetic Adjuster Okafor", region="central"
+    ),
+]

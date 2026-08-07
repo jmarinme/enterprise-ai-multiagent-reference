@@ -24,8 +24,11 @@ from src.prompts.filesystem_provider import FileSystemPromptProvider
 from src.prompts.manager import PromptManager
 from src.services.conversation_store.factory import get_conversation_repository
 from src.services.secret_store.factory import get_secret_provider as build_secret_provider
+from src.services.tools.adjuster_assignment_tool import AdjusterAssignmentTool
 from src.services.tools.broker_account_lookup_tool import BrokerAccountLookupTool
+from src.services.tools.claim_registration_tool import ClaimRegistrationTool
 from src.services.tools.claims_status_tool import ClaimsStatusTool
+from src.services.tools.payment_status_tool import PaymentStatusTool
 from src.services.tools.policy_lookup_tool import PolicyLookupTool
 from src.supervisor.intent import RuleBasedIntentResolver
 from src.supervisor.models import IntentCategory
@@ -52,6 +55,9 @@ def get_tool_executor() -> ToolExecutor:
     tool_registry.register(PolicyLookupTool())
     tool_registry.register(ClaimsStatusTool())
     tool_registry.register(BrokerAccountLookupTool())
+    tool_registry.register(PaymentStatusTool())
+    tool_registry.register(ClaimRegistrationTool())
+    tool_registry.register(AdjusterAssignmentTool())
     return ToolExecutor(tool_registry=tool_registry)
 
 

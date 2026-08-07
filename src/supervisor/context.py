@@ -35,6 +35,8 @@ async def load_conversation_context(
                 messages=list(history),
                 summary=conversation.summary,
                 is_new=False,
+                metadata=dict(conversation.metadata),
+                current_agent=conversation.current_agent,
             )
 
     return ConversationContext(

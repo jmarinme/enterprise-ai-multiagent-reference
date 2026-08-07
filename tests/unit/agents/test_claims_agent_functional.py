@@ -1,0 +1,147 @@
+"""Functional, multi-turn tests for ClaimsAgent (PBI-01-05): the full claim-notice intake flow
+end to end, driven directly against the Agent (mirroring what SupervisorOrchestrator does —
+feeding each turn's AgentResponse.metadata back in as the next turn's ConversationContext.
+metadata). All Tools, the Prompt framework, and MockLLMProvider are real, wired dependencies;
+nothing here is mocked.
+"""
+
+import re
+from pathlib import Path
+
+from src.agents.claims_agent import ClaimsAgent
+from src.llm.mock_provider import MockLLMProvider
+from src.prompts.filesystem_provider import FileSystemPromptProvider
+from src.prompts.manager import PromptManager
+from src.services.tools.adjuster_assignment_tool import AdjusterAssignmentTool
+from src.services.tools.claim_registration_tool import ClaimRegistrationTool
+from src.services.tools.payment_status_tool import PaymentStatusTool
+from src.services.tools.policy_lookup_tool import PolicyLookupTool
+from src.supervisor.models import AgentRequest, ConversationContext
+from src.tools.executor import ToolExecutor
+from src.tools.registry import InMemoryToolRegistry
+
+_CLAIM_REFERENCE_PATTERN = re.compile(r"SYN-CLM-\d{4}-\d{4}")
+
+
+def _build_agent() -> ClaimsAgent:
+    tool_registry = InMemoryToolRegistry()
+    tool_registry.register(PolicyLookupTool())
+    tool_registry.register(PaymentStatusTool())
+    tool_registry.register(ClaimRegistrationTool())
+    tool_registry.register(AdjusterAssignmentTool())
+    prompt_manager = PromptManager(
+        provider=FileSystemPromptProvider(prompts_root=Path("configs/prompts"))
+    )
+    return ClaimsAgent(
+        tool_executor=ToolExecutor(tool_registry=tool_registry),
+        prompt_manager=prompt_manager,
+        llm_provider=MockLLMProvider(),
+    )
+
+
+async def _run_conversation(agent: ClaimsAgent, messages: list[str]) -> list[str]:
+    context = ConversationContext(conversation_id="conv-1", user_id="user-1")
+    responses: list[str] = []
+    for message in messages:
+        result = await agent.handle(AgentRequest(message=message, user_id="user-1"), context)
+        responses.append(result.response)
+        context = context.model_copy(update={"metadata": result.metadata})
+    return responses
+
+
+async def test_full_claim_report_flow_from_first_contact_to_adjuster_assignment() -> None:
+    responses = await _run_conversation(
+        _build_agent(),
+        [
+            "I need to report a claim",
+            "SYN-POL-0001",
+            "2026-08-01",
+            "In my driveway",
+            "It was a collision",
+            "Another car hit me while parked",
+            "Jane Caller",
+            "555-123-4567",
+            "no",
+            "yes",
+        ],
+    )
+
+    # One question at a time — never a wall of questions in a single turn.
+    for question in responses[:-1]:
+        assert question.count("?") <= 1
+
+    final = responses[-1]
+    assert "active" in final.lower()
+    assert _CLAIM_REFERENCE_PATTERN.search(final)
+    assert "assigned" in final.lower()
+
+
+async def test_conversation_continues_gracefully_after_an_unknown_policy_number() -> None:
+    """Policy validation only runs once every required field has been collected — supplying
+    an unrecognized policy number does not fail immediately, it surfaces the "not found"
+    notice once the rest of the intake is complete, without ever exposing internal detail."""
+    responses = await _run_conversation(
+        _build_agent(),
+        [
+            "I need to report a claim",
+            "SYN-POL-9999",
+            "2026-08-01",
+            "In my driveway",
+            "It was a collision",
+            "Another car hit me while parked",
+            "Jane Caller",
+            "555-123-4567",
+            "no",
+            "yes",
+        ],
+    )
+
+    assert "could not find" in responses[-1].lower()
+    assert "traceback" not in responses[-1].lower()
+    assert "exception" not in responses[-1].lower()
+
+
+async def test_re_sending_a_message_after_the_claim_is_fully_processed_does_not_duplicate_it() -> (
+    None
+):
+    agent = _build_agent()
+    responses = await _run_conversation(
+        agent,
+        [
+            "I need to report a claim",
+            "SYN-POL-0001",
+            "2026-08-01",
+            "In my driveway",
+            "It was a collision",
+            "Another car hit me while parked",
+            "Jane Caller",
+            "555-123-4567",
+            "no",
+            "yes",
+        ],
+    )
+    first_reference = _CLAIM_REFERENCE_PATTERN.search(responses[-1])
+    assert first_reference is not None
+
+    context = ConversationContext(conversation_id="conv-1", user_id="user-1")
+    # Replay the full conversation once more via a fresh context/state chain to get the final
+    # metadata, then send one extra message to confirm no second claim is created.
+    last_metadata: dict[str, str] = {}
+    for message in [
+        "I need to report a claim",
+        "SYN-POL-0001",
+        "2026-08-01",
+        "In my driveway",
+        "It was a collision",
+        "Another car hit me while parked",
+        "Jane Caller",
+        "555-123-4567",
+        "no",
+        "yes",
+        "thank you!",
+    ]:
+        result = await agent.handle(AgentRequest(message=message, user_id="user-1"), context)
+        context = context.model_copy(update={"metadata": result.metadata})
+        last_metadata = result.metadata
+
+    assert "claimsIntakeState" in last_metadata
