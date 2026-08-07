@@ -21,6 +21,20 @@ param cosmosConversationTtlSeconds = -1
 // Basic (not Free): staging is not the single free-tier slot a subscription gets, and an SLA
 // is appropriate for pre-production validation.
 param aiSearchSkuName = 'basic'
+param aiSearchIndexName = 'tmxai-knowledge-index'
+
+param azureOpenAiSkuName = 'S0'
+param azureOpenAiDeploymentName = 'chat'
+param azureOpenAiModelName = 'gpt-4o-mini'
+param azureOpenAiModelVersion = '2024-07-18'
+param azureOpenAiModelCapacity = 30
+param azureOpenAiApiVersion = '2024-10-21'
+
+// Provider selection (PBI-03-02): knowledgeProvider stays 'local' — see dev.bicepparam and
+// docs/sprint_03/decisions.md; no AI Search index exists yet in any environment.
+param llmProvider = 'azure_openai'
+param knowledgeProvider = 'local'
+param conversationStoreProvider = 'cosmos'
 
 param apiImageName = 'tmx-api'
 param apiImageTag = 'pending-first-build'

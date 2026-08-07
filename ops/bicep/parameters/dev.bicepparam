@@ -19,6 +19,21 @@ param cosmosCapacityMode = 'Serverless'
 param cosmosConversationTtlSeconds = -1
 
 param aiSearchSkuName = 'free'
+param aiSearchIndexName = 'tmxai-knowledge-index'
+
+param azureOpenAiSkuName = 'S0'
+param azureOpenAiDeploymentName = 'chat'
+param azureOpenAiModelName = 'gpt-4o-mini'
+param azureOpenAiModelVersion = '2024-07-18'
+param azureOpenAiModelCapacity = 10
+param azureOpenAiApiVersion = '2024-10-21'
+
+// Provider selection (PBI-03-02): knowledgeProvider stays 'local' even in the Azure dev
+// environment — no AI Search index exists yet (out of scope), and azure_ai_search would make
+// AzureAISearchProvider fail at startup. See docs/sprint_03/decisions.md.
+param llmProvider = 'azure_openai'
+param knowledgeProvider = 'local'
+param conversationStoreProvider = 'cosmos'
 
 // Placeholder tags — a real deployment requires an image already pushed to the registry created
 // by this template. CI/CD (PBI-00-07) is responsible for building and pushing before deploying.
