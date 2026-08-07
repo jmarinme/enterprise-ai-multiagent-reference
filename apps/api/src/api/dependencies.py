@@ -22,7 +22,7 @@ from src.llm.factory import get_llm_provider as build_llm_provider
 from src.llm.provider import LLMProvider
 from src.prompts.filesystem_provider import FileSystemPromptProvider
 from src.prompts.manager import PromptManager
-from src.rag.local_provider import LocalKnowledgeProvider
+from src.rag.factory import get_knowledge_provider as build_knowledge_provider
 from src.rag.retriever import KnowledgeRetriever
 from src.services.conversation_store.factory import get_conversation_repository
 from src.services.secret_store.factory import get_secret_provider as build_secret_provider
@@ -43,7 +43,12 @@ from src.supervisor.registry import InMemoryAgentRegistry
 from src.tools.executor import ToolExecutor
 from src.tools.registry import InMemoryToolRegistry
 
-from src.config.settings import ConversationStoreSettings, LLMSettings, SecretProviderSettings
+from src.config.settings import (
+    ConversationStoreSettings,
+    KnowledgeSettings,
+    LLMSettings,
+    SecretProviderSettings,
+)
 
 # Relative to the process's working directory (repo root locally, /app in the Docker image —
 # see apps/api/Dockerfile), matching how the existing .env file is already resolved.
@@ -87,14 +92,22 @@ def get_prompt_manager() -> PromptManager:
 
 @lru_cache
 def get_knowledge_retriever() -> KnowledgeRetriever:
-    """Build and cache the process-wide KnowledgeRetriever, backed by the local
-    LocalKnowledgeProvider.
+    """Build and cache the process-wide KnowledgeRetriever.
 
-    This is the only place any concrete KnowledgeProvider is chosen — Agents depend on
-    KnowledgeRetriever alone. Swapping in a future Azure AI Search-backed provider means
-    changing this one function, not any Agent.
+    Local by default (KNOWLEDGE_PROVIDER=local) — no Azure connectivity required locally or in
+    tests. This is the only place any concrete KnowledgeProvider (local or Azure AI Search) is
+    chosen — Agents depend on KnowledgeRetriever alone. Swapping providers means changing this
+    one function, not any Agent.
     """
-    provider = LocalKnowledgeProvider(documents_root=_KNOWLEDGE_BASE_ROOT)
+    knowledge_settings = KnowledgeSettings()
+    secret_provider: SecretProvider | None = None
+    if knowledge_settings.azure_ai_search_use_api_key:
+        secret_provider = build_secret_provider(SecretProviderSettings())
+    provider = build_knowledge_provider(
+        knowledge_settings,
+        local_documents_root=_KNOWLEDGE_BASE_ROOT,
+        secret_provider=secret_provider,
+    )
     return KnowledgeRetriever(provider=provider)
 
 

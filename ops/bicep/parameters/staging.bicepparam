@@ -18,6 +18,10 @@ param cosmosConsistencyLevel = 'Session'
 param cosmosCapacityMode = 'Serverless'
 param cosmosConversationTtlSeconds = -1
 
+// Basic (not Free): staging is not the single free-tier slot a subscription gets, and an SLA
+// is appropriate for pre-production validation.
+param aiSearchSkuName = 'basic'
+
 param apiImageName = 'tmx-api'
 param apiImageTag = 'pending-first-build'
 param apiCpuCores = '0.5'

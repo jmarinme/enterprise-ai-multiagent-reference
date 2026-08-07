@@ -1,12 +1,14 @@
 // TMX Enterprise AI Reference Platform — Sprint 0 Bicep foundation (PBI-00-04, extended by
-// PBI-00-05 with the Cosmos DB conversation store).
+// PBI-00-05 with the Cosmos DB conversation store, and by PBI-02-02 with an Azure AI Search
+// service backing the optional AzureAISearchProvider KnowledgeProvider).
 //
 // Scope: Container Registry, Log Analytics, Application Insights, Container Apps environment,
 // API + Web Container Apps, a shared user-assigned Managed Identity, a Key Vault foundation,
-// and a Cosmos DB for NoSQL conversation history store.
+// a Cosmos DB for NoSQL conversation history store, and an Azure AI Search service (service
+// only — no index or document ingestion).
 //
-// Explicitly out of scope (later PBIs/ADRs): Azure OpenAI, Azure AI Search, API Management,
-// Storage accounts, agent business logic, RAG.
+// Explicitly out of scope (later PBIs/ADRs): Azure OpenAI, API Management, Storage accounts,
+// agent business logic, RAG index creation/ingestion.
 //
 // Deploys into an existing resource group supplied at deploy time (`az deployment group create
 // --resource-group <rg>`) — the resource group name is intentionally never referenced here.
@@ -64,6 +66,10 @@ param cosmosThroughput int = 400
 
 @description('Conversation container default TTL in seconds. -1 provisions TTL support without expiring anything by default; a real retention value requires its own ADR.')
 param cosmosConversationTtlSeconds int = -1
+
+@description('Azure AI Search pricing tier. Free is the conservative default for dev/academic use — sufficient for a synthetic reference-document corpus and this platform explicitly does not use semantic ranking, which Free does not support anyway.')
+@allowed(['free', 'basic', 'standard'])
+param aiSearchSkuName string = 'free'
 
 @description('API image repository name inside the registry.')
 param apiImageName string
@@ -125,6 +131,7 @@ var webContainerAppName = 'ca-${namePrefix}-web'
 var containerRegistryName = take('acr${replace(projectName, '-', '')}${environmentName}${uniqueSuffix}', 50)
 var keyVaultName = take('kv-${namePrefix}-${uniqueSuffix}', 24)
 var cosmosAccountName = take('cosmos-${namePrefix}-${uniqueSuffix}', 44)
+var aiSearchName = take('srch-${namePrefix}-${uniqueSuffix}', 60)
 var appInsightsSecretName = 'appinsights-connection-string'
 
 module logAnalytics 'modules/log-analytics.bicep' = {
@@ -193,6 +200,17 @@ module cosmosDb 'modules/cosmos-db.bicep' = {
     throughput: cosmosThroughput
     conversationTtlSeconds: cosmosConversationTtlSeconds
     dataContributorPrincipalId: managedIdentity.outputs.principalId
+  }
+}
+
+module aiSearch 'modules/ai-search.bicep' = {
+  name: 'ai-search-deployment'
+  params: {
+    location: location
+    name: aiSearchName
+    tags: tags
+    skuName: aiSearchSkuName
+    searchIndexDataReaderPrincipalId: managedIdentity.outputs.principalId
   }
 }
 
@@ -327,3 +345,7 @@ output cosmosDocumentEndpoint string = cosmosDb.outputs.documentEndpoint
 output cosmosDatabaseName string = cosmosDb.outputs.databaseName
 output cosmosContainerName string = cosmosDb.outputs.containerName
 output cosmosAccountId string = cosmosDb.outputs.accountId
+
+output aiSearchName string = aiSearch.outputs.name
+output aiSearchEndpoint string = aiSearch.outputs.endpoint
+output aiSearchId string = aiSearch.outputs.id

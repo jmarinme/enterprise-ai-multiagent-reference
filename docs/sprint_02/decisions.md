@@ -41,3 +41,35 @@ Record sprint-specific decisions and deviations. Cross-sprint decisions belong i
 **Deviation/status change:** A correct fix to an assumption invalidated by this PBI's own intended behavior change, not a regression.
 
 **How to apply:** Any future PBI that makes `ClaimsAgent`'s (or another RAG-integrated agent's) response depend on more of the input message should expect, and correct, any prior test asserting response identity across differing inputs — check whether the difference is due to genuinely new, intended input-sensitivity before assuming a regression.
+
+## 2026-08-07 — PBI-02-02: no vector search or semantic ranker — plain keyword search only
+
+**Decision:** `AzureAISearchProvider.retrieve()` calls `SearchClient.search(search_text=...)` — Azure AI Search's classic full-text (BM25) keyword search — never a vector query (`VectorizableTextQuery`/vector fields) and never `query_type="semantic"`. Justification: the existing `KnowledgeQuery`/`KnowledgeChunk` contracts (PBI-02-01) have no embedding field anywhere, so the PBI's own "vector search unless already required by the existing contract" test is not met; and semantic ranking has no justification for a five-document synthetic reference corpus where BM25 keyword matching (the same strategy `LocalKnowledgeProvider` already uses) is more than sufficient and keeps behavior comparable between the two providers.
+
+**Deviation/status change:** None — a direct, literal application of both of this PBI's explicit exclusions.
+
+**How to apply:** If a future PBI adds embedding fields to `KnowledgeChunk`/`KnowledgeQuery` (a deliberate, ADR-worthy contract change, not a small addition) and a real ingestion pipeline that populates vector fields, that is the point to add a vector query path to `AzureAISearchProvider` — not before, and not by inferring vector need from `AzureAISearchProvider`'s implementation alone.
+
+## 2026-08-07 — PBI-02-02: assumed Azure AI Search index schema is fixed, not configurable
+
+**Decision:** `AzureAISearchProvider` assumes a specific index schema — key field `chunk_id`, searchable `content`, plus `source_id`/`title`/`category` matching `KnowledgeMetadata`'s own field names — hardcoded as `_SELECT_FIELDS` rather than exposed as configuration. Index creation and document ingestion are explicitly out of scope for this PBI (no index exists yet to disagree with), so there is nothing real to configure against; inventing a field-name-mapping configuration surface now would be speculative.
+
+**Deviation/status change:** None — consistent with CLAUDE.md §7's "do not design for hypothetical future requirements."
+
+**How to apply:** The future PBI that actually creates the Azure AI Search index and ingestion pipeline should treat `_SELECT_FIELDS` in `src/rag/azure_ai_search_provider.py` as the index's required minimum field contract (or update both together) — at that point, if the real index schema needs different field names, revisit whether a configurable field-mapping is actually justified by then, rather than guessing now.
+
+## 2026-08-07 — PBI-02-02: Azure AI Search sizing — Free tier for dev, Basic for staging/prod
+
+**Decision:** `ops/bicep/modules/ai-search.bicep` defaults `skuName` to `'free'`; `dev.bicepparam` uses that default, `staging.bicepparam`/`prod.bicepparam` explicitly override to `'basic'`. Free is the most conservative (cost) choice and is not a crippled trial — its limitations (no semantic ranker, 3-index cap, no SLA, shared compute) are all things this PBI already excludes or doesn't need for a five-document synthetic corpus. Basic (not Free) for staging/prod for two reasons: an Azure subscription gets exactly one Free-tier search service, which would conflict with dev's own use of it; and pre-production/production environments reasonably want an SLA, matching the same "modest headroom" philosophy `staging`/`prod.bicepparam` already apply to every other resource in this template (Standard ACR, larger Container App replica counts, purge protection on).
+
+**Deviation/status change:** None — a direct application of CLAUDE.md's "conservative DEV sizing" instruction, extended consistently to the other two environments using the same reasoning already established by the existing Cosmos DB/ACR/Container App parameter choices.
+
+**How to apply:** If a future environment needs Standard (e.g. a real production workload with real document volume), add it via a parameter override in that environment's `.bicepparam` file only — `main.bicep`'s `@allowed(['free','basic','standard'])` already permits it; no module change needed.
+
+## 2026-08-07 — PBI-02-02: local auth left enabled at the Azure AI Search service (`disableLocalAuth: false`), unlike Cosmos DB's stricter posture
+
+**Decision:** `ai-search.bicep` does not set `disableLocalAuth: true` the way `cosmos-db.bicep` does. This PBI explicitly requires that "if key authentication is supported, retrieve the key only through SecretProvider" remain a real, usable opt-in path for `AzureAISearchProvider` — disabling local (key-based) auth at the service level would make that path impossible to exercise even when deliberately configured. Entra ID (`DefaultAzureCredential` via the granted "Search Index Data Reader" role) remains the default and preferred path in both the Bicep module (RBAC role assignment) and the Python provider (no `secret_provider` configured ⇒ Entra ID).
+
+**Deviation/status change:** A deliberate difference from the Cosmos DB module's posture, not an oversight — Cosmos DB has no PBI requirement for an opt-in key-auth path, so disabling local auth entirely was correct there; this PBI has the opposite explicit requirement.
+
+**How to apply:** If a future ADR decides key-based auth should never be used against this Azure AI Search service in any environment, that is the point to set `disableLocalAuth: true` here too — until then, leaving it enabled at the service level does not itself grant key access to anyone (a key must still be separately generated and placed in Key Vault out of band, which this module does not do).
