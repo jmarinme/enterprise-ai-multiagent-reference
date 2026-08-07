@@ -1,0 +1,38 @@
+"""Unit tests for get_llm_provider: provider selection."""
+
+from src.config.settings import LLMSettings
+from src.llm.factory import get_llm_provider
+from src.llm.mock_provider import MockLLMProvider
+
+
+def test_factory_returns_mock_provider_by_default() -> None:
+    settings = LLMSettings()
+
+    provider = get_llm_provider(settings)
+
+    assert isinstance(provider, MockLLMProvider)
+
+
+def test_factory_returns_azure_openai_provider_when_configured() -> None:
+    from src.llm.azure_openai_provider import AzureOpenAIProvider
+
+    settings = LLMSettings(
+        llm_provider="azure_openai",
+        azure_openai_endpoint="https://example.openai.azure.com/",
+        azure_openai_deployment="gpt-4o-mini",
+    )
+
+    provider = get_llm_provider(settings)
+
+    assert isinstance(provider, AzureOpenAIProvider)
+
+
+def test_factory_raises_for_unsupported_provider() -> None:
+    settings = LLMSettings.model_construct(llm_provider="unsupported")
+
+    try:
+        get_llm_provider(settings)
+    except ValueError as exc:
+        assert "Unsupported LLM provider" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for unsupported provider")

@@ -5,6 +5,7 @@ depends on ToolExecutor, never a concrete Tool, and degrades gracefully when the
 from pathlib import Path
 
 from src.agents.claims_agent import ClaimsAgent
+from src.llm.mock_provider import MockLLMProvider
 from src.prompts.filesystem_provider import FileSystemPromptProvider
 from src.prompts.manager import PromptManager
 from src.services.tools.claims_status_tool import ClaimsStatusTool
@@ -23,6 +24,7 @@ async def test_claims_agent_includes_synthetic_tool_result_in_its_response() -> 
     agent = ClaimsAgent(
         tool_executor=ToolExecutor(tool_registry=registry),
         prompt_manager=_build_prompt_manager(),
+        llm_provider=MockLLMProvider(),
     )
     context = ConversationContext(conversation_id="conv-1", user_id="user-1")
 
@@ -39,6 +41,7 @@ async def test_claims_agent_degrades_gracefully_when_the_tool_is_not_registered(
     agent = ClaimsAgent(
         tool_executor=ToolExecutor(tool_registry=empty_registry),
         prompt_manager=_build_prompt_manager(),
+        llm_provider=MockLLMProvider(),
     )
     context = ConversationContext(conversation_id="conv-1", user_id="user-1")
 

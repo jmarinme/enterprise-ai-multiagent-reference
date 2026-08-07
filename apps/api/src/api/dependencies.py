@@ -1,11 +1,11 @@
 """FastAPI dependency-injection wiring for the Supervisor orchestration framework, the Tool
-execution framework, and the Prompt Management framework.
+execution framework, the Prompt Management framework, and the LLM Adapter framework.
 
 This is the composition root: it is the one place that imports concrete Agent classes, Tool
-classes, and PromptProvider classes and wires them into their respective
-registries/managers. src/supervisor/, src/tools/, and src/prompts/ never import any concrete
-agent, tool, or prompt provider — adding a new one means adding lines here, not touching any
-framework.
+classes, PromptProvider classes, and LLMProvider classes and wires them into their respective
+registries/managers. src/supervisor/, src/tools/, src/prompts/, and src/llm/ never import any
+concrete agent, tool, prompt provider, or LLM provider — adding a new one means adding lines
+here, not touching any framework.
 """
 
 from __future__ import annotations
@@ -17,9 +17,13 @@ from src.agents.broker_agent import BrokerAgent
 from src.agents.claims_agent import ClaimsAgent
 from src.agents.commercial_intake_agent import CommercialIntakeAgent
 from src.agents.fallback_agent import FallbackAgent
+from src.domain.secret_provider import SecretProvider
+from src.llm.factory import get_llm_provider as build_llm_provider
+from src.llm.provider import LLMProvider
 from src.prompts.filesystem_provider import FileSystemPromptProvider
 from src.prompts.manager import PromptManager
 from src.services.conversation_store.factory import get_conversation_repository
+from src.services.secret_store.factory import get_secret_provider as build_secret_provider
 from src.services.tools.broker_account_lookup_tool import BrokerAccountLookupTool
 from src.services.tools.claims_status_tool import ClaimsStatusTool
 from src.services.tools.policy_lookup_tool import PolicyLookupTool
@@ -30,7 +34,7 @@ from src.supervisor.registry import InMemoryAgentRegistry
 from src.tools.executor import ToolExecutor
 from src.tools.registry import InMemoryToolRegistry
 
-from src.config.settings import ConversationStoreSettings
+from src.config.settings import ConversationStoreSettings, LLMSettings, SecretProviderSettings
 
 # Relative to the process's working directory (repo root locally, /app in the Docker image —
 # see apps/api/Dockerfile), matching how the existing .env file is already resolved.
@@ -65,17 +69,38 @@ def get_prompt_manager() -> PromptManager:
 
 
 @lru_cache
+def get_llm_provider() -> LLMProvider:
+    """Build and cache the process-wide LLMProvider.
+
+    Mock by default (LLM_PROVIDER=mock) — no Azure connectivity required locally or in tests.
+    This is the only place any concrete LLMProvider (Mock or Azure OpenAI) is chosen — Agents
+    depend on LLMProvider alone. Swapping providers, or adding a third one later, means
+    changing this one function, not any Agent.
+    """
+    llm_settings = LLMSettings()
+    secret_provider: SecretProvider | None = None
+    if llm_settings.azure_openai_use_api_key:
+        secret_provider = build_secret_provider(SecretProviderSettings())
+    return build_llm_provider(llm_settings, secret_provider=secret_provider)
+
+
+@lru_cache
 def get_supervisor() -> SupervisorOrchestrator:
     """Build and cache the process-wide Supervisor instance."""
     conversation_store_settings = ConversationStoreSettings()
     repository = get_conversation_repository(conversation_store_settings)
     tool_executor = get_tool_executor()
     prompt_manager = get_prompt_manager()
+    llm_provider = get_llm_provider()
 
     registry = InMemoryAgentRegistry()
     registry.register(
         IntentCategory.CLAIMS,
-        ClaimsAgent(tool_executor=tool_executor, prompt_manager=prompt_manager),
+        ClaimsAgent(
+            tool_executor=tool_executor,
+            prompt_manager=prompt_manager,
+            llm_provider=llm_provider,
+        ),
     )
     registry.register(IntentCategory.BROKER, BrokerAgent())
     registry.register(IntentCategory.COMMERCIAL, CommercialIntakeAgent())

@@ -1,0 +1,138 @@
+PBI-01-04 — Reusable LLM Adapter Framework validation evidence
+Date: 2026-08-07
+
+--- Branch topology check (established lesson from PBI-01-02) ---
+Confirmed at the start of this PBI: feat/pbi-01-04-llm-adapter's HEAD already includes
+PBI-01-01/02/03 merged into main. Working tree clean, src/prompts/ present. No merge needed.
+
+--- Files created ---
+src/llm/{__init__,models,provider,exceptions,mock_provider,azure_openai_provider,factory}.py
+tests/unit/llm/{test_models,test_mock_provider,test_factory,test_azure_openai_provider}.py
+tests/unit/agents/test_claims_agent_llm_integration.py
+
+--- Files modified ---
+src/agents/claims_agent.py (LLMProvider constructor injection added, alongside the existing
+  ToolExecutor and PromptManager; the agent's response text now comes from the LLM call over
+  the rendered prompt + user message, with prompt/tool annotations appended for traceability)
+apps/api/src/api/dependencies.py (new cached get_llm_provider(), wired into ClaimsAgent;
+  reuses the existing get_secret_provider() factory when azure_openai_use_api_key is enabled)
+src/config/settings.py (new LLMSettings: llm_provider, azure_openai_endpoint/deployment/
+  api_version, azure_openai_use_api_key, azure_openai_api_key_secret_name)
+pyproject.toml (new optional azureopenai extra: openai, azure-identity, aiohttp — not
+  installed by default, same lazy-import pattern as the cosmos/keyvault extras)
+tests/unit/agents/{test_mock_agents,test_claims_agent_tool_injection,
+  test_claims_agent_prompt_integration}.py (ClaimsAgent construction updated for its new
+  constructor signature, using MockLLMProvider)
+
+No Docker changes were needed this PBI (LLM_PROVIDER=mock by default needs no extra packages
+in the image, matching the existing lazy-import pattern for Azure extras).
+
+--- pytest ---
+Command: pytest tests/unit/api tests/unit/domain tests/unit/services tests/unit/supervisor
+  tests/unit/agents tests/unit/tools tests/unit/prompts tests/unit/llm tests/integration -v
+Attempt 1: 135 passed, 1 FAILED, 2 skipped.
+  Failure: tests/unit/agents/test_mock_agents.py::
+  test_agent_response_is_identical_regardless_of_input_message — a genuine, expected behavior
+  change, not a regression bug: ClaimsAgent's response now legitimately varies with the input
+  message (it comes from an LLM call over that message), whereas before PBI-01-04 it was a
+  fixed template regardless of input. Fixed by rewriting the test
+  (test_agent_non_llm_response_metadata_is_stable_across_different_messages) to check what is
+  still actually invariant (agent name, intent, prompt identifier/version annotation) instead
+  of full-response equality; per-input determinism is covered separately by
+  test_claims_agent_llm_integration.py.
+Attempt 2: 136 passed, 2 skipped (both live-integration scaffolds skip correctly, unrelated to
+  this PBI).
+
+New tests, all passing:
+  tests/unit/llm/test_models.py — 9 tests (generation-settings defaults, 6 parametrized
+    out-of-range rejections covering temperature/max_output_tokens/timeout_seconds, boundary
+    values accepted, request/response contract shape)
+  tests/unit/llm/test_mock_provider.py — 4 tests (deterministic for the same request, typed
+    response shape, output varies with last-user-message length, succeeds with no user
+    message present)
+  tests/unit/llm/test_factory.py — 3 tests (mock by default, azure_openai selection when
+    configured, unsupported provider raises)
+  tests/unit/llm/test_azure_openai_provider.py — 9 tests, fully mocked (missing
+    endpoint/deployment raise LLMConfigurationError, mocked success returns typed
+    LLMResponse, mocked APITimeoutError -> LLMTimeoutError, mocked RateLimitError ->
+    LLMRateLimitError, mocked APIConnectionError -> LLMProviderError, mocked generic
+    APIStatusError -> LLMProviderError, default auth uses DefaultAzureCredential/
+    azure_ad_token_provider (not api_key), API-key auth reads the key via a stub
+    SecretProvider and passes api_key to the client (not azure_ad_token_provider))
+  tests/unit/agents/test_claims_agent_llm_integration.py — 2 tests (response includes the
+    mock LLM output text; response is fully deterministic across two identical calls)
+
+Regression confirmed: all pre-existing Supervisor tests (19), all Tool framework tests (20),
+all Prompt framework tests (26), and all POST /chat tests (4) still pass (after the one
+expected test update above) — no other files needed changes.
+
+--- ruff ---
+Command: ruff check apps/api/src src tests
+Attempt 1: 2 errors — F821 (undefined forward-ref name "AzureOpenAIProvider" in a test helper's
+  return-type annotation, since the class is imported lazily inside the function body, not at
+  module scope) and 1 import-ordering issue. Fixed: added a TYPE_CHECKING-guarded import for
+  the forward reference; import order auto-fixed via --fix.
+Attempt 2: All checks passed!
+
+--- mypy ---
+Command: mypy apps/api/src / mypy src
+Attempt 1: 2 errors in src/llm/azure_openai_provider.py — "Type of TypedDict is ambiguous"
+  when constructing the openai SDK's chat message list from a generic {"role": str, "content":
+  str} dict comprehension (LLMMessageRole.value is typed as str, not a Literal, so mypy cannot
+  structurally match it to openai's ChatCompletionMessageParam union of TypedDicts — a known
+  ergonomic friction point of that SDK's typed API). Fixed with an explicit, commented cast()
+  to ChatCompletionMessageParam — the values are always one of "system"/"user"/"assistant" by
+  construction (LLMMessageRole enum membership), which mypy cannot infer but is true at
+  runtime.
+Attempt 2: Success: no issues found (13 and 55 files respectively).
+Command: mypy tests/unit/llm tests/unit/agents tests/unit/tools tests/unit/prompts
+  tests/unit/supervisor
+Attempt 1: 1 error — unused "type: ignore" comment on a model_construct() call (which doesn't
+  produce the type error it was guarding against). Removed.
+Attempt 2: Success: no issues found in 18 source files.
+(tests/unit/api excluded — pre-existing, unrelated static-analysis limitation documented since
+PBI-01-01/PBI-00-02.)
+
+--- Live smoke test ---
+Started the API via `uvicorn main:app --app-dir apps/api/src` and issued a real POST /chat
+request routed to the (now LLM-, Tool-, and Prompt-injected) ClaimsAgent:
+  POST /chat {"message":"I need to check my claim","userId":"demo-user"}
+  -> 200 {"conversationId":"...","agent":"ClaimsAgent","intent":"CLAIMS",
+          "response":"This is a deterministic mock LLM response. It acknowledges a message of
+          24 characters across 2 message(s). [prompt=claims.system@1.0.0]
+          [synthetic claim lookup: status=under_review]"}
+Confirms the full success-criteria chain end-to-end through the real composed API: POST /chat
+-> Supervisor -> Agent -> PromptManager -> RenderedPrompt -> LLMProvider -> MockLLMProvider ->
+typed LLMResponse -> Conversation Store -> JSON Response. Server stopped after verification.
+
+--- docker compose config ---
+Command: (temporary local .env) docker compose config
+Result: exit 0 — api.build.context/dockerfile unaffected (no Dockerfile changes this PBI).
+Command: docker build
+Result: NOT executed — Docker Desktop daemon not running locally (same recurring environmental
+limitation as every prior PBI since PBI-00-02). Not required this PBI since no image content
+changed.
+
+--- Secrets / prohibited-content scan ---
+Searched src/llm, apps/api/src/api/dependencies.py, and src/agents/claims_agent.py for
+hardcoded keys/passwords/API-key-shaped strings, hardcoded Azure OpenAI endpoints, and
+references to RAG/Azure AI Search/APIM/Semantic Kernel/AutoGen/LangGraph/CrewAI/embeddings/
+vector databases.
+Findings: none. Test fixtures use the obviously-placeholder domain
+"example.openai.azure.com" and a clearly-labeled fake secret value
+("mock-secret-value-not-a-real-key") — never a real credential.
+
+--- Conclusion ---
+The LLM Adapter framework mirrors the Supervisor/Tool/Prompt frameworks' proven interface-only
+shape a fourth time: Agents depend only on LLMProvider, never on the openai or azure-identity
+SDKs. MockLLMProvider is fully deterministic and is the default, so every test and local dev
+run requires zero Azure connectivity. AzureOpenAIProvider is production-shaped (typed settings,
+no hardcoded endpoint/deployment/key, Entra ID preferred, API-key auth routed only through
+SecretProvider, typed exception normalization from the real openai SDK's exception hierarchy,
+async throughout) but is never called during tests — all 9 of its tests fully mock the
+`openai`/`azure-identity` SDK boundary. ClaimsAgent now demonstrates real LLMProvider injection
+with a response that legitimately varies per input (proving the integration is real) while
+remaining fully deterministic for a given input (proving MockLLMProvider enables reliable local
+development and testing). All 136 tests pass deterministically with no Azure dependency; ruff
+and mypy clean. No RAG, Azure AI Search, embeddings, vector databases, Semantic Kernel,
+AutoGen, LangGraph, CrewAI, APIM, or authentication was implemented.
