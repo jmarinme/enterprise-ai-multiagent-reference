@@ -12,7 +12,7 @@ from typing import Protocol
 from src.supervisor.models import Intent, IntentCategory
 
 _CLAIMS_KEYWORDS = ("claim", "accident", "siniestro", "adjuster", "damage")
-_BROKER_KEYWORDS = ("broker", "commission", "policy status", "receipt", "payment")
+_BROKER_KEYWORDS = ("broker", "commission", "policy", "transaction", "receipt", "payment")
 _COMMERCIAL_KEYWORDS = ("quote", "new business", "commercial", "lead", "coverage options")
 
 
