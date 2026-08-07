@@ -1,5 +1,5 @@
 """Claims Agent: a synthetic after-hours claim-notice intake flow (PBI-01-05, RAG-enabled by
-PBI-02-01, grounded with typed citations by PBI-02-03).
+PBI-02-01, grounded with typed citations by PBI-02-03, controlled Tool Calling by PBI-02-04).
 
 Implements the Agent Protocol (src.supervisor.registry). Guides a caller through reporting a
 claim over multiple turns: collects the minimum required information, validates the policy and
@@ -32,6 +32,14 @@ GroundedContext before they reach the prompt, and produces the typed Citations/
 GroundingMetadata carried on AgentResponse — replacing the earlier ad-hoc
 "[knowledge=<source_id>,...]" text annotation with a proper typed contract. The LLM never
 determines which citations appear; they are exactly what the Grounder made available.
+
+ToolCallingOrchestrator (PBI-02-04) is an additive, isolated capability run alongside — never
+in place of — advance_claims_intake's own deterministic Tool calls: it proves the LLM can
+request one of this Agent's allow-listed Tools (src.core.tool_calling.policies.
+CLAIMS_ALLOWED_TOOLS) through the controlled orchestration loop, with the outcome surfaced as
+typed AgentResponse.tool_calls. It never feeds into ClaimsIntakeState or the deterministic
+business-fact text, and a configuration failure degrades gracefully exactly like a Knowledge/
+Prompt/LLM failure — it never blocks the turn.
 """
 
 from __future__ import annotations
@@ -40,7 +48,17 @@ from src.agents.claims.state import ClaimsIntakeState
 from src.agents.claims.workflow import advance_claims_intake
 from src.agents.shared.annotation import annotate_with_prompt_and_llm
 from src.agents.shared.state_persistence import load_agent_state
+from src.core.tool_calling.exceptions import ToolCallingError
+from src.core.tool_calling.models import (
+    DEFAULT_MAX_TOOL_CALL_ITERATIONS,
+    ToolCallingContext,
+    ToolCallingResponse,
+)
+from src.core.tool_calling.orchestrator import ToolCallingOrchestrator
+from src.core.tool_calling.policies import CLAIMS_ALLOWED_TOOLS
+from src.llm.models import LLMMessage, LLMMessageRole
 from src.llm.provider import LLMProvider
+from src.prompts.exceptions import PromptError
 from src.prompts.manager import PromptManager
 from src.prompts.models import PromptRenderContext
 from src.rag.exceptions import KnowledgeError
@@ -72,12 +90,16 @@ class ClaimsAgent:
         llm_provider: LLMProvider,
         knowledge_retriever: KnowledgeRetriever,
         grounder: Grounder,
+        tool_calling_orchestrator: ToolCallingOrchestrator,
+        tool_calling_max_iterations: int = DEFAULT_MAX_TOOL_CALL_ITERATIONS,
     ) -> None:
         self._tool_executor = tool_executor
         self._prompt_manager = prompt_manager
         self._llm_provider = llm_provider
         self._knowledge_retriever = knowledge_retriever
         self._grounder = grounder
+        self._tool_calling_orchestrator = tool_calling_orchestrator
+        self._tool_calling_max_iterations = tool_calling_max_iterations
 
     async def handle(self, request: AgentRequest, context: ConversationContext) -> AgentResponse:
         state = load_agent_state(context.metadata, _STATE_METADATA_KEY, ClaimsIntakeState)
@@ -134,6 +156,8 @@ class ClaimsAgent:
         )
         grounded_response = self._grounder.build_response(response_text, grounded_context)
 
+        tool_calling_response = await self._run_controlled_tool_calling(request, context)
+
         return AgentResponse(
             conversation_id=context.conversation_id,
             agent=self.name,
@@ -142,6 +166,7 @@ class ClaimsAgent:
             metadata={_STATE_METADATA_KEY: state.model_dump_json()},
             citations=grounded_response.citations,
             grounding_metadata=grounded_context.metadata,
+            tool_calls=tool_calling_response.tool_calls,
         )
 
     async def _retrieve_knowledge(self, message: str) -> list[KnowledgeChunk]:
@@ -154,3 +179,43 @@ class ClaimsAgent:
         except KnowledgeError:
             return []
         return result.chunks
+
+    async def _run_controlled_tool_calling(
+        self, request: AgentRequest, context: ConversationContext
+    ) -> ToolCallingResponse:
+        """Additive, isolated proof that the LLM can request one of this Agent's allow-listed
+        Tools through ToolCallingOrchestrator (PBI-02-04) — entirely independent of, and never
+        altering, advance_claims_intake's own deterministic Tool calls above. Degrades to an
+        empty ToolCallingResponse on PromptError/ToolCallingError, the same graceful-degradation
+        pattern _retrieve_knowledge already uses for KnowledgeError."""
+        try:
+            rendered_prompt = await self._prompt_manager.render(
+                "claims.system",
+                PromptRenderContext(
+                    conversation_id=context.conversation_id,
+                    user_id=request.user_id,
+                    intent=IntentCategory.CLAIMS.value,
+                    conversation_summary=context.summary,
+                    agent_name=self.name,
+                ),
+            )
+        except PromptError:
+            return ToolCallingResponse(text="", iterations=0)
+
+        try:
+            return await self._tool_calling_orchestrator.run(
+                messages=[
+                    LLMMessage(role=LLMMessageRole.SYSTEM, content=rendered_prompt.text),
+                    LLMMessage(role=LLMMessageRole.USER, content=request.message),
+                ],
+                context=ToolCallingContext(
+                    agent_name=self.name,
+                    allowed_tools=list(CLAIMS_ALLOWED_TOOLS),
+                    correlation_id=request.correlation_id,
+                    conversation_id=context.conversation_id,
+                    user_id=request.user_id,
+                    max_iterations=self._tool_calling_max_iterations,
+                ),
+            )
+        except ToolCallingError:
+            return ToolCallingResponse(text="", iterations=0)

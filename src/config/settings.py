@@ -57,6 +57,20 @@ class LLMSettings(BaseSettings):
     azure_openai_api_key_secret_name: str = "azure-openai-api-key"
 
 
+class ToolCallingSettings(BaseSettings):
+    """Configures the Tool Calling orchestration framework (src.core.tool_calling, PBI-02-04).
+
+    tool_calling_max_iterations is the loop's safety cap (CLAUDE.md §9 "resilience is
+    explicit"): a conservative default that comfortably covers a typical "look something up,
+    then answer" round trip while still bounding a misbehaving LLM that always requests
+    another tool call.
+    """
+
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    tool_calling_max_iterations: int = 3
+
+
 class KnowledgeSettings(BaseSettings):
     """Selects and configures the KnowledgeProvider implementation.
 

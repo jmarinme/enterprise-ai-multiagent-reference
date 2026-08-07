@@ -9,7 +9,10 @@ from src.llm.models import (
     LLMMessageRole,
     LLMRequest,
     LLMResponse,
+    LLMToolDefinition,
     LLMUsage,
+    ToolCallArgument,
+    ToolCallRequest,
 )
 
 
@@ -62,3 +65,64 @@ def test_llm_response_defaults_usage_to_zero() -> None:
     response = LLMResponse(text="hello", model="mock-llm")
 
     assert response.usage == LLMUsage(prompt_tokens=0, completion_tokens=0, total_tokens=0)
+
+
+def test_llm_request_defaults_tools_to_empty() -> None:
+    request = LLMRequest(messages=[LLMMessage(role=LLMMessageRole.USER, content="hello")])
+
+    assert request.tools == []
+
+
+def test_llm_response_defaults_tool_calls_to_empty() -> None:
+    response = LLMResponse(text="hello", model="mock-llm")
+
+    assert response.tool_calls == []
+
+
+def test_llm_message_defaults_tool_call_id_to_none() -> None:
+    message = LLMMessage(role=LLMMessageRole.USER, content="hello")
+
+    assert message.tool_call_id is None
+
+
+def test_llm_message_supports_tool_role_with_a_call_id() -> None:
+    message = LLMMessage(role=LLMMessageRole.TOOL, content='{"success": true}', tool_call_id="call_1")
+
+    assert message.role == LLMMessageRole.TOOL
+    assert message.tool_call_id == "call_1"
+
+
+def test_llm_tool_definition_carries_name_description_and_parameters_schema() -> None:
+    definition = LLMToolDefinition(
+        name="policy_lookup",
+        description="Looks up a policy",
+        parameters_schema={"type": "object", "properties": {"policy_number": {"type": "string"}}},
+    )
+
+    assert definition.name == "policy_lookup"
+    assert definition.parameters_schema["type"] == "object"
+
+
+def test_llm_tool_definition_defaults_parameters_schema_to_empty() -> None:
+    definition = LLMToolDefinition(name="policy_lookup", description="Looks up a policy")
+
+    assert definition.parameters_schema == {}
+
+
+def test_tool_call_request_carries_call_id_tool_name_and_arguments() -> None:
+    request = ToolCallRequest(
+        call_id="call_1",
+        tool_name="policy_lookup",
+        arguments=[ToolCallArgument(name="policy_number", value="SYN-POL-0001")],
+    )
+
+    assert request.call_id == "call_1"
+    assert request.tool_name == "policy_lookup"
+    assert request.arguments[0].name == "policy_number"
+    assert request.arguments[0].value == "SYN-POL-0001"
+
+
+def test_tool_call_request_defaults_arguments_to_empty() -> None:
+    request = ToolCallRequest(call_id="call_1", tool_name="policy_lookup")
+
+    assert request.arguments == []

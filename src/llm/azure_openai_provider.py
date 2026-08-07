@@ -8,11 +8,18 @@ abstraction — never read directly from os.environ here.
 Never exercised by the test suite against real Azure — MockLLMProvider is the default and
 only provider the tests actually call (see src/llm/factory.py). This file is the only place
 in the codebase that imports the openai/azure-identity SDKs.
+
+Tool Calling (PBI-02-04): maps the same typed src.llm.models contracts (LLMToolDefinition,
+ToolCallRequest, ToolCallArgument) onto the OpenAI/Azure OpenAI function-calling API shape
+(`tools=`, `choices[0].message.tool_calls`, a `role="tool"` message). This provider only
+translates the shape — it never decides which tools exist or are authorized; that remains
+src.core.tool_calling.orchestrator.ToolCallingOrchestrator's job.
 """
 
 from __future__ import annotations
 
-from typing import cast
+import json
+from typing import Any, cast
 
 from openai import (
     APIConnectionError,
@@ -21,7 +28,17 @@ from openai import (
     AsyncAzureOpenAI,
     RateLimitError,
 )
-from openai.types.chat import ChatCompletionMessageParam
+from openai.types.chat import (
+    ChatCompletionMessageParam,
+    ChatCompletionToolMessageParam,
+    ChatCompletionToolParam,
+)
+from openai.types.chat.chat_completion_message_custom_tool_call import (
+    ChatCompletionMessageCustomToolCall,
+)
+from openai.types.chat.chat_completion_message_function_tool_call import (
+    ChatCompletionMessageFunctionToolCall,
+)
 
 from src.domain.secret_provider import SecretProvider
 from src.llm.exceptions import (
@@ -31,7 +48,16 @@ from src.llm.exceptions import (
     LLMRateLimitError,
     LLMTimeoutError,
 )
-from src.llm.models import LLMRequest, LLMResponse, LLMUsage
+from src.llm.models import (
+    LLMMessage,
+    LLMMessageRole,
+    LLMRequest,
+    LLMResponse,
+    LLMToolDefinition,
+    LLMUsage,
+    ToolCallArgument,
+    ToolCallRequest,
+)
 
 _PROVIDER_NAME = "azure_openai"
 _ENTRA_ID_SCOPE = "https://cognitiveservices.azure.com/.default"
@@ -100,25 +126,17 @@ class AzureOpenAIProvider:
         model = request.settings.model or self._deployment
 
         try:
-            # cast: request.messages' role is typed as str (from LLMMessageRole.value), so
-            # mypy cannot structurally narrow these dicts to the specific TypedDict variant
-            # openai's SDK expects per role. The values are always one of "system"/"user"/
-            # "assistant", which are all valid roles for this call — verified at runtime by
-            # LLMMessageRole's own enum membership, not asserted blindly here.
-            messages = cast(
-                "list[ChatCompletionMessageParam]",
-                [
-                    {"role": message.role.value, "content": message.content}
-                    for message in request.messages
-                ],
-            )
-            completion = await client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=request.settings.temperature,
-                max_tokens=request.settings.max_output_tokens,
-                timeout=request.settings.timeout_seconds,
-            )
+            messages = _to_openai_messages(request.messages)
+            create_kwargs: dict[str, Any] = {
+                "model": model,
+                "messages": messages,
+                "temperature": request.settings.temperature,
+                "max_tokens": request.settings.max_output_tokens,
+                "timeout": request.settings.timeout_seconds,
+            }
+            if request.tools:
+                create_kwargs["tools"] = _to_openai_tools(request.tools)
+            completion = await client.chat.completions.create(**create_kwargs)
         except APITimeoutError as exc:
             raise LLMTimeoutError(_PROVIDER_NAME) from exc
         except RateLimitError as exc:
@@ -132,6 +150,17 @@ class AzureOpenAIProvider:
 
         choice = completion.choices[0]
         usage = completion.usage
+        try:
+            tool_calls = _from_openai_tool_calls(choice.message.tool_calls)
+        except (json.JSONDecodeError, TypeError) as exc:
+            # The SDK guarantees `.function.arguments` is a string, but not that it is valid
+            # JSON — a malformed payload from the provider itself is a genuine, unexpected
+            # provider failure, distinct from a syntactically valid argument set that simply
+            # fails the resolved Tool's own input_model (ToolExecutor's job, never this one's).
+            raise LLMProviderError(
+                _PROVIDER_NAME, f"Malformed tool_call arguments from provider: {exc}"
+            ) from exc
+
         return LLMResponse(
             text=choice.message.content or "",
             model=completion.model,
@@ -140,5 +169,85 @@ class AzureOpenAIProvider:
                 completion_tokens=usage.completion_tokens if usage else 0,
                 total_tokens=usage.total_tokens if usage else 0,
             ),
+            tool_calls=tool_calls,
             correlation_id=request.correlation_id,
         )
+
+
+def _to_openai_messages(messages: list[LLMMessage]) -> list[ChatCompletionMessageParam]:
+    """Maps typed LLMMessages to the OpenAI SDK's per-role TypedDict shape, including the
+    role="tool" shape a ToolCallRequest's result is fed back as (PBI-02-04)."""
+    result: list[ChatCompletionMessageParam] = []
+    for message in messages:
+        if message.role == LLMMessageRole.TOOL:
+            # tool_call_id is always set on a TOOL-role message — enforced by
+            # src.core.tool_calling.orchestrator.ToolCallingOrchestrator, the only component
+            # that ever constructs one.
+            tool_message: ChatCompletionToolMessageParam = {
+                "role": "tool",
+                "content": message.content,
+                "tool_call_id": message.tool_call_id or "",
+            }
+            result.append(tool_message)
+        else:
+            # cast: mypy cannot structurally narrow this dict to the specific TypedDict variant
+            # openai's SDK expects per role from a plain literal string. The values are always
+            # one of "system"/"user"/"assistant", all valid roles for this call — verified at
+            # runtime by LLMMessageRole's own enum membership, not asserted blindly here.
+            result.append(
+                cast(
+                    "ChatCompletionMessageParam",
+                    {"role": message.role.value, "content": message.content},
+                )
+            )
+    return result
+
+
+def _to_openai_tools(tools: list[LLMToolDefinition]) -> list[ChatCompletionToolParam]:
+    """Maps typed LLMToolDefinitions to OpenAI's function-calling `tools=` shape."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.parameters_schema,
+            },
+        }
+        for tool in tools
+    ]
+
+
+def _from_openai_tool_calls(
+    raw_tool_calls: (
+        list[ChatCompletionMessageFunctionToolCall | ChatCompletionMessageCustomToolCall] | None
+    ),
+) -> list[ToolCallRequest]:
+    """Maps OpenAI's response tool_calls (each function.arguments is a JSON-encoded string)
+    to typed ToolCallRequests. Raises json.JSONDecodeError/TypeError on a malformed payload —
+    the caller (generate()) turns that into a typed LLMProviderError. Only "function"-type
+    calls are mapped (the only type _to_openai_tools ever offers); a "custom" tool call would
+    mean the provider returned a type this codebase never requested, so it is skipped rather
+    than guessed at."""
+    if not raw_tool_calls:
+        return []
+    result: list[ToolCallRequest] = []
+    for raw_call in raw_tool_calls:
+        if raw_call.type != "function":
+            continue
+        raw_arguments = json.loads(raw_call.function.arguments)
+        if not isinstance(raw_arguments, dict):
+            raise TypeError(
+                f"tool_call arguments for '{raw_call.function.name}' did not decode to an object"
+            )
+        result.append(
+            ToolCallRequest(
+                call_id=raw_call.id,
+                tool_name=raw_call.function.name,
+                arguments=[
+                    ToolCallArgument(name=name, value=value)
+                    for name, value in raw_arguments.items()
+                ],
+            )
+        )
+    return result

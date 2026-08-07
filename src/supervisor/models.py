@@ -10,6 +10,7 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+from src.core.tool_calling.models import ToolCallResult
 from src.domain.conversation import Message
 from src.rag.grounding_models import Citation, GroundingMetadata
 
@@ -54,13 +55,14 @@ class ConversationContext(BaseModel):
 class AgentResponse(BaseModel):
     """An Agent's reply, returned by the Supervisor to the caller.
 
-    citations/grounding_metadata (PBI-02-03) are a typed pass-through, exactly like metadata
-    already was: SupervisorOrchestrator never constructs, inspects, or reasons about them — it
-    only ever returns whatever AgentResponse the selected Agent produced. Importing the
-    Citation/GroundingMetadata *types* here is a data-contract dependency, not a behavioral
-    one — the Supervisor still contains zero knowledge-retrieval code and never imports
-    KnowledgeProvider/KnowledgeRetriever/any concrete provider, which is what "Supervisor
-    remains unaware of the Knowledge implementation" (PBI-02-01) actually protects."""
+    citations/grounding_metadata (PBI-02-03) and tool_calls (PBI-02-04) are typed pass-throughs,
+    exactly like metadata already was: SupervisorOrchestrator never constructs, inspects, or
+    reasons about them — it only ever returns whatever AgentResponse the selected Agent
+    produced. Importing these *types* here is a data-contract dependency, not a behavioral
+    one — the Supervisor still contains zero knowledge-retrieval or tool-calling code and
+    never imports KnowledgeProvider/KnowledgeRetriever/ToolCallingOrchestrator/any concrete
+    implementation, which is what "Supervisor remains unaware of the Knowledge implementation"
+    (PBI-02-01) actually protects, extended identically to Tool Calling."""
 
     conversation_id: str
     agent: str
@@ -69,6 +71,7 @@ class AgentResponse(BaseModel):
     metadata: dict[str, str] = Field(default_factory=dict)
     citations: list[Citation] = Field(default_factory=list)
     grounding_metadata: GroundingMetadata | None = None
+    tool_calls: list[ToolCallResult] = Field(default_factory=list)
 
 
 class SupervisorConfig(BaseModel):

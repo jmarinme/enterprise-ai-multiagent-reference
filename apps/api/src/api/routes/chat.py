@@ -10,6 +10,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
+from src.core.tool_calling.models import ToolCallResult
 from src.rag.grounding_models import Citation, GroundingMetadata
 from src.supervisor.models import AgentRequest
 from src.supervisor.orchestrator import SupervisorOrchestrator
@@ -43,6 +44,9 @@ class ChatResponse(_CamelModel):
     # that does not use the Grounding layer. Additive — existing clients unaffected.
     citations: list[Citation] = Field(default_factory=list)
     grounding_metadata: GroundingMetadata | None = None
+    # New, optional (PBI-02-04): typed outcomes of any LLM-requested Tool calls, empty for any
+    # Agent that does not use controlled Tool Calling. Additive — existing clients unaffected.
+    tool_calls: list[ToolCallResult] = Field(default_factory=list)
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -67,4 +71,5 @@ async def post_chat(
         metadata=agent_response.metadata,
         citations=agent_response.citations,
         grounding_metadata=agent_response.grounding_metadata,
+        tool_calls=agent_response.tool_calls,
     )
