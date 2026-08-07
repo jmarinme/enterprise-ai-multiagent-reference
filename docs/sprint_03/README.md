@@ -8,7 +8,9 @@ compose` runtime (API + Web) so the platform is startable without any Azure depe
 (PBI-03-01). Then make the platform production-shaped for Azure by wiring the already-built
 Azure providers (`AzureOpenAIProvider`, `AzureAISearchProvider`, `CosmosConversationRepository`)
 together through configuration and completed Infrastructure as Code, without deploying anything
-(PBI-03-02).
+(PBI-03-02). Then complete the Azure Knowledge platform by building the index definition and
+document-ingestion pipeline `AzureAISearchProvider` needs an index to actually query
+(PBI-03-03).
 
 ## Scope
 
@@ -37,6 +39,20 @@ together through configuration and completed Infrastructure as Code, without dep
   actually selected) — all as plain, non-secret Container App env vars. A new ADR documents the
   current public-network-access/RBAC-only networking posture versus what production hardening
   (VNet, Private Endpoints) would still require, explicitly deferred to a future PBI.
+- **PBI-03-03:** the knowledge ingestion pipeline, `src/pipelines/knowledge_ingestion/` — the
+  first occupant of CLAUDE.md §6's reserved, previously-empty `src/pipelines/` folder. Owns the
+  Azure AI Search index schema (Python, via `azure.search.documents.indexes.models`, the same
+  package `AzureAISearchProvider` already depends on — not duplicated in Bicep), a typed
+  `IngestionChunk`/`IngestionReport` contract, a `DocumentLoader` Protocol with a real
+  `MarkdownDocumentLoader` (frontmatter + `##`-header section chunking, versioning, content-hash
+  based incremental detection) and a `PdfDocumentLoader` abstraction (interface wired in,
+  extraction deliberately not implemented — no PDF-parsing dependency exists in this project), an
+  `EmbeddingProvider` abstraction (`NullEmbeddingProvider` default, no vector field added to the
+  index), and a `KnowledgeIngestionPipeline` orchestrator handling incremental upload, skip, and
+  delete of stale documents. `AzureAISearchProvider._SELECT_FIELDS` now requests `section`/
+  `source_path` — deliberately deferred in PBI-02-02 pending exactly this PBI. A new
+  `ops/scripts/ingest_knowledge_base.py` CLI wires it all together (never executed against real
+  Azure this PBI).
 
 ## Out of scope
 
@@ -44,17 +60,23 @@ together through configuration and completed Infrastructure as Code, without dep
   authentication, VNet/private networking (see
   `docs/Architecture/adr/0001-networking-posture-and-vnet-deferral.md`).
 - Real company/customer data.
-- New agents, new RAG features, new Tool Calling capabilities beyond what PBI-02-04 already
-  built.
+- New agents, new RAG features beyond the ingestion pipeline itself, new Tool Calling
+  capabilities.
 - Running Ollama itself inside Docker (host-run, opt-in, by design).
-- Azure AI Search index creation/document ingestion — `knowledgeProvider` therefore stays
-  `local` even in the Azure Bicep parameter files (see `decisions.md`).
+- Real vector embeddings/vector search (the embedding pipeline is an abstraction only — see
+  `decisions.md`); real PDF text extraction (the PDF loader is an abstraction only); a real
+  SharePoint loader (the `DocumentLoader` Protocol is designed to support one, none is built).
+- Any change to Agents, Supervisor, Prompts, or Tools.
+- Any change to `knowledgeProvider`'s default (`local`) in Bicep — flipping it to
+  `azure_ai_search` is still deferred to whichever PBI first runs `ingest_knowledge_base.py`
+  against a real Azure AI Search service.
 - Real side-effecting Tool integrations; weakening the Tool allow-list/validation controls.
 
 ## Deliverables
 
 - [x] PBI-03-01: Add Ollama LLM Provider and complete the local runtime.
 - [x] PBI-03-02: Complete the Azure Runtime integration.
+- [x] PBI-03-03: Build the Azure AI Search Index & Knowledge Ingestion Pipeline.
 
 ## Acceptance criteria
 
@@ -84,6 +106,15 @@ together through configuration and completed Infrastructure as Code, without dep
 | AC-22 | `az bicep build` passes for every affected module and `main.bicep`; `build-params` passes for dev/staging/prod | `az bicep build`/`build-params` evidence — all exit 0, 0 errors, 0 warnings |
 | AC-23 | Mock/Ollama/local, Claims/Broker/Commercial, Tool Calling, RAG/Grounding, and `POST /chat` regression behavior remain intact after the Azure wiring | `pytest` evidence — full pre-existing regression suite passes unchanged; live local smoke test with default (non-Azure) providers |
 | AC-24 | No `az deployment ... create`/`what-if` executed; no real Azure credentials used in tests | Code review + validation log — only `az bicep build`/`build-params` (offline compilation) were run |
+| AC-25 | Index schema/definition/fields exist and are configuration-driven — no hardcoded index name anywhere | Code review — `src/pipelines/knowledge_ingestion/index_schema.py::build_index_definition(index_name)`; `pytest` evidence — `test_ingestion_index_schema.py::test_build_index_definition_uses_the_supplied_index_name_not_a_literal` |
+| AC-26 | A typed chunk model and metadata mapping exist, matching `KnowledgeMetadata`'s field names exactly | Code review — `src/pipelines/knowledge_ingestion/models.py::IngestionChunk`, `index_schema.py::chunk_to_search_document` |
+| AC-27 | An embedding pipeline abstraction exists and is wired into ingestion, without implementing real vector embeddings or a vector index field | Code review — `src/pipelines/knowledge_ingestion/embedding.py`; `pytest` evidence — `test_ingestion_pipeline.py::test_ingest_invokes_the_embedding_provider_for_every_chunk`, `::test_ingest_defaults_to_the_null_embedding_provider_without_failing` |
+| AC-28 | Markdown ingestion is fully implemented, including section-based chunking; PDF ingestion exists as a wired abstraction that fails safely and explicitly, not silently | `pytest` evidence — `test_ingestion_loaders.py` (16 tests) |
+| AC-29 | Versioning and incremental ingestion (skip unchanged, upload new/changed) are real, tested behaviors, not stubs | `pytest` evidence — `test_ingestion_pipeline.py::test_ingest_uploads_new_chunks_when_the_index_is_empty`, `::test_ingest_skips_unchanged_chunks`, `::test_ingest_uploads_a_chunk_whose_content_hash_changed` |
+| AC-30 | Delete/update handling removes index documents whose source chunk no longer exists | `pytest` evidence — `test_ingestion_pipeline.py::test_ingest_deletes_chunks_no_longer_produced_by_any_loader` |
+| AC-31 | Grounding metadata remains compatible — `section`/`source_path` flow from ingestion through the index to retrieval | Code review — `AzureAISearchProvider._SELECT_FIELDS` now includes both; `pytest` evidence — `test_azure_ai_search_provider.py::test_retrieve_maps_section_and_source_path_when_present` |
+| AC-32 | No Agent, Supervisor, Prompt, or Tool code was changed | Code review — zero diff to `src/agents/`, `src/supervisor/`, `configs/prompts/`, `src/tools/`, `src/services/tools/` this PBI |
+| AC-33 | The `DocumentLoader` design supports a future SharePoint integration without requiring changes to the pipeline itself | Code review — `loaders.py`'s `DocumentLoader` Protocol + module docstring |
 
 ## Dependencies
 
@@ -96,6 +127,10 @@ together through configuration and completed Infrastructure as Code, without dep
   Vault, ACR), PBI-00-05's Cosmos DB module, and PBI-02-02's Azure AI Search module — it adds
   the missing Azure OpenAI module and the Container App environment-variable wiring connecting
   all three, without modifying any of them.
+- PBI-03-03 depends on PBI-02-01's `KnowledgeChunk`/`KnowledgeMetadata` contracts and
+  PBI-02-02's `AzureAISearchProvider`/`azure-search-documents` dependency (already installed —
+  no new dependency added), and PBI-02-03's Grounding field requirements (`section`,
+  `source_path`) — it is the PBI that finally makes both fields real rather than always-`None`.
 
 ## Risks
 
@@ -105,6 +140,8 @@ together through configuration and completed Infrastructure as Code, without dep
 | Ollama's tool-calling support varies by model/version | Realized (by design) | Low | Mapped per Ollama's documented API shape but not live-verified; a model without tool-calling support simply returns no `tool_calls`, which `ToolCallingOrchestrator` already treats as a safe "no tool requested" outcome — the deterministic Claims workflow is never at risk |
 | Docker daemon unavailable in this environment; no real Azure subscription/credentials used | Realized | Low | `az bicep build`/`build-params` (offline compilation, no daemon/credentials needed) fully validate the IaC; `docker compose config` validates the compose file structurally; no deployment was in scope for this PBI regardless |
 | Defaulting `knowledgeProvider=azure_ai_search` before an index exists would crash-loop the API Container App | Avoided by design | Would have been High | `knowledgeProvider` defaults to `local` in `main.bicep` and every `.bicepparam` file until a future PBI creates and populates the AI Search index (see `decisions.md`) |
+| Ingestion pipeline never run against a real Azure AI Search index in this environment (no deployment performed) | Realized | Low | `KnowledgeIngestionPipeline` is fully unit-tested with mocked `SearchIndexClient`/`SearchClient` (never touches real Azure); the field-name contract it writes and `AzureAISearchProvider` reads is shared from one Python module (`index_schema.py`), removing the main risk of the two drifting apart undetected |
+| Two competing index-schema definitions (Bicep and Python) could drift apart over time | Avoided by design | Would have been Medium | The index schema is defined in Python only (`index_schema.py`); Bicep continues to provision the search *service*, never the index — see `decisions.md` |
 
 ## Deliverable Log
 
@@ -115,6 +152,9 @@ Evidence: `docs/sprint_03/evidence/pbi-03-01-ollama-provider-validation.txt`
 
 PBI-03-02: Azure Runtime integration completed by wiring, not duplicating, the already-built Azure providers. New `ops/bicep/modules/azure-openai.bicep` provisions a Cognitive Services `OpenAI` account plus one chat-completion model deployment (default `gpt-4o-mini`), RBAC via the built-in "Cognitive Services OpenAI User" role — local (key) auth deliberately left enabled at the resource level, mirroring PBI-02-02's Azure AI Search precedent exactly, since `AzureOpenAIProvider` explicitly supports an opt-in `azure_openai_use_api_key` path via `SecretProvider` that must stay real and usable; Managed Identity remains the default. `main.bicep` gained `llmProvider`/`knowledgeProvider`/`conversationStoreProvider` params and now sets every provider-selection and endpoint/resource-name value the API Container App actually needs as a plain, non-secret env var (`LLM_PROVIDER`, `KNOWLEDGE_PROVIDER`, `CONVERSATION_STORE_PROVIDER`, `AZURE_OPENAI_ENDPOINT`/`DEPLOYMENT`/`API_VERSION`/`USE_API_KEY`, `AZURE_AI_SEARCH_ENDPOINT`/`INDEX_NAME`/`USE_API_KEY`, `COSMOS_DB_ENDPOINT`/`DATABASE`/`CONTAINER`) — previously entirely unset, meaning Cosmos/AI Search were being provisioned but the deployed API would never actually have selected them. `knowledgeProvider` deliberately defaults to `local`, not `azure_ai_search`, in `main.bicep` and all three `.bicepparam` files: no AI Search index exists yet (index creation/ingestion is out of scope), and `AzureAISearchProvider` raises `KnowledgeConfigurationError` at startup if `AZURE_AI_SEARCH_INDEX_NAME` is empty — defaulting to Azure there would have shipped a genuinely broken configuration; `llmProvider`/`conversationStoreProvider` default to `azure_openai`/`cosmos` since both are fully, safely provisioned by this same template. No new Container App secrets were needed — Managed Identity requires none, and the existing Key-Vault-reference pattern for the App Insights connection string was left untouched. A new ADR (`docs/Architecture/adr/0001-networking-posture-and-vnet-deferral.md`, the first ADR in this repository) documents the current all-public-network-access/RBAC-only posture against what VNet/Private Endpoint production hardening would require, explicitly deferred rather than mixed into this PBI. New composition-root tests (`tests/unit/api/test_dependencies.py`, 13 tests) exercise `apps/api/src/api/dependencies.py` directly — Azure provider selection, missing-configuration failures propagated through the factory layer, the Managed-Identity-default auth path (no `SecretProvider` built unless `*_USE_API_KEY` is set), and a full end-to-end composition test wiring all three Azure providers together at once — with an autouse fixture clearing every `@lru_cache`d composition-root singleton before and after each test so no wrongly-configured provider could leak into the rest of the suite; a full regression run immediately after confirmed zero pollution. New `tests/unit/services/test_conversation_store_factory.py` and two new missing-endpoint-via-factory tests (LLM, Knowledge) close the remaining "missing Azure configuration" gaps at the factory layer. 417 tests pass deterministically (21 new); ruff and mypy clean; all 12 Bicep files (`main.bicep` + 11 modules, including the new Azure OpenAI module) and all 3 parameter files compile with `az bicep build`/`build-params` at exit 0, 0 errors, 0 warnings; `docker compose config` unaffected (this PBI did not touch `docker-compose.yml`); live local smoke test with the default (Mock/local/in-memory) providers confirmed zero regression to the local runtime. No Azure resources were deployed — only offline `az bicep build`/`build-params` were executed; no `az deployment ... create`/`what-if`, no real Azure credentials in tests, no Agent rewritten, no Azure provider implementation duplicated, no Tool allow-list/validation control weakened. — 2026-08-07
 Evidence: `docs/sprint_03/evidence/pbi-03-02-azure-runtime-integration-validation.txt`
+
+PBI-03-03: Azure AI Search index and document-ingestion pipeline built in a new `src/pipelines/knowledge_ingestion/` package — the first occupant of CLAUDE.md §6's reserved, previously-empty `src/pipelines/`. The index schema (`index_schema.py::build_index_definition`) is defined once, in Python via `azure.search.documents.indexes.models` (the same SDK package `AzureAISearchProvider` already depends on), rather than duplicated in Bicep — a deliberate choice to keep a single source of truth for field names between what ingestion writes and what `AzureAISearchProvider._SELECT_FIELDS` reads back; Bicep continues to provision only the search *service* (unchanged this PBI). Fields: `chunk_id` (key), `content`, `source_id`, `title`, `category`, `section`, `source_path`, `version`, `content_hash` — every name matching `KnowledgeMetadata`'s own fields exactly, with `chunk_to_search_document()` doing the metadata mapping. `IngestionChunk` (`models.py`) is the typed chunk model, with `content_hash` as a Pydantic `computed_field` (SHA-256 of the chunk text) driving incremental ingestion. `DocumentLoader` is a narrow Protocol (`matches`/`load`) designed so a future SharePoint loader needs zero pipeline changes; `MarkdownDocumentLoader` is a full, real implementation — same frontmatter shape `LocalKnowledgeProvider` already reads (`source_id`/`title`/`category`, now also optional `version`), plus new `##`-header section chunking that makes `section` genuinely populated for the first time (stable, slug-derived `chunk_id`s across repeated loads); `PdfDocumentLoader` is a wired-in abstraction that raises a typed `UnsupportedDocumentTypeError` rather than performing real extraction, since no PDF-parsing dependency exists in this project and CLAUDE.md §7 forbids adding one speculatively. `EmbeddingProvider` (`embedding.py`) is the same abstraction-only pattern — `NullEmbeddingProvider` always returns `None`, no vector field exists on the index, and every prior RAG PBI's "no vector search" exclusion still holds. `KnowledgeIngestionPipeline` (`pipeline.py`) orchestrates `ensure_index()` (idempotent create-or-update) and `ingest()`: loads every supported file, computes each chunk's `content_hash`, diffs against the index's current hashes (fetched via `search_text="*"`) to upload only new/changed chunks (`merge_or_upload_documents`, never wiping the index), skip unchanged ones, and `delete_documents` for chunk_ids no longer produced by any loader — a single malformed document fails only that document (recorded in `IngestionReport.failed`), never aborting the run. `AzureAISearchProvider._SELECT_FIELDS` now requests `section`/`source_path` — explicitly deferred in PBI-02-02's own comment pending exactly this PBI's index. A new `ops/scripts/ingest_knowledge_base.py` CLI is the ingestion job's own composition root (mirrors `apps/api/src/api/dependencies.py`'s pattern: builds `SearchIndexClient`/`SearchClient` from `KnowledgeSettings`, Managed Identity by default, `SecretProvider`-backed API key opt-in) — present and importable, never executed against real Azure this PBI. 451 tests pass deterministically (34 new: 32 in `tests/unit/pipelines/knowledge_ingestion/` plus 2 new `AzureAISearchProvider` regression tests); ruff and mypy clean on the first attempt for every new file; `az bicep build` re-validated all 12 files (no Bicep changes this PBI, pure regression check) and `docker compose config` re-validated cleanly. No Agent, Supervisor, Prompt, or Tool code touched; no Azure resources deployed; no real embeddings, PDF extraction, or SharePoint integration implemented — all three remain documented abstractions ready for a future, separately-scoped PBI. — 2026-08-07
+Evidence: `docs/sprint_03/evidence/pbi-03-03-knowledge-ingestion-pipeline-validation.txt`
 
 ## Sprint validation
 

@@ -114,6 +114,43 @@ async def test_retrieve_maps_metadata_for_future_citations(
 
 @patch("src.rag.azure_ai_search_provider.SearchClient")
 @patch("azure.identity.aio.DefaultAzureCredential")
+async def test_retrieve_requests_section_and_source_path_fields(
+    mock_credential_cls: MagicMock, mock_client_cls: MagicMock
+) -> None:
+    """PBI-03-03: the index schema the ingestion pipeline creates now defines section/
+    source_path, so retrieval must actually request them for Grounding compatibility."""
+    mock_client = mock_client_cls.return_value
+    mock_client.search = AsyncMock(return_value=_async_iter([]))
+    provider = _build_provider()
+
+    await provider.retrieve(KnowledgeQuery(text="claim procedure"))
+
+    _, search_kwargs = mock_client.search.call_args
+    assert "section" in search_kwargs["select"]
+    assert "source_path" in search_kwargs["select"]
+
+
+@patch("src.rag.azure_ai_search_provider.SearchClient")
+@patch("azure.identity.aio.DefaultAzureCredential")
+async def test_retrieve_maps_section_and_source_path_when_present(
+    mock_credential_cls: MagicMock, mock_client_cls: MagicMock
+) -> None:
+    mock_client = mock_client_cls.return_value
+    item = _fake_item()
+    item["section"] = "After Hours"
+    item["source_path"] = "configs/knowledge_base/claims_after_hours_procedure.md"
+    mock_client.search = AsyncMock(return_value=_async_iter([item]))
+    provider = _build_provider()
+
+    result = await provider.retrieve(KnowledgeQuery(text="claim procedure"))
+
+    metadata = result.chunks[0].metadata
+    assert metadata.section == "After Hours"
+    assert metadata.source_path == "configs/knowledge_base/claims_after_hours_procedure.md"
+
+
+@patch("src.rag.azure_ai_search_provider.SearchClient")
+@patch("azure.identity.aio.DefaultAzureCredential")
 async def test_retrieve_with_no_matches_returns_an_explicit_empty_result(
     mock_credential_cls: MagicMock, mock_client_cls: MagicMock
 ) -> None:
