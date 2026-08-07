@@ -1,10 +1,12 @@
-// TMX Enterprise AI Reference Platform — Sprint 0 Bicep foundation (PBI-00-04).
+// TMX Enterprise AI Reference Platform — Sprint 0 Bicep foundation (PBI-00-04, extended by
+// PBI-00-05 with the Cosmos DB conversation store).
 //
 // Scope: Container Registry, Log Analytics, Application Insights, Container Apps environment,
-// API + Web Container Apps, a shared user-assigned Managed Identity, and a Key Vault foundation.
+// API + Web Container Apps, a shared user-assigned Managed Identity, a Key Vault foundation,
+// and a Cosmos DB for NoSQL conversation history store.
 //
-// Explicitly out of scope (later PBIs/ADRs): Cosmos DB, Azure OpenAI, Azure AI Search, API
-// Management, Storage accounts, agent business logic, RAG.
+// Explicitly out of scope (later PBIs/ADRs): Azure OpenAI, Azure AI Search, API Management,
+// Storage accounts, agent business logic, RAG.
 //
 // Deploys into an existing resource group supplied at deploy time (`az deployment group create
 // --resource-group <rg>`) — the resource group name is intentionally never referenced here.
@@ -41,6 +43,27 @@ param logAnalyticsDailyQuotaGb int = -1
 
 @description('Whether Key Vault purge protection is enabled. Once enabled it cannot be disabled — keep false only for disposable dev sandboxes.')
 param keyVaultEnablePurgeProtection bool = false
+
+@description('SQL API database name for the conversation history store.')
+param cosmosDatabaseName string = '${projectName}-conversation-db'
+
+@description('Conversation container name.')
+param cosmosContainerName string = 'conversations'
+
+@description('Cosmos DB consistency level.')
+@allowed(['Eventual', 'ConsistentPrefix', 'Session', 'BoundedStaleness', 'Strong'])
+param cosmosConsistencyLevel string = 'Session'
+
+@description('Cosmos DB capacity mode. Serverless is the conservative default for dev/academic use.')
+@allowed(['Serverless', 'Provisioned'])
+param cosmosCapacityMode string = 'Serverless'
+
+@description('Cosmos DB manual throughput (RU/s), used only when cosmosCapacityMode is Provisioned.')
+@minValue(400)
+param cosmosThroughput int = 400
+
+@description('Conversation container default TTL in seconds. -1 provisions TTL support without expiring anything by default; a real retention value requires its own ADR.')
+param cosmosConversationTtlSeconds int = -1
 
 @description('API image repository name inside the registry.')
 param apiImageName string
@@ -101,6 +124,7 @@ var apiContainerAppName = 'ca-${namePrefix}-api'
 var webContainerAppName = 'ca-${namePrefix}-web'
 var containerRegistryName = take('acr${replace(projectName, '-', '')}${environmentName}${uniqueSuffix}', 50)
 var keyVaultName = take('kv-${namePrefix}-${uniqueSuffix}', 24)
+var cosmosAccountName = take('cosmos-${namePrefix}-${uniqueSuffix}', 44)
 var appInsightsSecretName = 'appinsights-connection-string'
 
 module logAnalytics 'modules/log-analytics.bicep' = {
@@ -152,6 +176,23 @@ module keyVault 'modules/key-vault.bicep' = {
     tags: tags
     enablePurgeProtection: keyVaultEnablePurgeProtection
     keyVaultAccessPrincipalId: managedIdentity.outputs.principalId
+  }
+}
+
+module cosmosDb 'modules/cosmos-db.bicep' = {
+  name: 'cosmos-db-deployment'
+  params: {
+    location: location
+    accountName: cosmosAccountName
+    tags: tags
+    databaseName: cosmosDatabaseName
+    containerName: cosmosContainerName
+    partitionKeyPath: '/userId'
+    consistencyLevel: cosmosConsistencyLevel
+    capacityMode: cosmosCapacityMode
+    throughput: cosmosThroughput
+    conversationTtlSeconds: cosmosConversationTtlSeconds
+    dataContributorPrincipalId: managedIdentity.outputs.principalId
   }
 }
 
@@ -279,3 +320,9 @@ output apiContainerAppFqdn string = apiContainerApp.outputs.fqdn
 output webContainerAppName string = webContainerApp.outputs.name
 output webContainerAppId string = webContainerApp.outputs.id
 output webContainerAppFqdn string = webContainerApp.outputs.fqdn
+
+output cosmosAccountName string = cosmosDb.outputs.accountName
+output cosmosDocumentEndpoint string = cosmosDb.outputs.documentEndpoint
+output cosmosDatabaseName string = cosmosDb.outputs.databaseName
+output cosmosContainerName string = cosmosDb.outputs.containerName
+output cosmosAccountId string = cosmosDb.outputs.accountId
