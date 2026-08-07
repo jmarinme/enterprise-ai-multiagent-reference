@@ -22,3 +22,16 @@ class ConversationStoreSettings(BaseSettings):
     cosmos_db_endpoint: str | None = None
     cosmos_db_database: str = "tmxai-conversation-db"
     cosmos_db_container: str = "conversations"
+
+
+class SecretProviderSettings(BaseSettings):
+    """Selects and configures the SecretProvider implementation.
+
+    Defaults to the environment-variable provider so local development and unit tests never
+    require Azure or Key Vault connectivity.
+    """
+
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    secret_provider: Literal["environment", "key_vault"] = "environment"
+    key_vault_uri: str | None = None

@@ -1,0 +1,107 @@
+PBI-00-06 — Key Vault and Managed Identity security foundation validation evidence
+Date: 2026-08-06/07
+
+--- Infra review (no code change needed) ---
+Reviewed ops/bicep/modules/key-vault.bicep: already enableRbacAuthorization=true, no access
+policies, already accepts a principalId param for a scoped "Key Vault Secrets User" role
+assignment (built from PBI-00-04). No change needed beyond an added output (below).
+Reviewed ops/bicep/modules/managed-identity.bicep: already a single user-assigned identity,
+already outputs id/name/principalId/clientId. No change needed.
+Reviewed ops/bicep/modules/container-app.bicep: already configures `identity: { type:
+'UserAssigned', ... }` and Key Vault secret references via that identity (PBI-00-04). No change
+needed — confirmed Container Apps already authenticate via the existing Managed Identity.
+Reviewed container-registry.bicep (AcrPull) and cosmos-db.bicep (Cosmos Data Contributor,
+PBI-00-05): both already grant only the minimum required built-in role to the one shared
+identity. No change needed.
+
+--- Bicep changes made ---
+ops/bicep/modules/key-vault.bicep: added `output tenantId string = keyVault.properties.tenantId`
+(needed by future Azure DevOps pipeline auth, per docs/sprint_00/security-baseline.md §6).
+ops/bicep/main.bicep: surfaced `output keyVaultTenantId string = keyVault.outputs.tenantId`.
+No parameter file changes were necessary (no new params introduced).
+
+--- az bicep build ---
+Command: az bicep build --file ops/bicep/modules/key-vault.bicep --stdout
+Result: exit 0, 0 errors, 0 warnings.
+Command: az bicep build --file ops/bicep/main.bicep --stdout
+Result: exit 0, 0 errors, 0 warnings.
+
+--- az bicep build-params ---
+Command: az bicep build-params --file <file> --outfile <tmp>.json for dev/staging/prod
+Result: all exit 0 (unchanged files, re-validated against the updated main.bicep).
+
+--- Backend: dependency installation ---
+Added optional `keyvault` extra to root pyproject.toml (azure-keyvault-secrets, azure-identity).
+Installed into the existing root .venv (Python 3.11.9): azure-keyvault-secrets 4.11.0.
+
+Real issue discovered and fixed: constructing AzureKeyVaultSecretProvider (which builds an async
+DefaultAzureCredential) failed with "ImportError: aiohttp package is not installed" — the async
+azure-identity credential chain requires aiohttp for its default async HTTP transport, which is
+not a transitive dependency of azure-identity/azure-cosmos/azure-keyvault-secrets. This was a
+latent gap in PBI-00-05's `cosmos` extra too (never exercised there because no unit test
+constructed a real, unmocked CosmosConversationRepository). Fixed by adding `aiohttp>=3.9,<4` to
+both the `cosmos` and `keyvault` extras. Installed aiohttp and re-ran; all tests passed.
+
+--- Naming collision discovered and fixed ---
+The new `src/services/secrets/` directory was silently matched by the repository's own
+`.gitignore` rule `secrets/` (line 8, intended to block accidentally-committed local secret
+files) — `git status` never listed any of its files as untracked. Confirmed via
+`git check-ignore -v`. Fixed by renaming the module to `src/services/secret_store/` (mirroring
+the existing `src/services/conversation_store/` naming from PBI-00-05) rather than editing the
+security-relevant `.gitignore` rule. Re-validated after rename: `git check-ignore` now reports
+the path is not ignored, and `git status` correctly lists it as untracked/ready to add.
+
+--- pytest ---
+Command: pytest tests/unit/services tests/unit/domain tests/integration -v
+Result: 23 collected -> 1 collection error initially (`import file mismatch`: both
+tests/unit/services/test_key_vault_secret_provider.py and a same-named file under
+tests/integration/ collided under pytest's rootless import mode, same class of issue seen in
+PBI-00-02). Fixed by renaming the integration scaffold to tests/integration/test_key_vault_live.py.
+Final result: 21 passed, 2 skipped (both Cosmos and Key Vault live-integration scaffolds skip
+correctly without Azure configuration).
+
+New tests, all passing:
+  tests/unit/services/test_environment_secret_provider.py — 3 tests (success, missing var,
+    empty var)
+  tests/unit/services/test_key_vault_secret_provider.py — 3 tests, fully mocked (success,
+    ResourceNotFoundError -> SecretNotFoundError, None value -> SecretNotFoundError)
+  tests/unit/services/test_secret_provider_factory.py — 4 tests (default environment selection,
+    key_vault selection, missing KEY_VAULT_URI raises, invalid Literal value rejected by pydantic)
+  tests/integration/test_key_vault_live.py — 1 test, skipped (no KEY_VAULT_URI); only ever
+    exercises the missing-secret path, never reads/creates a real secret
+
+Regression check: apps/api/.venv pytest tests/unit/api -v — still 5 passed (no change since
+PBI-00-05's check; same harmless pre-existing "Unknown config option: asyncio_mode" warning).
+
+--- ruff ---
+Command: ruff check src tests/unit/services tests/unit/domain tests/integration
+Result: All checks passed! (exit 0)
+
+--- mypy ---
+Command: mypy src
+Result: Success: no issues found in 16 source files.
+Command: mypy tests/unit/services tests/unit/domain tests/integration
+Result: Success: no issues found in 7 source files.
+
+--- Secrets/credentials scan ---
+Searched src/, tests/, ops/bicep/, .env.example, and docs/sprint_00/security-baseline.md for
+connection-string patterns, literal API-key/client-secret assignments, hardcoded https://
+endpoints in src/, and GUID literals.
+Findings: none. The one GUID present (key-vault.bicep, unchanged from PBI-00-04) is Microsoft's
+public built-in "Key Vault Secrets User" role-definition ID. .env.example contains only empty
+placeholders (AZURE_OPENAI_API_KEY=, KEY_VAULT_URI=, etc.), consistent with pre-existing entries.
+No secret value, connection string, or credential was created anywhere.
+
+--- Deployment ---
+No `az deployment group create` / `what-if` executed. No Azure resources were created, modified,
+or evaluated against a live subscription.
+
+--- Conclusion ---
+Key Vault and Managed Identity infrastructure were reviewed and confirmed already compliant
+(RBAC-only, minimum roles, Managed-Identity-based Container Apps auth) from prior PBIs, with one
+small output addition. The SecretProvider abstraction (protocol, environment adapter, Key Vault
+adapter, factory) is implemented, fully unit-tested without Azure connectivity, lint-clean, and
+mypy-clean. Two real environment/tooling issues were discovered and fixed during validation
+(missing aiohttp transport dependency; a .gitignore/directory-name collision). Documentation
+covers local/Container-Apps/future-ADO authentication and explicitly scopes out Entra ID
+end-user login.

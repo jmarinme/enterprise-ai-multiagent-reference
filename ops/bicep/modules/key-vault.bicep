@@ -55,3 +55,4 @@ resource secretsUserRoleAssignment 'Microsoft.Authorization/roleAssignments@2022
 output id string = keyVault.id
 output name string = keyVault.name
 output uri string = keyVault.properties.vaultUri
+output tenantId string = keyVault.properties.tenantId

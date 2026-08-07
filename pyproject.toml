@@ -12,6 +12,12 @@ dependencies = [
 cosmos = [
     "azure-cosmos>=4.7,<5",
     "azure-identity>=1.17,<2",
+    "aiohttp>=3.9,<4",
+]
+keyvault = [
+    "azure-keyvault-secrets>=4.8,<5",
+    "azure-identity>=1.17,<2",
+    "aiohttp>=3.9,<4",
 ]
 dev = [
     "pytest>=8.2,<9",
