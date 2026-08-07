@@ -12,6 +12,12 @@ param logAnalyticsRetentionInDays = 30
 param logAnalyticsDailyQuotaGb = -1
 param keyVaultEnablePurgeProtection = true
 
+param cosmosDatabaseName = 'tmxai-conversation-db'
+param cosmosContainerName = 'conversations'
+param cosmosConsistencyLevel = 'Session'
+param cosmosCapacityMode = 'Serverless'
+param cosmosConversationTtlSeconds = -1
+
 param apiImageName = 'tmx-api'
 param apiImageTag = 'pending-first-build'
 param apiCpuCores = '0.5'

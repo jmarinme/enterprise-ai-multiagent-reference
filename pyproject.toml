@@ -1,0 +1,35 @@
+[project]
+name = "tmx-platform"
+version = "0.1.0"
+description = "TMX Enterprise AI Reference Platform — reusable domain library (src/)"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.7,<3",
+    "pydantic-settings>=2.3,<3",
+]
+
+[project.optional-dependencies]
+cosmos = [
+    "azure-cosmos>=4.7,<5",
+    "azure-identity>=1.17,<2",
+]
+dev = [
+    "pytest>=8.2,<9",
+    "pytest-asyncio>=0.23,<1",
+    "ruff>=0.5,<1",
+    "mypy>=1.10,<2",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
+disallow_untyped_defs = true
+warn_unused_ignores = true
+no_implicit_optional = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]

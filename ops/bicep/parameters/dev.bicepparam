@@ -12,6 +12,12 @@ param logAnalyticsRetentionInDays = 30
 param logAnalyticsDailyQuotaGb = 1
 param keyVaultEnablePurgeProtection = false
 
+param cosmosDatabaseName = 'tmxai-conversation-db'
+param cosmosContainerName = 'conversations'
+param cosmosConsistencyLevel = 'Session'
+param cosmosCapacityMode = 'Serverless'
+param cosmosConversationTtlSeconds = -1
+
 // Placeholder tags — a real deployment requires an image already pushed to the registry created
 // by this template. CI/CD (PBI-00-07) is responsible for building and pushing before deploying.
 param apiImageName = 'tmx-api'

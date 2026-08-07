@@ -72,3 +72,22 @@ Conclusion: the minimal Web application (header with connectivity/version status
 Full output archived at `docs/sprint_00/evidence/pbi-00-04-bicep-foundation-validation.txt`.
 
 Conclusion: `main.bicep`, 8 reusable modules (Log Analytics, App Insights, Managed Identity, Key Vault, Key Vault Secret, Container Registry, Container Apps Environment, and one generic Container App module reused for both API and Web), and 3 environment parameter files (`dev`/`staging`/`prod`) all compile cleanly with zero errors and zero warnings. Cosmos DB, Azure OpenAI, AI Search, APIM, Storage, agents, and RAG remain out of scope. No Azure deployment of any kind was performed.
+
+## 2026-08-06 — PBI-00-05: Cosmos DB Conversation Store foundation
+
+| Command | Result |
+|---|---|
+| `az bicep build --file ops/bicep/modules/cosmos-db.bicep` | Attempt 1: 1 warning (`BCP225`, discriminated-union check disabled on a conditional `backupPolicy.type`). Fixed by removing the unrequested `backupPolicyType` param and hardcoding `'Periodic'`. Attempt 2: exit 0, 0 errors, 0 warnings |
+| `az bicep build --file ops/bicep/main.bicep` (Cosmos module wired in) | exit 0, 0 errors, 0 warnings |
+| `az bicep build-params` on `dev`/`staging`/`prod` `.bicepparam` | All exit 0 |
+| `pip install pydantic pydantic-settings pytest pytest-asyncio ruff mypy azure-cosmos azure-identity` (root `.venv`, Python 3.11.9) | Installed successfully (`pip install -e ".[dev,cosmos]"` failed — no `[build-system]` table, intentional, same pattern as `apps/api`; direct package install used instead) |
+| `pytest tests/unit/domain tests/unit/services tests/integration -v` | `11 passed, 1 skipped` — Cosmos integration test skipped (`COSMOS_DB_ENDPOINT` unset), exactly as designed |
+| `apps/api/.venv` regression check: `pytest tests/unit/api -v` | Still `5 passed` after the new root `pyproject.toml` was added; one new harmless warning (`Unknown config option: asyncio_mode`), no test outcome affected |
+| `ruff check src tests/unit/domain tests/unit/services tests/integration` | Attempt 1: 4 errors (3× `UP017`, 1× `PYI063`). Fixed (3 auto-fixed, 1 manual). Attempt 2: `All checks passed!` |
+| `mypy src` / `mypy tests/unit/domain tests/unit/services tests/integration` | Both: `Success: no issues found` (11 and 3 files respectively) |
+| Manual grep for connection strings/keys/hardcoded endpoints/GUIDs | No prohibited values found. One GUID present is Microsoft's public built-in Cosmos DB "Data Contributor" role-definition ID |
+| `az deployment group create` / `what-if` | NOT executed — no Azure resource was created, modified, or evaluated |
+
+Full output archived at `docs/sprint_00/evidence/pbi-00-05-cosmos-conversation-store-validation.txt`.
+
+Conclusion: the Cosmos DB conversation store foundation (infra + domain models + repository abstraction) is implemented, compiles cleanly, and is fully unit-tested without requiring Azure or Cosmos DB locally. No agents, Azure OpenAI, RAG, APIM, authentication, or CI/CD deployment work was performed.

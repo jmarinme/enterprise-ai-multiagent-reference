@@ -81,3 +81,27 @@ Record sprint-specific decisions and deviations. Cross-sprint decisions belong i
 **Deviation/status change:** None — this satisfies the "do not hardcode image tags" requirement while keeping the parameter files deployment-shaped and buildable/validatable now.
 
 **How to apply:** PBI-00-07 must replace `'pending-first-build'` with a real, pipeline-supplied tag (e.g., a Git SHA or build ID) before any actual `az deployment group create` is run against these parameter files.
+
+## 2026-08-06 — PBI-00-05: Cosmos DB local auth disabled; access via data-plane RBAC only
+
+**Decision:** `ops/bicep/modules/cosmos-db.bicep` sets `disableLocalAuth: true` on the Cosmos account, disabling key-based authentication entirely. The platform's user-assigned Managed Identity is instead granted the built-in Cosmos DB "Data Contributor" role via a `sqlRoleAssignments` resource, and `CosmosConversationRepository` authenticates exclusively with `azure-identity`'s `DefaultAzureCredential` (async). No connection string or key exists anywhere in this codebase for Cosmos DB.
+
+**Deviation/status change:** None — this is a stricter-than-required implementation of "prefer managed identity" and "do not hardcode connection strings/secrets," not a deviation.
+
+**How to apply:** Any future Cosmos DB work (agent Tools reading conversation history, admin scripts) must use `DefaultAzureCredential`/Managed Identity, never a primary/secondary key. Local developer accounts running against a real Cosmos account for manual testing must also be granted the Data Contributor role via Azure AD, since keys are disabled at the account level.
+
+## 2026-08-06 — PBI-00-05: conversation retention/TTL provisioned but left inactive
+
+**Decision:** The `conversations` container's default TTL is set to `-1` (TTL capability enabled, but no item expires automatically) in all three environments. No concrete retention period was chosen.
+
+**Deviation/status change:** None — deliberately deferred. Choosing a real retention value is a compliance-relevant decision (how long synthetic — and eventually real — conversation history is kept) that `CLAUDE.md` §3.10 says needs its own ADR with context/alternatives/consequences, not a value invented inline in this PBI.
+
+**How to apply:** Before any environment stores non-synthetic data, an ADR must set `cosmosConversationTtlSeconds` (or an equivalent per-item TTL policy) based on an actual retention requirement.
+
+## 2026-08-06 — PBI-00-05: root `pyproject.toml` added; minor pytest cross-config interaction with `apps/api`
+
+**Decision:** Added a root-level `pyproject.toml` for the reusable `src/` domain library (it had none before this PBI — `src/` was entirely unpopulated). It declares its own dependencies, an optional `cosmos` extra (`azure-cosmos`, `azure-identity`) so the default in-memory local-dev path never needs those packages, and `[tool.pytest.ini_options]` with `pythonpath = ["."]` and `asyncio_mode = "auto"`.
+
+**Deviation/status change:** Minor, non-breaking side effect observed: running `pytest` from the repo root now always picks up the root `pyproject.toml`'s ini section (pytest uses the nearest ancestor ini file from the invocation directory), which apps/api's own tests were not previously using anyway (they rely on `tests/unit/api/conftest.py`'s manual `sys.path` insertion, independent of ini discovery). Running the existing `apps/api` suite through `apps/api/.venv` now prints one harmless warning (`Unknown config option: asyncio_mode`, since that venv lacks `pytest-asyncio`); all 5 apps/api tests still pass, since none of them are `async def`.
+
+**How to apply:** If a future PBI adds async tests to `apps/api`, add `pytest-asyncio` to `apps/api/pyproject.toml`'s dev extras at that point to silence the warning — not needed today.
