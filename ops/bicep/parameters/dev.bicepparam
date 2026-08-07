@@ -18,6 +18,8 @@ param cosmosConsistencyLevel = 'Session'
 param cosmosCapacityMode = 'Serverless'
 param cosmosConversationTtlSeconds = -1
 
+param aiSearchSkuName = 'free'
+
 // Placeholder tags — a real deployment requires an image already pushed to the registry created
 // by this template. CI/CD (PBI-00-07) is responsible for building and pushing before deploying.
 param apiImageName = 'tmx-api'

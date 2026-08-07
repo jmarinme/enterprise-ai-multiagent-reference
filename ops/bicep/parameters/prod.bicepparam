@@ -1,8 +1,9 @@
 using '../main.bicep'
 
 // Prod: more headroom and longer log retention; purge protection on.
-// NOTE: CLAUDE.md out-of-scope items (RAG, real integrations, automatic prod deployment) still
-// apply — this parameter file describes infrastructure shape only, not an authorization to deploy.
+// NOTE: CLAUDE.md out-of-scope items (RAG index/ingestion, real integrations, automatic prod
+// deployment) still apply — this parameter file describes infrastructure shape only, not an
+// authorization to deploy.
 
 param environmentName = 'prod'
 param projectName = 'tmxai'
@@ -20,6 +21,8 @@ param cosmosConsistencyLevel = 'Session'
 param cosmosCapacityMode = 'Provisioned'
 param cosmosThroughput = 400
 param cosmosConversationTtlSeconds = -1
+
+param aiSearchSkuName = 'basic'
 
 param apiImageName = 'tmx-api'
 param apiImageTag = 'pending-first-build'
