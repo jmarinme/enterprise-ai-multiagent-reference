@@ -62,6 +62,10 @@ class PromptRenderContext(BaseModel):
     conversation_summary: str | None = None
     tool_summaries: list[str] = Field(default_factory=list)
     agent_name: str | None = None
+    # Reference/contextual text from a KnowledgeRetriever (PBI-02-01) — documentary only,
+    # never a source of a business fact (CLAUDE.md §4.4). Defaults to empty for every Agent
+    # that does not use RAG.
+    retrieved_knowledge: list[str] = Field(default_factory=list)
 
 
 class RenderedPrompt(BaseModel):

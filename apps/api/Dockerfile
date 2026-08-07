@@ -13,6 +13,9 @@
 # given the relative path "configs/prompts", resolved against the process's working directory
 # — WORKDIR /app here, matching how it resolves against the repo root when run locally from
 # there. No prompt file was previously packaged into this image at all.
+#
+# configs/knowledge_base is copied the same way (PBI-02-01): LocalKnowledgeProvider is given
+# the relative path "configs/knowledge_base", resolved identically against WORKDIR /app.
 
 FROM python:3.12-slim
 
@@ -29,6 +32,7 @@ RUN pip install --no-cache-dir \
 COPY apps/api/src ./app_src
 COPY src ./src
 COPY configs/prompts ./configs/prompts
+COPY configs/knowledge_base ./configs/knowledge_base
 
 ENV PYTHONPATH=/app
 

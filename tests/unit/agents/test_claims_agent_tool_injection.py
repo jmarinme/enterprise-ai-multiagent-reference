@@ -12,6 +12,8 @@ from src.agents.claims_agent import ClaimsAgent
 from src.llm.mock_provider import MockLLMProvider
 from src.prompts.filesystem_provider import FileSystemPromptProvider
 from src.prompts.manager import PromptManager
+from src.rag.local_provider import LocalKnowledgeProvider
+from src.rag.retriever import KnowledgeRetriever
 from src.services.tools.policy_lookup_tool import PolicyLookupTool
 from src.supervisor.models import AgentRequest, ConversationContext
 from src.tools.executor import ToolExecutor
@@ -20,6 +22,12 @@ from src.tools.registry import InMemoryToolRegistry
 
 def _build_prompt_manager() -> PromptManager:
     return PromptManager(provider=FileSystemPromptProvider(prompts_root=Path("configs/prompts")))
+
+
+def _build_knowledge_retriever() -> KnowledgeRetriever:
+    return KnowledgeRetriever(
+        provider=LocalKnowledgeProvider(documents_root=Path("configs/knowledge_base"))
+    )
 
 
 def _ready_for_validation_state() -> ClaimsIntakeState:
@@ -54,6 +62,7 @@ async def test_claims_agent_reports_the_real_policy_lookup_result_via_the_inject
         tool_executor=ToolExecutor(tool_registry=registry),
         prompt_manager=_build_prompt_manager(),
         llm_provider=MockLLMProvider(),
+        knowledge_retriever=_build_knowledge_retriever(),
     )
     context = _seed_context(_ready_for_validation_state())
 
@@ -68,6 +77,7 @@ async def test_claims_agent_degrades_gracefully_when_policy_lookup_tool_is_not_r
         tool_executor=ToolExecutor(tool_registry=empty_registry),
         prompt_manager=_build_prompt_manager(),
         llm_provider=MockLLMProvider(),
+        knowledge_retriever=_build_knowledge_retriever(),
     )
     context = _seed_context(_ready_for_validation_state())
 

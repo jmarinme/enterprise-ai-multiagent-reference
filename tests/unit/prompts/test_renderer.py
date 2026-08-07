@@ -24,7 +24,8 @@ def _definition(template: str, required_variables: list[str] | None = None) -> P
 async def test_renders_all_known_variables() -> None:
     definition = _definition(
         "conv={conversationId} user={userId} intent={intent} "
-        "summary={conversationSummary} tools={toolSummaries} agent={agentName}"
+        "summary={conversationSummary} tools={toolSummaries} agent={agentName} "
+        "knowledge={retrievedKnowledge}"
     )
     context = PromptRenderContext(
         conversation_id="conv-1",
@@ -33,14 +34,25 @@ async def test_renders_all_known_variables() -> None:
         conversation_summary="a summary",
         tool_summaries=["tool result A", "tool result B"],
         agent_name="ClaimsAgent",
+        retrieved_knowledge=["knowledge chunk A", "knowledge chunk B"],
     )
 
     rendered = render_template(definition, context)
 
     assert rendered == (
         "conv=conv-1 user=user-1 intent=CLAIMS summary=a summary "
-        "tools=tool result A; tool result B agent=ClaimsAgent"
+        "tools=tool result A; tool result B agent=ClaimsAgent "
+        "knowledge=knowledge chunk A; knowledge chunk B"
     )
+
+
+async def test_retrieved_knowledge_renders_as_empty_string_when_none_retrieved() -> None:
+    definition = _definition("knowledge=[{retrievedKnowledge}]")
+    context = PromptRenderContext()
+
+    rendered = render_template(definition, context)
+
+    assert rendered == "knowledge=[]"
 
 
 async def test_optional_missing_variable_renders_as_empty_string() -> None:

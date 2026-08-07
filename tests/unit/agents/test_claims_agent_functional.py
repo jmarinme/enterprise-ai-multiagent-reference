@@ -12,6 +12,8 @@ from src.agents.claims_agent import ClaimsAgent
 from src.llm.mock_provider import MockLLMProvider
 from src.prompts.filesystem_provider import FileSystemPromptProvider
 from src.prompts.manager import PromptManager
+from src.rag.local_provider import LocalKnowledgeProvider
+from src.rag.retriever import KnowledgeRetriever
 from src.services.tools.adjuster_assignment_tool import AdjusterAssignmentTool
 from src.services.tools.claim_registration_tool import ClaimRegistrationTool
 from src.services.tools.payment_status_tool import PaymentStatusTool
@@ -32,10 +34,14 @@ def _build_agent() -> ClaimsAgent:
     prompt_manager = PromptManager(
         provider=FileSystemPromptProvider(prompts_root=Path("configs/prompts"))
     )
+    knowledge_retriever = KnowledgeRetriever(
+        provider=LocalKnowledgeProvider(documents_root=Path("configs/knowledge_base"))
+    )
     return ClaimsAgent(
         tool_executor=ToolExecutor(tool_registry=tool_registry),
         prompt_manager=prompt_manager,
         llm_provider=MockLLMProvider(),
+        knowledge_retriever=knowledge_retriever,
     )
 
 

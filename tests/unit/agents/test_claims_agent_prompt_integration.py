@@ -9,6 +9,8 @@ from src.agents.claims_agent import ClaimsAgent
 from src.llm.mock_provider import MockLLMProvider
 from src.prompts.filesystem_provider import FileSystemPromptProvider
 from src.prompts.manager import PromptManager
+from src.rag.local_provider import LocalKnowledgeProvider
+from src.rag.retriever import KnowledgeRetriever
 from src.services.tools.policy_lookup_tool import PolicyLookupTool
 from src.supervisor.models import AgentRequest, ConversationContext
 from src.tools.executor import ToolExecutor
@@ -21,10 +23,14 @@ def _build_agent() -> ClaimsAgent:
     prompt_manager = PromptManager(
         provider=FileSystemPromptProvider(prompts_root=Path("configs/prompts"))
     )
+    knowledge_retriever = KnowledgeRetriever(
+        provider=LocalKnowledgeProvider(documents_root=Path("configs/knowledge_base"))
+    )
     return ClaimsAgent(
         tool_executor=ToolExecutor(tool_registry=tool_registry),
         prompt_manager=prompt_manager,
         llm_provider=MockLLMProvider(),
+        knowledge_retriever=knowledge_retriever,
     )
 
 
@@ -38,7 +44,7 @@ async def test_claims_agent_response_references_the_rendered_prompt_identifier_a
         AgentRequest(message="I need to file a claim", user_id="user-1"), context
     )
 
-    assert "prompt=claims.system@2.0.0" in response.response
+    assert "prompt=claims.system@3.0.0" in response.response
 
 
 async def test_claims_agent_source_file_contains_no_embedded_prompt_wording() -> None:
