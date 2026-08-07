@@ -16,6 +16,12 @@
 #
 # configs/knowledge_base is copied the same way (PBI-02-01): LocalKnowledgeProvider is given
 # the relative path "configs/knowledge_base", resolved identically against WORKDIR /app.
+#
+# aiohttp is installed unconditionally (PBI-03-01) so OllamaLLMProvider (LLM_PROVIDER=ollama)
+# works inside this image without a rebuild — it is lazily imported and unused at runtime for
+# every other provider. Azure-only extras (openai, azure-identity, azure-search-documents,
+# azure-cosmos) remain intentionally NOT installed here — selecting azure_openai/azure_ai_search
+# /cosmos inside this image is a pre-existing gap predating this PBI, out of scope to fix here.
 
 FROM python:3.12-slim
 
@@ -27,7 +33,8 @@ RUN pip install --no-cache-dir \
     "uvicorn[standard]>=0.30,<1" \
     "pydantic>=2.7,<3" \
     "pydantic-settings>=2.3,<3" \
-    "pyyaml>=6.0,<7"
+    "pyyaml>=6.0,<7" \
+    "aiohttp>=3.9,<4"
 
 COPY apps/api/src ./app_src
 COPY src ./src

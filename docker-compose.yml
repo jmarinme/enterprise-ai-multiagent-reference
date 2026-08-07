@@ -7,6 +7,13 @@ services:
       - .env
     ports:
       - "${API_PORT:-8000}:8000"
+    # Lets the containerized API reach a host-run Ollama server at
+    # http://host.docker.internal:<port> (set OLLAMA_BASE_URL accordingly in .env when
+    # LLM_PROVIDER=ollama — see .env.example). Docker Desktop (Windows/Mac) already resolves
+    # host.docker.internal without this; it is required on Linux Docker Engine. Ollama itself
+    # is intentionally not a service in this file — it stays host-run, opt-in (PBI-03-01).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 15s

@@ -1,8 +1,9 @@
 """Selects an LLMProvider implementation from configuration.
 
-AzureOpenAIProvider is imported lazily, inside the azure_openai branch, so the default mock
-provider never requires the openai/azure-identity packages to be installed or reachable —
-same pattern as src.services.conversation_store.factory and src.services.secret_store.factory.
+AzureOpenAIProvider and OllamaLLMProvider are imported lazily, inside their own branches, so
+the default mock provider never requires the openai/azure-identity/aiohttp packages to be
+installed or reachable — same pattern as src.services.conversation_store.factory and
+src.services.secret_store.factory.
 """
 
 from __future__ import annotations
@@ -30,6 +31,15 @@ def get_llm_provider(
             api_version=settings.azure_openai_api_version,
             secret_provider=secret_provider if use_api_key else None,
             api_key_secret_name=settings.azure_openai_api_key_secret_name if use_api_key else None,
+        )
+
+    if settings.llm_provider == "ollama":
+        from src.llm.ollama_provider import OllamaLLMProvider
+
+        return OllamaLLMProvider(
+            base_url=settings.ollama_base_url,
+            model=settings.ollama_model,
+            timeout_seconds=settings.ollama_timeout_seconds,
         )
 
     raise ValueError(f"Unsupported LLM provider: {settings.llm_provider}")

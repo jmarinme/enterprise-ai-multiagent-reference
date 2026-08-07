@@ -27,6 +27,20 @@ def test_factory_returns_azure_openai_provider_when_configured() -> None:
     assert isinstance(provider, AzureOpenAIProvider)
 
 
+def test_factory_returns_ollama_provider_when_configured() -> None:
+    from src.llm.ollama_provider import OllamaLLMProvider
+
+    settings = LLMSettings(
+        llm_provider="ollama",
+        ollama_base_url="http://localhost:11434",
+        ollama_model="llama3.1",
+    )
+
+    provider = get_llm_provider(settings)
+
+    assert isinstance(provider, OllamaLLMProvider)
+
+
 def test_factory_raises_for_unsupported_provider() -> None:
     settings = LLMSettings.model_construct(llm_provider="unsupported")
 

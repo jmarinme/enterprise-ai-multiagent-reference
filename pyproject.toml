@@ -30,6 +30,9 @@ azuresearch = [
     "azure-identity>=1.17,<2",
     "aiohttp>=3.9,<4",
 ]
+ollama = [
+    "aiohttp>=3.9,<4",
+]
 dev = [
     "pytest>=8.2,<9",
     "pytest-asyncio>=0.23,<1",
