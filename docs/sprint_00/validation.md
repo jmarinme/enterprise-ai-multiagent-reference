@@ -57,3 +57,18 @@ Conclusion: the minimal API foundation (`GET /health`, `GET /version`, correlati
 Full output archived at `docs/sprint_00/evidence/pbi-00-03-web-docker-validation.txt`.
 
 Conclusion: the minimal Web application (header with connectivity/version status, sidebar placeholder, message area with synthetic welcome content, input+Send with a canned placeholder reply) is implemented, lint-clean, type-clean, unit-tested (7/7), and builds successfully. `docker-compose.yml` was corrected (`VITE_API_URL` moved from a no-op runtime `environment` entry to a build-time `args` entry, since Vite inlines `VITE_*` variables at build time, not runtime) and structurally validated via `docker compose config`. Actual container builds remain unverified pending a running Docker daemon. No Bicep, Azure resources, agents, Cosmos DB, RAG, APIM, or authentication work was performed.
+
+## 2026-08-06 — PBI-00-04: Azure Bicep foundation and environment parameter files
+
+| Command | Result |
+|---|---|
+| `az bicep install` | Bicep CLI v0.46.1 installed (local tooling, not a deployment) |
+| `az bicep build --file ops/bicep/main.bicep` | Attempt 1 failed: 1 linter warning (param name falsely flagged as a secret) + 2 `BCP181` errors (`reference()`/`listKeys()` called on a module-output-derived expression). Both fixed (see decisions.md). Attempt 2: exit 0, no errors, no warnings |
+| `az bicep build --file <module>` for all 8 files under `ops/bicep/modules/` | All 8 compiled with exit 0, no warnings |
+| `az bicep build-params --file <file>` for `dev.bicepparam`, `staging.bicepparam`, `prod.bicepparam` | All exit 0 |
+| Manual grep review for hardcoded subscription/tenant IDs, RG names, endpoints, credentials, secrets, image tags | No prohibited values found. Two GUIDs present are Microsoft's public built-in RBAC role-definition IDs (AcrPull, Key Vault Secrets User), not subscription/tenant IDs |
+| `az deployment group create` / `what-if` | NOT executed — no Azure resource was created, modified, or evaluated against a live subscription |
+
+Full output archived at `docs/sprint_00/evidence/pbi-00-04-bicep-foundation-validation.txt`.
+
+Conclusion: `main.bicep`, 8 reusable modules (Log Analytics, App Insights, Managed Identity, Key Vault, Key Vault Secret, Container Registry, Container Apps Environment, and one generic Container App module reused for both API and Web), and 3 environment parameter files (`dev`/`staging`/`prod`) all compile cleanly with zero errors and zero warnings. Cosmos DB, Azure OpenAI, AI Search, APIM, Storage, agents, and RAG remain out of scope. No Azure deployment of any kind was performed.
