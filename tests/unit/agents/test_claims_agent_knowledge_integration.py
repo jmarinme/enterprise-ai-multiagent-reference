@@ -1,6 +1,8 @@
-"""Unit tests specifically for ClaimsAgent's KnowledgeRetriever injection (PBI-02-01): the
-agent depends on KnowledgeRetriever, never a concrete KnowledgeProvider, retrieved knowledge
-never alters the deterministic business-fact text, and retrieval failure degrades gracefully.
+"""Unit tests specifically for ClaimsAgent's KnowledgeRetriever/Grounder injection (PBI-02-01,
+grounded with typed citations by PBI-02-03): the agent depends on KnowledgeRetriever, never a
+concrete KnowledgeProvider, retrieved knowledge never alters the deterministic business-fact
+text, and retrieval failure degrades gracefully. Citations are asserted via the typed
+AgentResponse.citations/grounding_metadata fields, not text annotations.
 """
 
 from pathlib import Path
@@ -10,6 +12,7 @@ from src.llm.mock_provider import MockLLMProvider
 from src.prompts.filesystem_provider import FileSystemPromptProvider
 from src.prompts.manager import PromptManager
 from src.rag.exceptions import KnowledgeProviderError
+from src.rag.grounder import Grounder
 from src.rag.local_provider import LocalKnowledgeProvider
 from src.rag.models import KnowledgeQuery, KnowledgeResult
 from src.rag.retriever import KnowledgeRetriever
@@ -45,10 +48,11 @@ def _build_agent(knowledge_retriever: KnowledgeRetriever) -> ClaimsAgent:
         prompt_manager=_build_prompt_manager(),
         llm_provider=MockLLMProvider(),
         knowledge_retriever=knowledge_retriever,
+        grounder=Grounder(),
     )
 
 
-async def test_response_includes_a_knowledge_annotation_for_a_relevant_message() -> None:
+async def test_response_includes_typed_citations_for_a_relevant_message() -> None:
     retriever = KnowledgeRetriever(
         provider=LocalKnowledgeProvider(documents_root=Path("configs/knowledge_base"))
     )
@@ -59,10 +63,13 @@ async def test_response_includes_a_knowledge_annotation_for_a_relevant_message()
         AgentRequest(message="I need to report a claim after hours", user_id="user-1"), context
     )
 
-    assert "[knowledge=KB-CLAIMS-" in response.response
+    assert len(response.citations) > 0
+    assert response.citations[0].document_id.startswith("KB-CLAIMS-")
+    assert response.grounding_metadata is not None
+    assert response.grounding_metadata.is_grounded is True
 
 
-async def test_response_omits_the_knowledge_annotation_when_nothing_matches() -> None:
+async def test_response_has_no_citations_when_nothing_matches() -> None:
     retriever = KnowledgeRetriever(provider=_EmptyKnowledgeProvider())
     agent = _build_agent(retriever)
     context = ConversationContext(conversation_id="conv-1", user_id="user-1")
@@ -71,7 +78,9 @@ async def test_response_omits_the_knowledge_annotation_when_nothing_matches() ->
         AgentRequest(message="I need to report a claim after hours", user_id="user-1"), context
     )
 
-    assert "[knowledge=" not in response.response
+    assert response.citations == []
+    assert response.grounding_metadata is not None
+    assert response.grounding_metadata.is_grounded is False
 
 
 async def test_agent_degrades_gracefully_when_the_knowledge_retriever_fails() -> None:
@@ -84,16 +93,17 @@ async def test_agent_degrades_gracefully_when_the_knowledge_retriever_fails() ->
     )
 
     assert "Could you provide your policy number?" in response.response
-    assert "[knowledge=" not in response.response
+    assert response.citations == []
     assert "traceback" not in response.response.lower()
     assert "exception" not in response.response.lower()
 
 
 async def test_retrieved_knowledge_never_changes_the_deterministic_business_fact_text() -> None:
-    """The business-fact portion of the response (before the [prompt=...]/[llm=...]/
-    [knowledge=...] annotations) must be byte-identical whether or not knowledge was
-    retrieved — knowledge is documentary context for the LLM only, never a business fact
-    (CLAUDE.md §4.4)."""
+    """The business-fact portion of the response (before the [prompt=...]/[llm=...]
+    annotations) must be byte-identical whether or not knowledge was retrieved — knowledge is
+    documentary context for the LLM only, never a business fact (CLAUDE.md §4.4). Citations are
+    carried on a separate typed field, not inline in the response text, so this comparison
+    still isolates the business-fact text correctly."""
     message = "I need to report a claim after hours"
 
     with_knowledge = await _build_agent(

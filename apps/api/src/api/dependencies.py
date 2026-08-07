@@ -23,6 +23,7 @@ from src.llm.provider import LLMProvider
 from src.prompts.filesystem_provider import FileSystemPromptProvider
 from src.prompts.manager import PromptManager
 from src.rag.factory import get_knowledge_provider as build_knowledge_provider
+from src.rag.grounder import Grounder
 from src.rag.retriever import KnowledgeRetriever
 from src.services.conversation_store.factory import get_conversation_repository
 from src.services.secret_store.factory import get_secret_provider as build_secret_provider
@@ -112,6 +113,16 @@ def get_knowledge_retriever() -> KnowledgeRetriever:
 
 
 @lru_cache
+def get_grounder() -> Grounder:
+    """Build and cache the process-wide Grounder (PBI-02-03).
+
+    Stateless — this factory exists only to keep the composition-root pattern uniform, matching
+    every other framework dependency Agents receive via constructor injection.
+    """
+    return Grounder()
+
+
+@lru_cache
 def get_llm_provider() -> LLMProvider:
     """Build and cache the process-wide LLMProvider.
 
@@ -136,6 +147,7 @@ def get_supervisor() -> SupervisorOrchestrator:
     prompt_manager = get_prompt_manager()
     llm_provider = get_llm_provider()
     knowledge_retriever = get_knowledge_retriever()
+    grounder = get_grounder()
 
     registry = InMemoryAgentRegistry()
     registry.register(
@@ -145,6 +157,7 @@ def get_supervisor() -> SupervisorOrchestrator:
             prompt_manager=prompt_manager,
             llm_provider=llm_provider,
             knowledge_retriever=knowledge_retriever,
+            grounder=grounder,
         ),
     )
     registry.register(

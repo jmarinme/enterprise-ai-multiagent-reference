@@ -10,6 +10,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
+from src.rag.grounding_models import Citation, GroundingMetadata
 from src.supervisor.models import AgentRequest
 from src.supervisor.orchestrator import SupervisorOrchestrator
 
@@ -38,6 +39,10 @@ class ChatResponse(_CamelModel):
     # state (e.g. ClaimsAgent's claimsIntakeState) to a future richer client; existing clients
     # that ignore unknown fields are unaffected.
     metadata: dict[str, str] = Field(default_factory=dict)
+    # New, optional (PBI-02-03): typed citations for a grounded response, empty for any Agent
+    # that does not use the Grounding layer. Additive — existing clients unaffected.
+    citations: list[Citation] = Field(default_factory=list)
+    grounding_metadata: GroundingMetadata | None = None
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -60,4 +65,6 @@ async def post_chat(
         intent=agent_response.intent.value,
         response=agent_response.response,
         metadata=agent_response.metadata,
+        citations=agent_response.citations,
+        grounding_metadata=agent_response.grounding_metadata,
     )

@@ -15,11 +15,19 @@ from pydantic import BaseModel, Field
 class KnowledgeMetadata(BaseModel):
     """Descriptive metadata for a retrievable knowledge document, independent of any one
     retrieved chunk. Carries exactly what CLAUDE.md §4.4 requires every RAG result to provide:
-    source identification sufficient for a future citation."""
+    source identification sufficient for a citation (PBI-02-03's Grounding layer, src.rag.
+    grounder, treats source_id as the citation's document id).
+
+    section/source_path are additive (PBI-02-03), optional, and default to None: a provider
+    that has no sub-document structure or no filesystem-style path (e.g. a future Azure AI
+    Search index without those fields populated yet) simply omits them — the Grounding layer
+    still produces a valid Citation either way."""
 
     source_id: str
     title: str
     category: str
+    section: str | None = None
+    source_path: str | None = None
 
 
 class KnowledgeChunk(BaseModel):

@@ -12,6 +12,7 @@ from src.agents.claims_agent import ClaimsAgent
 from src.llm.mock_provider import MockLLMProvider
 from src.prompts.filesystem_provider import FileSystemPromptProvider
 from src.prompts.manager import PromptManager
+from src.rag.grounder import Grounder
 from src.rag.local_provider import LocalKnowledgeProvider
 from src.rag.retriever import KnowledgeRetriever
 from src.services.tools.policy_lookup_tool import PolicyLookupTool
@@ -63,6 +64,7 @@ async def test_claims_agent_reports_the_real_policy_lookup_result_via_the_inject
         prompt_manager=_build_prompt_manager(),
         llm_provider=MockLLMProvider(),
         knowledge_retriever=_build_knowledge_retriever(),
+        grounder=Grounder(),
     )
     context = _seed_context(_ready_for_validation_state())
 
@@ -78,6 +80,7 @@ async def test_claims_agent_degrades_gracefully_when_policy_lookup_tool_is_not_r
         prompt_manager=_build_prompt_manager(),
         llm_provider=MockLLMProvider(),
         knowledge_retriever=_build_knowledge_retriever(),
+        grounder=Grounder(),
     )
     context = _seed_context(_ready_for_validation_state())
 

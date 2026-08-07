@@ -1,5 +1,5 @@
 """Claims Agent: a synthetic after-hours claim-notice intake flow (PBI-01-05, RAG-enabled by
-PBI-02-01).
+PBI-02-01, grounded with typed citations by PBI-02-03).
 
 Implements the Agent Protocol (src.supervisor.registry). Guides a caller through reporting a
 claim over multiple turns: collects the minimum required information, validates the policy and
@@ -26,6 +26,12 @@ procedure/FAQ context for the LLM's prompt, never a business fact. It never touc
 ClaimsIntakeState and is never treated as a source for policy/payment/claim status, which
 always come from Tools (CLAUDE.md §4.4). Retrieval failure degrades gracefully, same as a
 Prompt/LLM failure — it never blocks the deterministic business flow.
+
+Grounder (PBI-02-03) turns retrieved chunks into a deterministic, deduplicated, top-k
+GroundedContext before they reach the prompt, and produces the typed Citations/
+GroundingMetadata carried on AgentResponse — replacing the earlier ad-hoc
+"[knowledge=<source_id>,...]" text annotation with a proper typed contract. The LLM never
+determines which citations appear; they are exactly what the Grounder made available.
 """
 
 from __future__ import annotations
@@ -38,6 +44,7 @@ from src.llm.provider import LLMProvider
 from src.prompts.manager import PromptManager
 from src.prompts.models import PromptRenderContext
 from src.rag.exceptions import KnowledgeError
+from src.rag.grounder import Grounder
 from src.rag.models import KnowledgeChunk, KnowledgeQuery
 from src.rag.retriever import KnowledgeRetriever
 from src.supervisor.models import AgentRequest, AgentResponse, ConversationContext, IntentCategory
@@ -50,6 +57,7 @@ _SAFE_FALLBACK_MESSAGE = (
 )
 _NO_NOTICE_FALLBACK = "Thanks — please continue."
 _KNOWLEDGE_TOP_K = 2
+_CITATION_TOP_K = 2
 
 
 class ClaimsAgent:
@@ -63,11 +71,13 @@ class ClaimsAgent:
         prompt_manager: PromptManager,
         llm_provider: LLMProvider,
         knowledge_retriever: KnowledgeRetriever,
+        grounder: Grounder,
     ) -> None:
         self._tool_executor = tool_executor
         self._prompt_manager = prompt_manager
         self._llm_provider = llm_provider
         self._knowledge_retriever = knowledge_retriever
+        self._grounder = grounder
 
     async def handle(self, request: AgentRequest, context: ConversationContext) -> AgentResponse:
         state = load_agent_state(context.metadata, _STATE_METADATA_KEY, ClaimsIntakeState)
@@ -98,6 +108,7 @@ class ClaimsAgent:
             )
 
         knowledge_chunks = await self._retrieve_knowledge(request.message)
+        grounded_context = self._grounder.ground(knowledge_chunks, top_k=_CITATION_TOP_K)
 
         response_text = " ".join(notices) if notices else _NO_NOTICE_FALLBACK
         response_text = await annotate_with_prompt_and_llm(
@@ -112,23 +123,25 @@ class ClaimsAgent:
                 conversation_summary=context.summary,
                 tool_summaries=notices,
                 agent_name=self.name,
-                retrieved_knowledge=[chunk.text for chunk in knowledge_chunks],
+                retrieved_knowledge=(
+                    [grounded_context.context_text] if grounded_context.context_text else []
+                ),
             ),
             user_message=request.message,
             correlation_id=request.correlation_id,
             conversation_id=context.conversation_id,
             user_id=request.user_id,
         )
-        if knowledge_chunks:
-            source_ids = ",".join(chunk.metadata.source_id for chunk in knowledge_chunks)
-            response_text = f"{response_text} [knowledge={source_ids}]"
+        grounded_response = self._grounder.build_response(response_text, grounded_context)
 
         return AgentResponse(
             conversation_id=context.conversation_id,
             agent=self.name,
             intent=IntentCategory.CLAIMS,
-            response=response_text,
+            response=grounded_response.text,
             metadata={_STATE_METADATA_KEY: state.model_dump_json()},
+            citations=grounded_response.citations,
+            grounding_metadata=grounded_context.metadata,
         )
 
     async def _retrieve_knowledge(self, message: str) -> list[KnowledgeChunk]:

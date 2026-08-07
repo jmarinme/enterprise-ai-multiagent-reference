@@ -23,10 +23,11 @@ def test_chat_returns_expected_shape_for_a_claims_message() -> None:
     assert "metadata" in body
 
 
-def test_chat_claims_response_includes_a_knowledge_annotation_through_the_real_api() -> None:
-    """PBI-02-01: proves KnowledgeRetriever is genuinely wired through the real composition
-    root (apps/api/src/api/dependencies.py), not just in isolated unit tests — a message
-    matching the shipped synthetic knowledge base produces a [knowledge=...] annotation."""
+def test_chat_claims_response_includes_typed_citations_through_the_real_api() -> None:
+    """PBI-02-01/PBI-02-03: proves KnowledgeRetriever and Grounder are genuinely wired through
+    the real composition root (apps/api/src/api/dependencies.py), not just in isolated unit
+    tests — a message matching the shipped synthetic knowledge base produces typed citations
+    and grounding metadata in the JSON response, not an inline text annotation."""
     response = client.post(
         "/chat",
         json={"message": "I need to report a claim after hours", "userId": "user-knowledge-e2e"},
@@ -35,7 +36,9 @@ def test_chat_claims_response_includes_a_knowledge_annotation_through_the_real_a
     assert response.status_code == 200
     body = response.json()
     assert body["agent"] == "ClaimsAgent"
-    assert "[knowledge=KB-CLAIMS-" in body["response"]
+    assert len(body["citations"]) > 0
+    assert body["citations"][0]["documentId"].startswith("KB-CLAIMS-")
+    assert body["groundingMetadata"]["isGrounded"] is True
 
 
 def test_chat_drives_a_full_claim_report_end_to_end_through_the_real_api() -> None:

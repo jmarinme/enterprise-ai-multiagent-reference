@@ -73,3 +73,43 @@ Record sprint-specific decisions and deviations. Cross-sprint decisions belong i
 **Deviation/status change:** A deliberate difference from the Cosmos DB module's posture, not an oversight — Cosmos DB has no PBI requirement for an opt-in key-auth path, so disabling local auth entirely was correct there; this PBI has the opposite explicit requirement.
 
 **How to apply:** If a future ADR decides key-based auth should never be used against this Azure AI Search service in any environment, that is the point to set `disableLocalAuth: true` here too — until then, leaving it enabled at the service level does not itself grant key access to anyone (a key must still be separately generated and placed in Key Vault out of band, which this module does not do).
+
+## 2026-08-07 — PBI-02-03: Grounding lives in `src/rag/`, not a new top-level package
+
+**Decision:** The Grounding & Citations layer (`src/rag/grounding_models.py`, `src/rag/grounder.py`) was added directly inside the existing `src/rag/` package rather than a new `src/grounding/` or similar. It is a direct extension of the same "documentary retrieval" concern CLAUDE.md §6 already scopes `src/rag/` to, and it depends only on `src.rag.models` — creating a separate top-level package would have required CLAUDE.md §6 approval ("do not create a new top-level folder without approval") for no architectural benefit.
+
+**Deviation/status change:** None — a direct application of the same reasoning already recorded for PBI-02-01/02-02 (concrete providers live directly in `src/rag/`, matching the Prompt/LLM precedent).
+
+**How to apply:** Any future retrieval-adjacent concern (re-ranking, evaluation, etc.) that operates purely on `KnowledgeChunk`/`GroundedContext` types should default to living in `src/rag/` too, unless it grows a genuinely separate dependency surface (e.g., its own external service) that would justify a new top-level package.
+
+## 2026-08-07 — PBI-02-03: citations are attached deterministically by the Grounder, not selected by the LLM
+
+**Decision:** `GroundedResponse.citations` (produced by `Grounder.build_response()`) is always set to exactly `GroundedContext.citations` — the full, already-deduplicated/ordered/top-k'd set the Grounder made available — never a subset the LLM call itself determines. This is the mechanism that satisfies "the LLM must never invent a citation": since `MockLLMProvider` is intentionally content-agnostic (PBI-01-04) and cannot genuinely evaluate which retrieved passages it used, allowing the LLM to freely determine the citation list would have no real signal behind it and would be unsafe by construction once a real LLM is wired in without further validation logic.
+
+**Deviation/status change:** None — a direct, literal reading of the PBI's own explicit requirement, resolved architecturally (by construction) rather than by runtime validation of LLM output.
+
+**How to apply:** If a future PBI introduces genuine LLM-driven citation selection (the model choosing a subset of available citations it actually used), that is a deliberate, ADR-worthy contract change to `Grounder.build_response()` — it must still validate that any LLM-selected citation is a subset of `GroundedContext.citations`, never trust a new citation the LLM invents outright.
+
+## 2026-08-07 — PBI-02-03: fully replaced the `[knowledge=...]` text annotation rather than keeping both
+
+**Decision:** PBI-02-01's ad-hoc `[knowledge=<source_id>,...]` response-text annotation in `ClaimsAgent` was completely removed and replaced by the typed `citations`/`grounding_metadata` fields on `AgentResponse`/`ChatResponse`. Keeping both would have been redundant (the same information in two incompatible shapes) and defeats the PBI's own stated goal of "typed citations, no strings containing JSON" — the bracket annotation was exactly the kind of untyped, string-embedded metadata this PBI exists to replace.
+
+**Deviation/status change:** An intentional, in-scope behavior change (not a regression) — `tests/unit/agents/test_claims_agent_knowledge_integration.py` and `tests/unit/api/test_chat.py` were updated accordingly to assert on the new typed fields instead of the removed bracket text, following the same precedent as PBI-02-01's own test correction for `test_agent_response_is_stable_when_input_has_no_recognizable_claims_fields`.
+
+**How to apply:** Any future code or documentation still referencing the `[knowledge=...]` annotation format is stale and should be updated to reference `AgentResponse.citations`/`grounding_metadata` instead.
+
+## 2026-08-07 — PBI-02-03: `GroundingMetadata.is_grounded` is a `computed_field`, not a plain `@property`
+
+**Decision:** `is_grounded` was initially written as a plain `@property`. Before shipping, this was corrected to Pydantic's `@computed_field` decorator (kept alongside `@property`) — a plain property is silently excluded from `model_dump()`/`model_dump_json()`/FastAPI's JSON serialization in Pydantic v2, which would have made `groundingMetadata.isGrounded` invisible on the actual `POST /chat` wire response even though it exists on the Python object, defeating the field's whole purpose ("a caller can tell 'grounded with N sources' ... without inspecting the citations list").
+
+**Deviation/status change:** A correction caught before the live smoke test confirmed the API contract, not a regression — verified by the smoke test's `"groundingMetadata":{"retrievedCount":2,"citationCount":2,"topK":2,"isGrounded":true}` output.
+
+**How to apply:** Any future derived/computed field on a Pydantic model that must appear in JSON output (API responses, persisted documents) needs `@computed_field`, not a plain `@property` — a plain property is fine only for internal-Python-only convenience accessors that never cross a serialization boundary.
+
+## 2026-08-07 — PBI-02-03: only `ClaimsAgent` integrates the Grounder this PBI
+
+**Decision:** Consistent with PBI-02-01's own scope decision (only `ClaimsAgent` was wired with a `KnowledgeRetriever`), only `ClaimsAgent` was wired with a `Grounder` this PBI. `BrokerAgent` and `CommercialIntakeAgent` are unchanged — they never had `KnowledgeRetriever` injected in the first place, so there is nothing yet for a `Grounder` to ground for them.
+
+**Deviation/status change:** None — the natural consequence of PBI-02-01's already-recorded scope decision, not a new deviation.
+
+**How to apply:** If/when a future PBI extends `KnowledgeRetriever` to Broker or Commercial Intake (per PBI-02-01's own follow-up note), wiring a `Grounder` into that same agent at the same time is a small, mechanical addition — constructor injection plus the same `ground()`/`build_response()` call sequence `ClaimsAgent.handle()` already demonstrates.

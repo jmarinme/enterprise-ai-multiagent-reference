@@ -80,6 +80,7 @@ class LocalKnowledgeProvider:
                 source_id=frontmatter["source_id"],
                 title=frontmatter["title"],
                 category=frontmatter["category"],
+                source_path=str(path),
             )
         except (ValidationError, KeyError) as exc:
             raise KnowledgeProviderError(
