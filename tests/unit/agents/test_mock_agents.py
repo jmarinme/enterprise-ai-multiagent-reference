@@ -44,12 +44,25 @@ def _build_broker_agent() -> BrokerAgent:
     )
 
 
+def _build_commercial_intake_agent() -> CommercialIntakeAgent:
+    tool_registry = InMemoryToolRegistry()
+    tool_registry.register(PolicyLookupTool())
+    prompt_manager = PromptManager(
+        provider=FileSystemPromptProvider(prompts_root=Path("configs/prompts"))
+    )
+    return CommercialIntakeAgent(
+        tool_executor=ToolExecutor(tool_registry=tool_registry),
+        prompt_manager=prompt_manager,
+        llm_provider=MockLLMProvider(),
+    )
+
+
 @pytest.mark.parametrize(
     ("agent_factory", "expected_name", "expected_intent"),
     [
         (_build_claims_agent, "ClaimsAgent", IntentCategory.CLAIMS),
         (_build_broker_agent, "BrokerAgent", IntentCategory.BROKER),
-        (CommercialIntakeAgent, "CommercialIntakeAgent", IntentCategory.COMMERCIAL),
+        (_build_commercial_intake_agent, "CommercialIntakeAgent", IntentCategory.COMMERCIAL),
         (FallbackAgent, "FallbackAgent", IntentCategory.UNKNOWN),
     ],
 )
