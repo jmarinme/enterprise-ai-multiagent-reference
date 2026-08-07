@@ -1,6 +1,7 @@
 """Unit tests for the four deterministic mock agents. No insurance logic, no Azure OpenAI."""
 
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 
@@ -8,6 +9,8 @@ from src.agents.broker_agent import BrokerAgent
 from src.agents.claims_agent import ClaimsAgent
 from src.agents.commercial_intake_agent import CommercialIntakeAgent
 from src.agents.fallback_agent import FallbackAgent
+from src.prompts.filesystem_provider import FileSystemPromptProvider
+from src.prompts.manager import PromptManager
 from src.services.tools.claims_status_tool import ClaimsStatusTool
 from src.supervisor.models import AgentRequest, ConversationContext, IntentCategory
 from src.tools.executor import ToolExecutor
@@ -17,7 +20,13 @@ from src.tools.registry import InMemoryToolRegistry
 def _build_claims_agent() -> ClaimsAgent:
     tool_registry = InMemoryToolRegistry()
     tool_registry.register(ClaimsStatusTool())
-    return ClaimsAgent(tool_executor=ToolExecutor(tool_registry=tool_registry))
+    prompt_manager = PromptManager(
+        provider=FileSystemPromptProvider(prompts_root=Path("configs/prompts"))
+    )
+    return ClaimsAgent(
+        tool_executor=ToolExecutor(tool_registry=tool_registry),
+        prompt_manager=prompt_manager,
+    )
 
 
 @pytest.mark.parametrize(
