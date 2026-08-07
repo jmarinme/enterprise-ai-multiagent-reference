@@ -113,3 +113,59 @@ Record sprint-specific decisions and deviations. Cross-sprint decisions belong i
 **Deviation/status change:** None — the natural consequence of PBI-02-01's already-recorded scope decision, not a new deviation.
 
 **How to apply:** If/when a future PBI extends `KnowledgeRetriever` to Broker or Commercial Intake (per PBI-02-01's own follow-up note), wiring a `Grounder` into that same agent at the same time is a small, mechanical addition — constructor injection plus the same `ground()`/`build_response()` call sequence `ClaimsAgent.handle()` already demonstrates.
+
+## 2026-08-07 — PBI-02-04: `src/core/tool_calling/` is the first occupant of CLAUDE.md §6's reserved `src/core/`
+
+**Decision:** `ToolCallingOrchestrator` and its typed contracts live in a new `src/core/tool_calling/` package rather than inside `src/tools/` or a new top-level folder. CLAUDE.md §6 already describes `src/core/` as containing "orchestration, routing, guardrails, permissions, resilience, and context management" — enforcing a per-Agent Tool allow-list is a permissions concern, and running the LLM<->Tool loop is an orchestration concern, so this is a direct, literal application of the repository's own documented structure, not a new architectural decision. `src/core/` held only a `.gitkeep` before this PBI.
+
+**Deviation/status change:** None — CLAUDE.md §6 explicitly reserves this location; no new top-level folder was created.
+
+**How to apply:** Any future cross-cutting orchestration/guardrail/resilience concern that is not itself Supervisor routing (which stays in `src/supervisor/`) should default to `src/core/`, following this PBI's precedent, rather than being bolted onto an unrelated framework package.
+
+## 2026-08-07 — PBI-02-04: tool-calling contracts split across `src/llm/models.py` and `src/core/tool_calling/models.py`
+
+**Decision:** `LLMToolDefinition`, `ToolCallRequest`, and `ToolCallArgument` (what the LLM protocol itself exchanges — sent as `tools=`, received as `tool_calls`) live in `src/llm/models.py`, directly alongside `LLMRequest`/`LLMResponse`, which reference them as field types. `ToolCallResult`, `ToolCallingContext`, and `ToolCallingResponse` (orchestration-only concepts — authorization outcome, per-call configuration, final loop output) live in `src/core/tool_calling/models.py`. The alternative — putting everything in `src/core/tool_calling/` — would have required `src/llm/models.py` to import from `src/core/`, inverting the intended dependency direction (orchestration depends on the LLM framework, never the reverse, the same direction `src/core/tool_calling/orchestrator.py` already depends on `src/llm/provider.py` and `src/tools/executor.py`).
+
+**Deviation/status change:** None — a direct application of the "Agents/frameworks are interface-only, composition happens above them" principle CLAUDE.md's layering already implies, extended to this PBI's two-boundary contract set.
+
+**How to apply:** Any future field added to `LLMRequest`/`LLMResponse` that is fundamentally part of the LLM protocol boundary (not orchestration policy) belongs in `src/llm/models.py`; anything that represents orchestration policy or outcome (authorization, looping, aggregation) belongs in `src/core/tool_calling/models.py`.
+
+## 2026-08-07 — PBI-02-04: unauthorized/unknown/failed tool calls are typed data, not raised exceptions
+
+**Decision:** `ToolCallingOrchestrator` never raises for a normal, expected outcome of a Tool call attempt — an unauthorized tool, an unknown tool, or a Tool execution/validation failure are all represented as `ToolCallResult(success=False, error_type=...)`, mirroring `ToolExecutor`'s own established "never raise to the caller" contract this class sits directly on top of. `ToolCallingError` (the only exception this package defines) is reserved for genuine misconfiguration — an Agent's own allow-list naming a Tool that `ToolRegistry` does not actually have registered — a programming error to catch during development, never a normal path a user's message could trigger.
+
+**Deviation/status change:** None — a deliberate, literal interpretation of the PBI's own "Tool validation errors must remain typed and safe" requirement, resolved by extending an existing, already-proven pattern (`ToolExecutor`) rather than inventing a new one.
+
+**How to apply:** Any future addition to the Tool Calling framework that represents a normal (even if unwanted) outcome of an LLM's tool request belongs on `ToolCallResult` as typed data; only genuine configuration bugs should ever raise `ToolCallingError`.
+
+## 2026-08-07 — PBI-02-04: "unknown tool" is checked before "unauthorized" so both are independently reachable
+
+**Decision:** `ToolCallingOrchestrator._execute_tool_call` checks `ToolRegistry.resolve()` (existence) before checking `context.allowed_tools` (authorization). This means a genuinely hallucinated tool name (never registered anywhere) is reported as `unknown_tool`, while a real, registered-but-not-allow-listed-for-this-Agent tool name is reported as `unauthorized` — two independently testable, distinguishable outcomes, even though both are rejected identically safely (the Tool is never executed either way). Checking authorization first would have made "unauthorized" catch both cases, losing the audit-log distinction the PBI's own test checklist explicitly requires ("unauthorized tool call" and "unknown tool" as separate line items).
+
+**Deviation/status change:** None — order of two independent, non-security-sensitive checks (neither leaks anything an attacker doesn't already know: the tool_calls the LLM requested were derived from the exact tool definitions the orchestrator itself offered, or invented by the LLM regardless).
+
+**How to apply:** Any future refinement of `_execute_tool_call`'s rejection categories should preserve this existence-then-authorization ordering, since it is what keeps `unknown_tool` and `unauthorized` each independently reachable for tests and audit logs.
+
+## 2026-08-07 — PBI-02-04: `MockLLMProvider`'s tool-calling behavior is scripted (`tool_call_plan`), not derived from message text
+
+**Decision:** `MockLLMProvider` gained an optional `tool_call_plan: list[ToolCallRequest] | None = None` constructor parameter rather than any keyword/NLU-style logic for deciding when to request a tool call from the message text. Default `None` means zero behavior change for every existing caller. When scripted, the plan is filtered to only the tool names actually offered that turn and is never re-requested once a TOOL-role message already exists in history (so the Mock itself can never loop forever). This preserves `MockLLMProvider`'s own established, explicitly documented design invariant — "intentionally content-agnostic... cannot perform real NLU" (PBI-01-04) — rather than teaching it to parse user intent, which would have been business logic leaking into the Mock LLM (CLAUDE.md §3).
+
+**Deviation/status change:** None — a direct, literal application of `MockLLMProvider`'s own pre-existing documented design constraint.
+
+**How to apply:** Any future test scenario needing MockLLMProvider to request a *specific* tool deterministically should configure a `tool_call_plan` at construction time, not add message-text pattern matching to `mock_provider.py` itself.
+
+## 2026-08-07 — PBI-02-04: `ClaimsAgent`'s controlled Tool Calling step re-renders the system prompt a second time per turn
+
+**Decision:** `ClaimsAgent._run_controlled_tool_calling` calls `PromptManager.render("claims.system", ...)` a second time per turn (the first being inside the existing, untouched `annotate_with_prompt_and_llm` call) rather than restructuring that shared helper (used identically by `BrokerAgent`/`CommercialIntakeAgent`) to also return the rendered prompt text. This keeps every existing code path — including the other two Agents that never touch Tool Calling this PBI — completely unmodified, at the cost of one redundant `PromptManager.render()` call (cheap/local, no measurable cost) and, once a real `AzureOpenAIProvider` is configured, one redundant LLM API call per Claims turn.
+
+**Deviation/status change:** A known, explicitly accepted limitation, not an oversight — acceptable for this PBI's explicit goal (prove the LLM can request a safe registered Tool) rather than optimize the production hot path, consistent with CLAUDE.md §7's "make the smallest viable change that completes the current PBI."
+
+**How to apply:** If/when Tool Calling is wired into Broker or Commercial Intake, or a real `AzureOpenAIProvider` cost/latency measurement flags this as a genuine problem, that is the point to restructure `annotate_with_prompt_and_llm` (or the calling Agent) to render the prompt once and reuse it for both the annotation and the Tool Calling step — not before, per CLAUDE.md §7's "do not design for hypothetical future requirements."
+
+## 2026-08-07 — PBI-02-04: only `ClaimsAgent` is wired to a live `ToolCallingOrchestrator` this PBI
+
+**Decision:** Consistent with PBI-02-01/02-03's own scope decisions ("at least one Agent... preferably ClaimsAgent" is the PBI's own literal instruction), only `ClaimsAgent` received a `ToolCallingOrchestrator` and `tool_calling_max_iterations`. `BROKER_ALLOWED_TOOLS`/`COMMERCIAL_ALLOWED_TOOLS` (`src/core/tool_calling/policies.py`) are defined and unit-tested (`tests/unit/core/tool_calling/test_policies.py` proves every named tool is actually registered) so the full three-Agent policy design is complete and ready for a future PBI to wire without re-deriving the allow-lists, but `BrokerAgent`/`CommercialIntakeAgent` themselves are unchanged.
+
+**Deviation/status change:** None — the PBI's own explicit scope, and the same class of decision already recorded for PBI-02-01 (Knowledge) and PBI-02-03 (Grounding).
+
+**How to apply:** Wiring Broker or Commercial Intake to Tool Calling is a small, mechanical follow-up mirroring `ClaimsAgent`'s exact pattern: constructor injection of `ToolCallingOrchestrator` + `tool_calling_max_iterations`, a `_run_controlled_tool_calling`-equivalent method using `BROKER_ALLOWED_TOOLS`/`COMMERCIAL_ALLOWED_TOOLS`, and wiring in `apps/api/src/api/dependencies.py`.

@@ -6,6 +6,7 @@ identifier/version — proving PromptManager was actually invoked.
 from pathlib import Path
 
 from src.agents.claims_agent import ClaimsAgent
+from src.core.tool_calling.orchestrator import ToolCallingOrchestrator
 from src.llm.mock_provider import MockLLMProvider
 from src.prompts.filesystem_provider import FileSystemPromptProvider
 from src.prompts.manager import PromptManager
@@ -27,12 +28,17 @@ def _build_agent() -> ClaimsAgent:
     knowledge_retriever = KnowledgeRetriever(
         provider=LocalKnowledgeProvider(documents_root=Path("configs/knowledge_base"))
     )
+    tool_executor = ToolExecutor(tool_registry=tool_registry)
+    llm_provider = MockLLMProvider()
     return ClaimsAgent(
-        tool_executor=ToolExecutor(tool_registry=tool_registry),
+        tool_executor=tool_executor,
         prompt_manager=prompt_manager,
-        llm_provider=MockLLMProvider(),
+        llm_provider=llm_provider,
         knowledge_retriever=knowledge_retriever,
         grounder=Grounder(),
+        tool_calling_orchestrator=ToolCallingOrchestrator(
+            tool_registry=tool_registry, tool_executor=tool_executor, llm_provider=llm_provider
+        ),
     )
 
 

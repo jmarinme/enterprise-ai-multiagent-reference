@@ -17,6 +17,7 @@ from src.agents.broker_agent import BrokerAgent
 from src.agents.claims_agent import ClaimsAgent
 from src.agents.commercial_intake_agent import CommercialIntakeAgent
 from src.agents.fallback_agent import FallbackAgent
+from src.core.tool_calling.orchestrator import ToolCallingOrchestrator
 from src.domain.secret_provider import SecretProvider
 from src.llm.factory import get_llm_provider as build_llm_provider
 from src.llm.provider import LLMProvider
@@ -42,13 +43,14 @@ from src.supervisor.models import IntentCategory
 from src.supervisor.orchestrator import SupervisorOrchestrator
 from src.supervisor.registry import InMemoryAgentRegistry
 from src.tools.executor import ToolExecutor
-from src.tools.registry import InMemoryToolRegistry
+from src.tools.registry import InMemoryToolRegistry, ToolRegistry
 
 from src.config.settings import (
     ConversationStoreSettings,
     KnowledgeSettings,
     LLMSettings,
     SecretProviderSettings,
+    ToolCallingSettings,
 )
 
 # Relative to the process's working directory (repo root locally, /app in the Docker image —
@@ -58,11 +60,13 @@ _KNOWLEDGE_BASE_ROOT = Path("configs/knowledge_base")
 
 
 @lru_cache
-def get_tool_executor() -> ToolExecutor:
-    """Build and cache the process-wide ToolExecutor, with every synthetic Tool registered.
+def get_tool_registry() -> ToolRegistry:
+    """Build and cache the process-wide ToolRegistry, with every synthetic Tool registered.
 
-    This is the only place any concrete Tool is imported or registered — Agents depend on
-    ToolExecutor alone.
+    This is the only place any concrete Tool is imported or registered. Exposed separately from
+    get_tool_executor() (PBI-02-04) so ToolCallingOrchestrator can build LLM tool definitions
+    from the exact same registered Tools ToolExecutor executes against — reusing, never
+    recreating, the registry (CLAUDE.md §7).
     """
     tool_registry = InMemoryToolRegistry()
     tool_registry.register(PolicyLookupTool())
@@ -75,7 +79,14 @@ def get_tool_executor() -> ToolExecutor:
     tool_registry.register(CommissionLookupTool())
     tool_registry.register(CommissionPaymentRequestTool())
     tool_registry.register(LeadRegistrationTool())
-    return ToolExecutor(tool_registry=tool_registry)
+    return tool_registry
+
+
+@lru_cache
+def get_tool_executor() -> ToolExecutor:
+    """Build and cache the process-wide ToolExecutor. Agents depend on ToolExecutor alone —
+    never on ToolRegistry directly."""
+    return ToolExecutor(tool_registry=get_tool_registry())
 
 
 @lru_cache
@@ -139,6 +150,23 @@ def get_llm_provider() -> LLMProvider:
 
 
 @lru_cache
+def get_tool_calling_orchestrator() -> ToolCallingOrchestrator:
+    """Build and cache the process-wide ToolCallingOrchestrator (PBI-02-04).
+
+    Reuses the same cached ToolRegistry/ToolExecutor/LLMProvider instances every other
+    framework dependency already uses — never a second, competing registry or executor.
+    max_iterations is not read here: it is per-call, supplied by each Agent via
+    ToolCallingContext (see src.core.tool_calling.models.DEFAULT_MAX_TOOL_CALL_ITERATIONS and
+    ToolCallingSettings.tool_calling_max_iterations for where an Agent should source it).
+    """
+    return ToolCallingOrchestrator(
+        tool_registry=get_tool_registry(),
+        tool_executor=get_tool_executor(),
+        llm_provider=get_llm_provider(),
+    )
+
+
+@lru_cache
 def get_supervisor() -> SupervisorOrchestrator:
     """Build and cache the process-wide Supervisor instance."""
     conversation_store_settings = ConversationStoreSettings()
@@ -148,6 +176,8 @@ def get_supervisor() -> SupervisorOrchestrator:
     llm_provider = get_llm_provider()
     knowledge_retriever = get_knowledge_retriever()
     grounder = get_grounder()
+    tool_calling_orchestrator = get_tool_calling_orchestrator()
+    tool_calling_settings = ToolCallingSettings()
 
     registry = InMemoryAgentRegistry()
     registry.register(
@@ -158,6 +188,8 @@ def get_supervisor() -> SupervisorOrchestrator:
             llm_provider=llm_provider,
             knowledge_retriever=knowledge_retriever,
             grounder=grounder,
+            tool_calling_orchestrator=tool_calling_orchestrator,
+            tool_calling_max_iterations=tool_calling_settings.tool_calling_max_iterations,
         ),
     )
     registry.register(

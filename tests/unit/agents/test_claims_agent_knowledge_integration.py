@@ -8,6 +8,7 @@ AgentResponse.citations/grounding_metadata fields, not text annotations.
 from pathlib import Path
 
 from src.agents.claims_agent import ClaimsAgent
+from src.core.tool_calling.orchestrator import ToolCallingOrchestrator
 from src.llm.mock_provider import MockLLMProvider
 from src.prompts.filesystem_provider import FileSystemPromptProvider
 from src.prompts.manager import PromptManager
@@ -19,7 +20,7 @@ from src.rag.retriever import KnowledgeRetriever
 from src.services.tools.policy_lookup_tool import PolicyLookupTool
 from src.supervisor.models import AgentRequest, ConversationContext
 from src.tools.executor import ToolExecutor
-from src.tools.registry import InMemoryToolRegistry
+from src.tools.registry import InMemoryToolRegistry, ToolRegistry
 
 
 class _RaisingKnowledgeProvider:
@@ -36,19 +37,25 @@ def _build_prompt_manager() -> PromptManager:
     return PromptManager(provider=FileSystemPromptProvider(prompts_root=Path("configs/prompts")))
 
 
-def _build_tool_executor() -> ToolExecutor:
+def _build_tool_registry() -> ToolRegistry:
     registry = InMemoryToolRegistry()
     registry.register(PolicyLookupTool())
-    return ToolExecutor(tool_registry=registry)
+    return registry
 
 
 def _build_agent(knowledge_retriever: KnowledgeRetriever) -> ClaimsAgent:
+    tool_registry = _build_tool_registry()
+    tool_executor = ToolExecutor(tool_registry=tool_registry)
+    llm_provider = MockLLMProvider()
     return ClaimsAgent(
-        tool_executor=_build_tool_executor(),
+        tool_executor=tool_executor,
         prompt_manager=_build_prompt_manager(),
-        llm_provider=MockLLMProvider(),
+        llm_provider=llm_provider,
         knowledge_retriever=knowledge_retriever,
         grounder=Grounder(),
+        tool_calling_orchestrator=ToolCallingOrchestrator(
+            tool_registry=tool_registry, tool_executor=tool_executor, llm_provider=llm_provider
+        ),
     )
 
 

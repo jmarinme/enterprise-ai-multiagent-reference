@@ -21,6 +21,12 @@ def test_chat_returns_expected_shape_for_a_claims_message() -> None:
     assert isinstance(body["response"], str) and body["response"]
     assert body["conversationId"]
     assert "metadata" in body
+    # PBI-02-03/PBI-02-04: always present in the JSON contract, additive/backward-compatible.
+    assert isinstance(body["citations"], list)
+    # No LLM-requested Tool call for a plain "file a claim" opener — the default, unscripted
+    # MockLLMProvider composition-root instance never requests one (see
+    # src/llm/mock_provider.py).
+    assert body["toolCalls"] == []
 
 
 def test_chat_claims_response_includes_typed_citations_through_the_real_api() -> None:
