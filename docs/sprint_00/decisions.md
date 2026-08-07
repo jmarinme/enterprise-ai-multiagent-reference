@@ -121,3 +121,19 @@ Record sprint-specific decisions and deviations. Cross-sprint decisions belong i
 **Deviation/status change:** Bug fix affecting a PBI-00-05-authored file (`pyproject.toml`'s `cosmos` extra), applied here because this PBI's testing was the first to actually exercise the async credential construction path. Not a scope violation — no Cosmos business logic was touched.
 
 **How to apply:** Any future optional extra that uses `azure-identity`'s async credentials (`azure.identity.aio`) must also depend on `aiohttp`, or construction will fail at runtime with an unclear `ImportError` deep in the SDK's transport-selection code.
+
+## 2026-08-07 — PBI-00-07: report/build artifacts published in their producing stage, not centrally in "Stage 5"
+
+**Decision:** The backend test/coverage reports and the Web production build (`apps/web/dist`) are published via `PublishPipelineArtifact@1` directly inside Stage 1 (`BackendQuality`) and Stage 2 (`FrontendQuality`) respectively, immediately after they're produced — not re-collected and republished from the `ArtifactPublication` stage. Stage 5 publishes only `ops/bicep/` (static source, not a build output) and a generated summary.
+
+**Deviation/status change:** A literal reading of "STAGE 5 — Artifact Publication: publish Web production build where useful" might suggest all publishing happens in that one stage. Azure Pipelines stages run on isolated agents; a file produced on Stage 2's agent does not exist on Stage 5's agent unless explicitly downloaded there. Re-downloading Stage 2's `web-build` artifact in Stage 5 just to republish it under the same name would add an extra job with no functional benefit — the artifact is already visible on the pipeline run's "Artifacts" tab regardless of which stage published it. This is a deliberate architecture decision, not a shortcut: publishing where the file exists is standard Azure Pipelines practice.
+
+**How to apply:** Any future artifact this pipeline should publish belongs in the stage/job that produces the underlying file, not bolted onto `ArtifactPublication` by convention. If a genuine cross-stage bundling need arises later (e.g., a single downloadable "release package" combining backend+frontend+IaC), that would require an explicit `download:` step in `ArtifactPublication` and should be treated as a new, justified requirement, not the default.
+
+## 2026-08-07 — PBI-00-07: fixed a pre-existing `ruff` gap in `tests/unit/api/`
+
+**Decision:** Running `ruff check apps/api/src src tests` (this pipeline's Stage 1 command) failed with 3 `I001` (unsorted-import) errors in `tests/unit/api/test_correlation_id.py`, `test_health.py`, and `test_version.py`. These files were never covered by any prior PBI's `ruff` invocation: PBI-00-02 only ran `ruff check .` from inside `apps/api`, which does not reach `tests/unit/api/` (a sibling of `apps/api`, not nested inside it). Fixed via `ruff check --fix`; re-ran `tests/unit/api`'s suite afterward to confirm the import reorder changed nothing behaviorally (still 5/5 passing).
+
+**Deviation/status change:** Pre-existing gap discovered and fixed by this PBI's more thorough, repo-root, combined-tree lint invocation — not introduced by this PBI, and not a scope violation (only import ordering changed, no logic).
+
+**How to apply:** Going forward, `ruff check apps/api/src src tests` (as now codified in `azure-pipelines.yml`) is the authoritative lint command covering everything — running `ruff check .` from inside a subdirectory during local development is convenient but does not guarantee full-repo coverage; prefer the combined command, or at least run it before considering a PBI's validation complete.

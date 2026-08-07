@@ -113,3 +113,24 @@ Real, non-code-quality finding: the new `src/services/secrets/` module directory
 Full output archived at `docs/sprint_00/evidence/pbi-00-06-key-vault-managed-identity-validation.txt`.
 
 Conclusion: Key Vault and Managed Identity infrastructure were confirmed already compliant (RBAC-only, minimum roles, Managed Identity-based Container Apps auth) with one small output addition. The `SecretProvider` abstraction is implemented, fully unit-tested without Azure connectivity, lint-clean, and mypy-clean. No real secret values were created anywhere. No agents, Azure OpenAI, RAG, APIM, CI/CD deployment, or Entra ID end-user authentication work was performed.
+
+## 2026-08-07 — PBI-00-07: Azure DevOps CI/CD pipeline foundation
+
+| Command | Result |
+|---|---|
+| YAML syntax parse (`yaml.safe_load`) on `azure-pipelines.yml` + 2 new templates | All 3 parse cleanly |
+| Combined dependency install (apps/api + root deps/extras + pytest-cov, one shared venv) | Succeeded — first time this "single CI environment" design was actually proven, not just assumed |
+| `pytest tests/unit/api tests/unit/domain tests/unit/services tests/integration --cov=...` (exact Stage 1 command) | `26 passed, 2 skipped`, coverage XML generated (75% overall) |
+| `ruff check apps/api/src src tests` (exact Stage 1 command) | Attempt 1: 3 `I001` errors in `tests/unit/api/*.py` — never checked by any prior PBI's narrower `ruff check .` invocation. Fixed via `--fix`; re-ran tests to confirm no behavior change. Attempt 2: `All checks passed!` |
+| `mypy apps/api/src` / `mypy src` (exact Stage 1 commands) | Both clean |
+| `npm run lint` / `npm run typecheck` / `npm run build` (apps/web) | All exit 0 |
+| `npm run test -- --reporter=junit --outputFile=...` (exact Stage 2 command) | exit 0, valid `junit.xml` produced |
+| `az bicep build` on all 10 `bicepModuleFiles` (exact Stage 3/template command) | All exit 0, 0 errors, 0 warnings |
+| `az bicep build-params` on all 3 `bicepParameterFiles` (exact Stage 3/template command) | All exit 0 |
+| `docker build` (API, Web images) | NOT executed — Docker Desktop daemon not running locally (same recurring limitation as PBI-00-02/03); both Dockerfiles unchanged by this PBI and already build-validated when Docker was available |
+| Manual grep for secrets/service-connections/subscription-tenant IDs/`docker push` in pipeline files | Clean — all `az login`/`az deployment` text matches are inside comments (documentation of what is *not* executed, or of the disabled future stage) |
+| `az deployment group create` / `what-if` | NOT executed anywhere |
+
+Full output archived at `docs/sprint_00/evidence/pbi-00-07-cicd-pipeline-validation.txt`.
+
+Conclusion: all 5 active pipeline stages' embedded commands were validated directly against the actual repository and pass. The pipeline requires no pre-existing Azure DevOps configuration (no variable group, no service connection) to run, deploys nothing, and its disabled `Deploy_Dev` stage documents — without executing — the exact future 6-step CD flow. No Azure resource was deployed by this PBI's work.

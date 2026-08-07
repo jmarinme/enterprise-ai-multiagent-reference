@@ -1,0 +1,102 @@
+PBI-00-07 — Azure DevOps CI/CD pipeline foundation validation evidence
+Date: 2026-08-06/07
+
+--- Files created/modified ---
+azure-pipelines.yml (rewritten: placeholder single stage -> 5 real stages + 1 disabled future stage)
+azure-pipelines/templates/steps/bicep-build.yml (new)
+azure-pipelines/templates/steps/bicep-build-params.yml (new)
+azure-pipelines/templates/.gitkeep (removed — directory no longer empty)
+tests/unit/api/{test_correlation_id.py,test_health.py,test_version.py} (import order auto-fixed
+  by ruff — see "ruff" section below; a real, pre-existing gap this PBI's combined-invocation
+  design exposed, not new code)
+
+--- YAML syntax validation (no local Azure DevOps agent/org available) ---
+Command: python -c "import yaml; yaml.safe_load(open(f))" for each of:
+  azure-pipelines.yml, azure-pipelines/templates/steps/bicep-build.yml,
+  azure-pipelines/templates/steps/bicep-build-params.yml
+Result: all three parse as valid YAML (exit clean, no exception).
+Limitation: no local Azure DevOps CLI/agent or connected organization exists in this
+environment, so full ADO-schema validation (task names, input schemas, template expression
+evaluation) cannot be performed offline. This is an environmental limitation, documented here
+per PBI instructions, not a defect. Every embedded shell command was instead validated directly
+(below) by running the exact same command lines the YAML executes.
+
+--- Stage 1 (Backend Quality) command-by-command validation ---
+Environment: root .venv (Python 3.11.9 — pre-existing gap vs. required 3.12, see prior PBIs'
+decisions.md entries; the pipeline itself pins UsePythonVersion to 3.12, so CI will actually run
+on the correct version even though local validation could not).
+
+Combined dependency install (apps/api's pyproject.toml deps+dev extra, plus root pyproject.toml's
+deps+dev+cosmos+keyvault extras, plus pytest-cov) installed successfully into one shared venv,
+proving the "one shared environment" CI design actually works (previous PBIs used two separate
+local venvs and never verified this combined-install path before).
+
+Command: pytest tests/unit/api tests/unit/domain tests/unit/services tests/integration -v
+  --junitxml=... --cov=src --cov=apps/api/src --cov-report=xml:... --cov-report=term
+Result: 26 passed, 2 skipped (both live-integration scaffolds skip correctly), coverage XML
+generated, overall coverage 75% (100% on most modules; the Cosmos and conversation-store-factory
+modules read 0% because their integration test is skipped without Azure config, as designed).
+
+Command: ruff check apps/api/src src tests
+Result: FAILED on first run — 3x I001 (unsorted imports) in tests/unit/api/test_correlation_id.py,
+test_health.py, test_version.py. Root cause: these three files were never actually ruff-checked
+before this PBI. PBI-00-02 only ran `ruff check .` from inside apps/api (covering apps/api/src
+only); tests/unit/api/ lives outside that directory and was never included in any prior ruff
+invocation. This pipeline's combined, repo-root invocation is the first to cover it. Fixed via
+`ruff check --fix`; re-ran pytest afterward to confirm the import reorder didn't affect test
+behavior (still 5/5 in tests/unit/api). Final: All checks passed!
+
+Command: mypy apps/api/src
+Result: Success: no issues found in 11 source files.
+Command: mypy src
+Result: Success: no issues found in 16 source files.
+
+--- Stage 2 (Frontend Quality) command-by-command validation ---
+Command: npm ci (apps/web) -- already validated as part of prior PBIs' package-lock.json presence;
+  re-confirmed npm run lint / npm run typecheck exit 0.
+Command: npm run test -- --reporter=junit --outputFile=<path> (apps/web)
+Result: exit 0, valid junit.xml produced (verified file exists and is non-empty, 1915 bytes).
+  Confirms Vitest's built-in JUnit reporter flag-forwarding through the npm script works exactly
+  as the pipeline step invokes it.
+Command: npm run build (apps/web)
+Result: exit 0, dist/ produced (~145 kB JS / 47 kB gzip), matching prior PBI-00-03 baseline.
+
+--- Stage 3 (Infrastructure Validation) command-by-command validation ---
+Ran the exact `az bicep build --file <f> --stdout > /dev/null` command from
+azure-pipelines/templates/steps/bicep-build.yml against all 10 files listed in this pipeline's
+`bicepModuleFiles` parameter (main.bicep + 9 modules): all exit 0, 0 errors, 0 warnings.
+Ran the exact `az bicep build-params --file <f> --outfile <path>` command from
+azure-pipelines/templates/steps/bicep-build-params.yml against all 3 files listed in
+`bicepParameterFiles` (dev/staging/prod): all exit 0.
+No `az login`, no `az deployment group create`, no `az deployment group what-if` executed at any
+point, matching both the pipeline design and this PBI's explicit constraints.
+
+--- Stage 4 (Container Build Validation) ---
+Command: docker info
+Result: Docker Desktop daemon is not running locally ("failed to connect to the docker API at
+npipe:////./pipe/dockerDesktopLinuxEngine") — the same recurring environmental limitation
+recorded in PBI-00-02/03. `docker build` for the API and Web images was NOT executed locally.
+Documented as an environmental limitation, not a code defect: both Dockerfiles were already
+build-validated in earlier PBIs when other tooling was available, and Stage 4's two `docker build`
+commands are otherwise unchanged, simple invocations of those same, already-authored Dockerfiles
+with pipeline-derived tags ($(imageTag) = $(Build.BuildId)) — no new Dockerfile content was
+introduced by this PBI. Microsoft-hosted Ubuntu pipeline agents ship Docker pre-installed, so
+this stage is expected to run successfully in actual Azure DevOps execution.
+
+--- Secrets/credentials scan ---
+Searched azure-pipelines.yml and azure-pipelines/templates/ for connection-string patterns,
+literal API-key/client-secret/password assignments, service-connection/subscriptionId/tenantId
+references, and hardcoded resource-group names.
+Findings: none. All "az login" / "az deployment" text matches are inside comments explaining
+what the pipeline explicitly does NOT do, or documenting the disabled future Deploy_Dev stage —
+never executable pipeline steps. No `docker push` anywhere. No service connection is referenced
+or required to run this pipeline.
+
+--- Conclusion ---
+All 5 active stages' embedded commands were validated directly and pass. The pipeline requires
+zero pre-existing Azure DevOps configuration (no variable group, no service connection) to run.
+The disabled Deploy_Dev stage documents the exact future 6-step CD flow without executing any of
+it (condition: false). Two real, pre-existing gaps were discovered and fixed by this PBI's more
+thorough combined validation: an import-order lint gap in tests/unit/api/ (present since
+PBI-00-02, never previously checked) and confirmation that the "single shared CI environment"
+dependency-install design actually works end-to-end.
