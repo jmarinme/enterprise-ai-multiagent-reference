@@ -61,12 +61,18 @@ class CosmosConversationRepository:
         return [Conversation.model_validate(item) async for item in items]
 
     async def append_message(
-        self, user_id: str, conversation_id: str, message: Message
+        self,
+        user_id: str,
+        conversation_id: str,
+        message: Message,
+        metadata: dict[str, str] | None = None,
     ) -> Conversation:
         conversation = await self.get_conversation(user_id, conversation_id)
         if conversation is None:
             raise ValueError(f"Conversation {conversation_id} not found for user {user_id}")
         conversation.messages.append(message)
+        if metadata is not None:
+            conversation.metadata = metadata
         conversation.updated_at = datetime.now(UTC)
         container = await self._container()
         updated = await container.upsert_item(

@@ -74,6 +74,35 @@ async def test_append_message_preserves_order_across_multiple_appends() -> None:
     assert [m.content for m in final.messages] == ["first", "second", "third"]
 
 
+async def test_append_message_replaces_metadata_when_provided() -> None:
+    repo = InMemoryConversationRepository()
+    conversation = await repo.create_conversation(
+        Conversation(user_id="user-1", metadata={"claimsIntakeState": "v1"})
+    )
+
+    updated = await repo.append_message(
+        "user-1",
+        conversation.id,
+        Message(role=MessageRole.ASSISTANT, content="reply"),
+        metadata={"claimsIntakeState": "v2"},
+    )
+
+    assert updated.metadata == {"claimsIntakeState": "v2"}
+
+
+async def test_append_message_leaves_metadata_untouched_when_not_provided() -> None:
+    repo = InMemoryConversationRepository()
+    conversation = await repo.create_conversation(
+        Conversation(user_id="user-1", metadata={"claimsIntakeState": "v1"})
+    )
+
+    updated = await repo.append_message(
+        "user-1", conversation.id, Message(role=MessageRole.USER, content="hi")
+    )
+
+    assert updated.metadata == {"claimsIntakeState": "v1"}
+
+
 async def test_append_message_raises_for_unknown_conversation() -> None:
     repo = InMemoryConversationRepository()
     message = Message(role=MessageRole.USER, content="hello")

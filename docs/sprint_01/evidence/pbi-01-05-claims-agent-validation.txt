@@ -1,0 +1,248 @@
+=== pytest tests/unit/api tests/unit/domain tests/unit/services tests/unit/supervisor tests/unit/agents tests/unit/tools tests/unit/prompts tests/unit/llm tests/integration -v ===
+============================= test session starts =============================
+platform win32 -- Python 3.11.9, pytest-8.4.2, pluggy-1.6.0 -- C:\MIGUEL\ARQUITECTURAIA\TF\TMX-Multiagente\.venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: C:\MIGUEL\ARQUITECTURAIA\TF\TMX-Multiagente
+configfile: pyproject.toml
+plugins: anyio-4.14.2, asyncio-0.26.0, cov-6.3.0
+asyncio: mode=Mode.AUTO, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 184 items
+
+tests/unit/api/test_chat.py::test_chat_returns_expected_shape_for_a_claims_message PASSED [  0%]
+tests/unit/api/test_chat.py::test_chat_drives_a_full_claim_report_end_to_end_through_the_real_api PASSED [  1%]
+tests/unit/api/test_chat.py::test_chat_returns_fallback_agent_for_an_unmatched_message PASSED [  1%]
+tests/unit/api/test_chat.py::test_chat_persists_and_reuses_the_conversation_id_across_turns PASSED [  2%]
+tests/unit/api/test_chat.py::test_chat_rejects_a_request_missing_required_fields PASSED [  2%]
+tests/unit/api/test_correlation_id.py::test_generates_correlation_id_when_not_provided PASSED [  3%]
+tests/unit/api/test_correlation_id.py::test_echoes_client_supplied_correlation_id PASSED [  3%]
+tests/unit/api/test_health.py::test_health_returns_ok_status PASSED      [  4%]
+tests/unit/api/test_health.py::test_health_response_includes_correlation_id_header PASSED [  4%]
+tests/unit/api/test_version.py::test_version_returns_expected_fields PASSED [  5%]
+tests/unit/domain/test_conversation.py::test_conversation_defaults_conversation_id_to_id PASSED [  5%]
+tests/unit/domain/test_conversation.py::test_conversation_serializes_to_camel_case_for_cosmos PASSED [  6%]
+tests/unit/domain/test_conversation.py::test_conversation_round_trips_from_camel_case_payload PASSED [  7%]
+tests/unit/domain/test_conversation.py::test_message_defaults_role_and_id PASSED [  7%]
+tests/unit/services/test_environment_secret_provider.py::test_returns_value_when_env_var_is_set PASSED [  8%]
+tests/unit/services/test_environment_secret_provider.py::test_raises_secret_not_found_when_env_var_missing PASSED [  8%]
+tests/unit/services/test_environment_secret_provider.py::test_raises_secret_not_found_when_env_var_is_empty PASSED [  9%]
+tests/unit/services/test_in_memory_conversation_repository.py::test_create_and_retrieve_conversation PASSED [  9%]
+tests/unit/services/test_in_memory_conversation_repository.py::test_get_conversation_returns_none_when_not_found PASSED [ 10%]
+tests/unit/services/test_in_memory_conversation_repository.py::test_list_conversations_returns_only_matching_user_newest_first PASSED [ 10%]
+tests/unit/services/test_in_memory_conversation_repository.py::test_append_message_adds_message_and_updates_timestamp PASSED [ 11%]
+tests/unit/services/test_in_memory_conversation_repository.py::test_append_message_preserves_order_across_multiple_appends PASSED [ 11%]
+tests/unit/services/test_in_memory_conversation_repository.py::test_append_message_replaces_metadata_when_provided PASSED [ 12%]
+tests/unit/services/test_in_memory_conversation_repository.py::test_append_message_leaves_metadata_untouched_when_not_provided PASSED [ 13%]
+tests/unit/services/test_in_memory_conversation_repository.py::test_append_message_raises_for_unknown_conversation PASSED [ 13%]
+tests/unit/services/test_in_memory_conversation_repository.py::test_stored_state_is_isolated_from_external_mutation PASSED [ 14%]
+tests/unit/services/test_key_vault_secret_provider.py::test_get_secret_returns_value_on_success PASSED [ 14%]
+tests/unit/services/test_key_vault_secret_provider.py::test_get_secret_raises_secret_not_found_when_missing PASSED [ 15%]
+tests/unit/services/test_key_vault_secret_provider.py::test_get_secret_raises_secret_not_found_when_value_is_none PASSED [ 15%]
+tests/unit/services/test_secret_provider_factory.py::test_factory_returns_environment_provider_by_default PASSED [ 16%]
+tests/unit/services/test_secret_provider_factory.py::test_factory_returns_key_vault_provider_when_configured PASSED [ 16%]
+tests/unit/services/test_secret_provider_factory.py::test_factory_raises_when_key_vault_selected_without_uri PASSED [ 17%]
+tests/unit/services/test_secret_provider_factory.py::test_settings_reject_unsupported_provider_value PASSED [ 17%]
+tests/unit/supervisor/test_context.py::test_returns_new_context_when_conversation_id_is_none PASSED [ 18%]
+tests/unit/supervisor/test_context.py::test_returns_new_context_when_conversation_id_not_found PASSED [ 19%]
+tests/unit/supervisor/test_context.py::test_returns_existing_context_when_conversation_found PASSED [ 19%]
+tests/unit/supervisor/test_context.py::test_new_context_has_empty_metadata PASSED [ 20%]
+tests/unit/supervisor/test_context.py::test_existing_conversations_metadata_is_loaded_into_context PASSED [ 20%]
+tests/unit/supervisor/test_context.py::test_truncates_history_to_max_history_messages PASSED [ 21%]
+tests/unit/supervisor/test_context.py::test_zero_max_history_messages_disables_truncation PASSED [ 21%]
+tests/unit/supervisor/test_intent.py::test_resolve_returns_expected_category[I need to file a claim after an accident-CLAIMS] PASSED [ 22%]
+tests/unit/supervisor/test_intent.py::test_resolve_returns_expected_category[What is the status of my policy with my broker?-BROKER] PASSED [ 22%]
+tests/unit/supervisor/test_intent.py::test_resolve_returns_expected_category[I'd like a quote for new business coverage options-COMMERCIAL] PASSED [ 23%]
+tests/unit/supervisor/test_intent.py::test_resolve_returns_expected_category[Hello, how are you today?-UNKNOWN] PASSED [ 23%]
+tests/unit/supervisor/test_intent.py::test_resolve_is_case_insensitive PASSED [ 24%]
+tests/unit/supervisor/test_intent.py::test_unknown_intent_has_zero_confidence PASSED [ 25%]
+tests/unit/supervisor/test_intent.py::test_matched_intent_has_full_confidence PASSED [ 25%]
+tests/unit/supervisor/test_orchestrator.py::test_handle_routes_to_the_registered_agent_for_the_resolved_intent PASSED [ 26%]
+tests/unit/supervisor/test_orchestrator.py::test_handle_routes_different_intents_to_different_agents_without_branching PASSED [ 26%]
+tests/unit/supervisor/test_orchestrator.py::test_handle_creates_a_new_conversation_on_first_turn PASSED [ 27%]
+tests/unit/supervisor/test_orchestrator.py::test_handle_appends_to_an_existing_conversation_on_subsequent_turns PASSED [ 27%]
+tests/unit/supervisor/test_orchestrator.py::test_handle_persists_agent_response_metadata_on_a_new_conversation PASSED [ 28%]
+tests/unit/supervisor/test_orchestrator.py::test_handle_updates_persisted_metadata_and_feeds_it_back_into_the_next_turns_context PASSED [ 28%]
+tests/unit/supervisor/test_orchestrator.py::test_handle_uses_unknown_agent_for_unmatched_messages PASSED [ 29%]
+tests/unit/supervisor/test_orchestrator.py::test_handle_keeps_an_ambiguous_follow_up_with_the_conversations_current_agent PASSED [ 29%]
+tests/unit/supervisor/test_orchestrator.py::test_handle_still_switches_agents_when_a_follow_up_clearly_matches_a_new_intent PASSED [ 30%]
+tests/unit/supervisor/test_orchestrator.py::test_handle_does_not_apply_the_current_agent_fallback_on_a_brand_new_conversation PASSED [ 30%]
+tests/unit/supervisor/test_orchestrator.py::test_supervisor_is_constructed_via_dependency_injection_not_globals PASSED [ 31%]
+tests/unit/supervisor/test_orchestrator.py::test_supervisor_uses_default_config_when_none_provided PASSED [ 32%]
+tests/unit/supervisor/test_registry.py::test_register_and_resolve_returns_the_registered_agent PASSED [ 32%]
+tests/unit/supervisor/test_registry.py::test_resolve_raises_agent_not_found_error_when_unregistered PASSED [ 33%]
+tests/unit/supervisor/test_registry.py::test_unregister_removes_the_agent PASSED [ 33%]
+tests/unit/supervisor/test_registry.py::test_unregister_is_a_no_op_when_nothing_registered PASSED [ 34%]
+tests/unit/supervisor/test_registry.py::test_list_returns_all_registered_agents PASSED [ 34%]
+tests/unit/supervisor/test_registry.py::test_register_overwrites_an_existing_entry_for_the_same_intent PASSED [ 35%]
+tests/unit/agents/claims/test_extraction.py::test_extracts_policy_number_in_either_case PASSED [ 35%]
+tests/unit/agents/claims/test_extraction.py::test_policy_number_is_refreshed_even_if_already_set PASSED [ 36%]
+tests/unit/agents/claims/test_extraction.py::test_extracts_event_date_in_iso_format PASSED [ 36%]
+tests/unit/agents/claims/test_extraction.py::test_a_date_is_never_mistaken_for_a_phone_number PASSED [ 37%]
+tests/unit/agents/claims/test_extraction.py::test_extracts_phone_number PASSED [ 38%]
+tests/unit/agents/claims/test_extraction.py::test_extracts_email PASSED  [ 38%]
+tests/unit/agents/claims/test_extraction.py::test_extracts_loss_type_from_keyword PASSED [ 39%]
+tests/unit/agents/claims/test_extraction.py::test_yes_no_answer_is_only_interpreted_for_the_last_asked_yes_no_field PASSED [ 39%]
+tests/unit/agents/claims/test_extraction.py::test_yes_answer_sets_the_field_true PASSED [ 40%]
+tests/unit/agents/claims/test_extraction.py::test_free_text_fallback_fills_the_last_asked_free_text_field PASSED [ 40%]
+tests/unit/agents/claims/test_extraction.py::test_free_text_fallback_does_not_apply_to_structured_fields PASSED [ 41%]
+tests/unit/agents/claims/test_extraction.py::test_free_text_fallback_is_skipped_when_a_structured_field_matched_instead PASSED [ 41%]
+tests/unit/agents/claims/test_extraction.py::test_free_text_fallback_never_overwrites_an_already_filled_field PASSED [ 42%]
+tests/unit/agents/claims/test_state.py::test_fresh_state_defaults_to_new_status_with_no_fields_set PASSED [ 42%]
+tests/unit/agents/claims/test_state.py::test_every_required_field_has_a_prompt PASSED [ 43%]
+tests/unit/agents/claims/test_state.py::test_optional_fields_are_never_asked_for PASSED [ 44%]
+tests/unit/agents/claims/test_state.py::test_missing_required_fields_shrinks_as_fields_are_filled PASSED [ 44%]
+tests/unit/agents/claims/test_state.py::test_missing_required_fields_treats_false_as_answered PASSED [ 45%]
+tests/unit/agents/claims/test_workflow.py::test_new_conversation_asks_for_the_first_missing_field PASSED [ 45%]
+tests/unit/agents/claims/test_workflow.py::test_full_multi_turn_conversation_registers_and_assigns_an_adjuster PASSED [ 46%]
+tests/unit/agents/claims/test_workflow.py::test_active_policy_with_payment_issue_does_not_block_registration PASSED [ 46%]
+tests/unit/agents/claims/test_workflow.py::test_inactive_policy_does_not_block_registration PASSED [ 47%]
+tests/unit/agents/claims/test_workflow.py::test_unknown_policy_number_blocks_and_asks_to_recheck PASSED [ 47%]
+tests/unit/agents/claims/test_workflow.py::test_supplying_a_corrected_policy_number_after_not_found_retries_validation PASSED [ 48%]
+tests/unit/agents/claims/test_workflow.py::test_a_message_after_adjuster_assignment_does_not_register_a_second_claim PASSED [ 48%]
+tests/unit/agents/test_claims_agent_functional.py::test_full_claim_report_flow_from_first_contact_to_adjuster_assignment PASSED [ 49%]
+tests/unit/agents/test_claims_agent_functional.py::test_conversation_continues_gracefully_after_an_unknown_policy_number PASSED [ 50%]
+tests/unit/agents/test_claims_agent_functional.py::test_re_sending_a_message_after_the_claim_is_fully_processed_does_not_duplicate_it PASSED [ 50%]
+tests/unit/agents/test_claims_agent_llm_integration.py::test_claims_agent_response_proves_the_mock_llm_provider_was_invoked PASSED [ 51%]
+tests/unit/agents/test_claims_agent_llm_integration.py::test_claims_agent_response_is_fully_deterministic_for_the_same_state_and_message PASSED [ 51%]
+tests/unit/agents/test_claims_agent_prompt_integration.py::test_claims_agent_response_references_the_rendered_prompt_identifier_and_version PASSED [ 52%]
+tests/unit/agents/test_claims_agent_prompt_integration.py::test_claims_agent_source_file_contains_no_embedded_prompt_wording PASSED [ 52%]
+tests/unit/agents/test_claims_agent_tool_injection.py::test_claims_agent_reports_the_real_policy_lookup_result_via_the_injected_tool_executor PASSED [ 53%]
+tests/unit/agents/test_claims_agent_tool_injection.py::test_claims_agent_degrades_gracefully_when_policy_lookup_tool_is_not_registered PASSED [ 53%]
+tests/unit/agents/test_mock_agents.py::test_agent_returns_deterministic_response[_build_claims_agent-ClaimsAgent-CLAIMS] PASSED [ 54%]
+tests/unit/agents/test_mock_agents.py::test_agent_returns_deterministic_response[BrokerAgent-BrokerAgent-BROKER] PASSED [ 54%]
+tests/unit/agents/test_mock_agents.py::test_agent_returns_deterministic_response[CommercialIntakeAgent-CommercialIntakeAgent-COMMERCIAL] PASSED [ 55%]
+tests/unit/agents/test_mock_agents.py::test_agent_returns_deterministic_response[FallbackAgent-FallbackAgent-UNKNOWN] PASSED [ 55%]
+tests/unit/agents/test_mock_agents.py::test_agent_response_is_stable_when_input_has_no_recognizable_claims_fields PASSED [ 56%]
+tests/unit/tools/test_adjuster_assignment_tool.py::test_assigns_a_synthetic_adjuster_for_a_valid_claim_reference PASSED [ 57%]
+tests/unit/tools/test_adjuster_assignment_tool.py::test_the_same_claim_reference_always_resolves_to_the_same_adjuster PASSED [ 57%]
+tests/unit/tools/test_adjuster_assignment_tool.py::test_fails_gracefully_for_an_empty_claim_reference PASSED [ 58%]
+tests/unit/tools/test_claim_registration_tool.py::test_registration_returns_a_reference_matching_the_expected_format PASSED [ 58%]
+tests/unit/tools/test_claim_registration_tool.py::test_sequential_registrations_get_distinct_incrementing_references PASSED [ 59%]
+tests/unit/tools/test_executor.py::test_valid_input_executes_successfully_and_returns_typed_data PASSED [ 59%]
+tests/unit/tools/test_executor.py::test_context_is_propagated_to_the_tool PASSED [ 60%]
+tests/unit/tools/test_executor.py::test_invalid_input_returns_a_failed_tool_result_not_a_raised_exception PASSED [ 60%]
+tests/unit/tools/test_executor.py::test_execution_failure_is_normalized_into_a_failed_tool_result PASSED [ 61%]
+tests/unit/tools/test_executor.py::test_missing_tool_returns_a_failed_tool_result_not_a_raised_exception PASSED [ 61%]
+tests/unit/tools/test_executor.py::test_tool_result_contract_always_includes_tool_name_and_success PASSED [ 62%]
+tests/unit/tools/test_payment_status_tool.py::test_returns_payment_current_true_for_a_paid_up_policy PASSED [ 63%]
+tests/unit/tools/test_payment_status_tool.py::test_returns_payment_current_false_for_an_overdue_policy PASSED [ 63%]
+tests/unit/tools/test_payment_status_tool.py::test_returns_failure_for_an_unknown_policy PASSED [ 64%]
+tests/unit/tools/test_synthetic_tools.py::test_policy_lookup_tool_returns_known_synthetic_record PASSED [ 64%]
+tests/unit/tools/test_synthetic_tools.py::test_policy_lookup_tool_returns_failure_for_unknown_policy PASSED [ 65%]
+tests/unit/tools/test_synthetic_tools.py::test_claims_status_tool_returns_known_synthetic_record PASSED [ 65%]
+tests/unit/tools/test_synthetic_tools.py::test_claims_status_tool_returns_failure_for_unknown_claim PASSED [ 66%]
+tests/unit/tools/test_synthetic_tools.py::test_broker_account_lookup_tool_returns_known_synthetic_record PASSED [ 66%]
+tests/unit/tools/test_synthetic_tools.py::test_broker_account_lookup_tool_returns_failure_for_unknown_broker PASSED [ 67%]
+tests/unit/tools/test_synthetic_tools.py::test_registry_lists_metadata_for_all_three_synthetic_tools PASSED [ 67%]
+tests/unit/tools/test_tool_registry.py::test_register_and_resolve_returns_the_registered_tool PASSED [ 68%]
+tests/unit/tools/test_tool_registry.py::test_resolve_raises_tool_not_found_error_when_unregistered PASSED [ 69%]
+tests/unit/tools/test_tool_registry.py::test_register_raises_on_duplicate_name PASSED [ 69%]
+tests/unit/tools/test_tool_registry.py::test_unregister_removes_the_tool PASSED [ 70%]
+tests/unit/tools/test_tool_registry.py::test_unregister_is_a_no_op_when_nothing_registered PASSED [ 70%]
+tests/unit/tools/test_tool_registry.py::test_unregister_then_register_again_succeeds PASSED [ 71%]
+tests/unit/tools/test_tool_registry.py::test_list_returns_metadata_for_all_registered_tools PASSED [ 71%]
+tests/unit/prompts/test_filesystem_provider.py::test_load_returns_a_prompt_definition_for_a_known_identifier PASSED [ 72%]
+tests/unit/prompts/test_filesystem_provider.py::test_load_populates_metadata_from_frontmatter PASSED [ 72%]
+tests/unit/prompts/test_filesystem_provider.py::test_load_raises_prompt_not_found_for_unknown_namespace PASSED [ 73%]
+tests/unit/prompts/test_filesystem_provider.py::test_load_raises_prompt_not_found_when_file_is_missing PASSED [ 73%]
+tests/unit/prompts/test_filesystem_provider.py::test_load_raises_prompt_not_found_for_malformed_identifier PASSED [ 74%]
+tests/unit/prompts/test_filesystem_provider.py::test_load_raises_prompt_validation_error_for_invalid_version PASSED [ 75%]
+tests/unit/prompts/test_filesystem_provider.py::test_load_raises_prompt_validation_error_for_malformed_prompt[missing_delimiter] PASSED [ 75%]
+tests/unit/prompts/test_filesystem_provider.py::test_load_raises_prompt_validation_error_for_malformed_prompt[unterminated] PASSED [ 76%]
+tests/unit/prompts/test_filesystem_provider.py::test_load_raises_prompt_validation_error_for_malformed_prompt[bad_yaml_syntax] PASSED [ 76%]
+tests/unit/prompts/test_filesystem_provider.py::test_load_raises_prompt_validation_error_for_malformed_prompt[non_mapping_frontmatter] PASSED [ 77%]
+tests/unit/prompts/test_filesystem_provider.py::test_broker_namespace_maps_to_broker_services_directory PASSED [ 77%]
+tests/unit/prompts/test_filesystem_provider.py::test_all_real_shipped_prompts_load_successfully PASSED [ 78%]
+tests/unit/prompts/test_manager.py::test_render_returns_a_rendered_prompt_with_metadata PASSED [ 78%]
+tests/unit/prompts/test_manager.py::test_render_propagates_prompt_not_found_error PASSED [ 79%]
+tests/unit/prompts/test_manager.py::test_get_metadata_returns_metadata_without_rendering PASSED [ 79%]
+tests/unit/prompts/test_manager.py::test_get_metadata_propagates_prompt_not_found_error PASSED [ 80%]
+tests/unit/prompts/test_manager.py::test_unexpected_provider_failure_is_normalized_to_prompt_validation_error PASSED [ 80%]
+tests/unit/prompts/test_manager.py::test_render_fails_explicitly_when_a_required_variable_is_missing PASSED [ 81%]
+tests/unit/prompts/test_renderer.py::test_renders_all_known_variables PASSED [ 82%]
+tests/unit/prompts/test_renderer.py::test_optional_missing_variable_renders_as_empty_string PASSED [ 82%]
+tests/unit/prompts/test_renderer.py::test_missing_required_variable_raises_prompt_render_error PASSED [ 83%]
+tests/unit/prompts/test_renderer.py::test_unexpected_variable_raises_prompt_render_error PASSED [ 83%]
+tests/unit/prompts/test_renderer.py::test_rendering_is_deterministic_across_repeated_calls PASSED [ 84%]
+tests/unit/prompts/test_renderer.py::test_template_with_no_placeholders_renders_unchanged PASSED [ 84%]
+tests/unit/llm/test_azure_openai_provider.py::test_missing_endpoint_raises_configuration_error PASSED [ 85%]
+tests/unit/llm/test_azure_openai_provider.py::test_missing_deployment_raises_configuration_error PASSED [ 85%]
+tests/unit/llm/test_azure_openai_provider.py::test_generate_success_returns_typed_llm_response PASSED [ 86%]
+tests/unit/llm/test_azure_openai_provider.py::test_generate_timeout_raises_llm_timeout_error PASSED [ 86%]
+tests/unit/llm/test_azure_openai_provider.py::test_generate_rate_limit_raises_llm_rate_limit_error PASSED [ 87%]
+tests/unit/llm/test_azure_openai_provider.py::test_generate_connection_error_raises_llm_provider_error PASSED [ 88%]
+tests/unit/llm/test_azure_openai_provider.py::test_generate_generic_status_error_raises_llm_provider_error PASSED [ 88%]
+tests/unit/llm/test_azure_openai_provider.py::test_default_auth_uses_entra_id_not_secret_provider PASSED [ 89%]
+tests/unit/llm/test_azure_openai_provider.py::test_api_key_auth_uses_secret_provider_not_environment PASSED [ 89%]
+tests/unit/llm/test_factory.py::test_factory_returns_mock_provider_by_default PASSED [ 90%]
+tests/unit/llm/test_factory.py::test_factory_returns_azure_openai_provider_when_configured PASSED [ 90%]
+tests/unit/llm/test_factory.py::test_factory_raises_for_unsupported_provider PASSED [ 91%]
+tests/unit/llm/test_mock_provider.py::test_generate_is_deterministic_for_the_same_request PASSED [ 91%]
+tests/unit/llm/test_mock_provider.py::test_generate_returns_a_typed_llm_response PASSED [ 92%]
+tests/unit/llm/test_mock_provider.py::test_generate_output_varies_with_last_user_message_length PASSED [ 92%]
+tests/unit/llm/test_mock_provider.py::test_generate_with_no_user_message_still_succeeds PASSED [ 93%]
+tests/unit/llm/test_models.py::test_generation_settings_defaults_are_deterministic_friendly PASSED [ 94%]
+tests/unit/llm/test_models.py::test_generation_settings_rejects_out_of_range_values[kwargs0] PASSED [ 94%]
+tests/unit/llm/test_models.py::test_generation_settings_rejects_out_of_range_values[kwargs1] PASSED [ 95%]
+tests/unit/llm/test_models.py::test_generation_settings_rejects_out_of_range_values[kwargs2] PASSED [ 95%]
+tests/unit/llm/test_models.py::test_generation_settings_rejects_out_of_range_values[kwargs3] PASSED [ 96%]
+tests/unit/llm/test_models.py::test_generation_settings_rejects_out_of_range_values[kwargs4] PASSED [ 96%]
+tests/unit/llm/test_models.py::test_generation_settings_rejects_out_of_range_values[kwargs5] PASSED [ 97%]
+tests/unit/llm/test_models.py::test_generation_settings_accepts_boundary_values PASSED [ 97%]
+tests/unit/llm/test_models.py::test_llm_request_carries_messages_and_context_identifiers PASSED [ 98%]
+tests/unit/llm/test_models.py::test_llm_response_defaults_usage_to_zero PASSED [ 98%]
+tests/integration/test_cosmos_conversation_repository.py::test_create_and_retrieve_conversation_against_live_cosmos SKIPPED [ 99%]
+tests/integration/test_key_vault_live.py::test_missing_secret_raises_against_live_key_vault SKIPPED [100%]
+
+============================== warnings summary ===============================
+.venv\Lib\site-packages\fastapi\testclient.py:1
+  C:\MIGUEL\ARQUITECTURAIA\TF\TMX-Multiagente\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================== 182 passed, 2 skipped, 1 warning in 2.79s ==================
+
+=== ruff check apps/api/src src tests ===
+All checks passed!
+
+=== mypy apps/api/src ===
+Success: no issues found in 13 source files
+
+=== mypy src ===
+Success: no issues found in 62 source files
+
+=== mypy tests/unit/llm tests/unit/agents tests/unit/tools tests/unit/prompts tests/unit/supervisor tests/unit/services ===
+Success: no issues found in 29 source files
+
+=== docker compose config (temporary local .env from .env.example) ===
+exit=0
+
+=== docker build ===
+NOT executed - Docker daemon unavailable locally (recurring environmental limitation, documented since Sprint 00)
+
+=== Live smoke test: uvicorn + full multi-turn POST /chat claim report ===
+Real transcript below (uvicorn started on 127.0.0.1:8124, /health returned {"status":"ok"} first)
+
+--- Full multi-turn claim report transcript (real HTTP calls) ---
+USER: I need to report a claim
+  -> {"conversationId":"4b9c92ba-1db6-4aec-836e-a4cc917d690e","agent":"ClaimsAgent","intent":"CLAIMS","response":"Could you provide your policy number? [prompt=claims.system@2.0.0] [llm=mock-llm]","metadata":{"claimsIntakeState":"{\"status\":\"collecting_information\",\"policy_number\":null,\"event_date\":null,\"event_time\":null,\"event_location\":null,\"loss_type\":null,\"loss_description\":null,\"contact_name\":null,\"contact_phone\":null,\"contact_email\":null,\"injuries_reported\":null,\"third_parties_involved\":null,\"policy_validated\":false,\"policy_active\":null,\"payment_current\":null,\"claim_reference\":null,\"adjuster_assigned\":null,\"last_asked_field\":\"policy_number\"}"}}
+USER: SYN-POL-0001
+  -> {"conversationId":"4b9c92ba-1db6-4aec-836e-a4cc917d690e","agent":"ClaimsAgent","intent":"CLAIMS","response":"What date did the incident occur? (YYYY-MM-DD) [prompt=claims.system@2.0.0] [llm=mock-llm]","metadata":{"claimsIntakeState":"{\"status\":\"collecting_information\",\"policy_number\":\"SYN-POL-0001\",\"event_date\":null,\"event_time\":null,\"event_location\":null,\"loss_type\":null,\"loss_description\":null,\"contact_name\":null,\"contact_phone\":null,\"contact_email\":null,\"injuries_reported\":null,\"third_parties_involved\":null,\"policy_validated\":false,\"policy_active\":null,\"payment_current\":null,\"claim_reference\":null,\"adjuster_assigned\":null,\"last_asked_field\":\"event_date\"}"}}
+USER: 2026-08-01
+  -> {"conversationId":"4b9c92ba-1db6-4aec-836e-a4cc917d690e","agent":"ClaimsAgent","intent":"CLAIMS","response":"Where did the incident take place? [prompt=claims.system@2.0.0] [llm=mock-llm]","metadata":{"claimsIntakeState":"{\"status\":\"collecting_information\",\"policy_number\":\"SYN-POL-0001\",\"event_date\":\"2026-08-01\",\"event_time\":null,\"event_location\":null,\"loss_type\":null,\"loss_description\":null,\"contact_name\":null,\"contact_phone\":null,\"contact_email\":null,\"injuries_reported\":null,\"third_parties_involved\":null,\"policy_validated\":false,\"policy_active\":null,\"payment_current\":null,\"claim_reference\":null,\"adjuster_assigned\":null,\"last_asked_field\":\"event_location\"}"}}
+USER: In my driveway
+  -> {"conversationId":"4b9c92ba-1db6-4aec-836e-a4cc917d690e","agent":"ClaimsAgent","intent":"CLAIMS","response":"What type of loss is this (e.g., collision, theft, fire, water damage, weather, vandalism, other)? [prompt=claims.system@2.0.0] [llm=mock-llm]","metadata":{"claimsIntakeState":"{\"status\":\"collecting_information\",\"policy_number\":\"SYN-POL-0001\",\"event_date\":\"2026-08-01\",\"event_time\":null,\"event_location\":\"In my driveway\",\"loss_type\":null,\"loss_description\":null,\"contact_name\":null,\"contact_phone\":null,\"contact_email\":null,\"injuries_reported\":null,\"third_parties_involved\":null,\"policy_validated\":false,\"policy_active\":null,\"payment_current\":null,\"claim_reference\":null,\"adjuster_assigned\":null,\"last_asked_field\":\"loss_type\"}"}}
+USER: It was a collision
+  -> {"conversationId":"4b9c92ba-1db6-4aec-836e-a4cc917d690e","agent":"ClaimsAgent","intent":"CLAIMS","response":"Could you briefly describe what happened? [prompt=claims.system@2.0.0] [llm=mock-llm]","metadata":{"claimsIntakeState":"{\"status\":\"collecting_information\",\"policy_number\":\"SYN-POL-0001\",\"event_date\":\"2026-08-01\",\"event_time\":null,\"event_location\":\"In my driveway\",\"loss_type\":\"collision\",\"loss_description\":null,\"contact_name\":null,\"contact_phone\":null,\"contact_email\":null,\"injuries_reported\":null,\"third_parties_involved\":null,\"policy_validated\":false,\"policy_active\":null,\"payment_current\":null,\"claim_reference\":null,\"adjuster_assigned\":null,\"last_asked_field\":\"loss_description\"}"}}
+USER: Another car hit me while parked
+  -> {"conversationId":"4b9c92ba-1db6-4aec-836e-a4cc917d690e","agent":"ClaimsAgent","intent":"CLAIMS","response":"What is your full name for this claim? [prompt=claims.system@2.0.0] [llm=mock-llm]","metadata":{"claimsIntakeState":"{\"status\":\"collecting_information\",\"policy_number\":\"SYN-POL-0001\",\"event_date\":\"2026-08-01\",\"event_time\":null,\"event_location\":\"In my driveway\",\"loss_type\":\"collision\",\"loss_description\":\"Another car hit me while parked\",\"contact_name\":null,\"contact_phone\":null,\"contact_email\":null,\"injuries_reported\":null,\"third_parties_involved\":null,\"policy_validated\":false,\"policy_active\":null,\"payment_current\":null,\"claim_reference\":null,\"adjuster_assigned\":null,\"last_asked_field\":\"contact_name\"}"}}
+USER: Jane Caller
+  -> {"conversationId":"4b9c92ba-1db6-4aec-836e-a4cc917d690e","agent":"ClaimsAgent","intent":"CLAIMS","response":"What is the best phone number to reach you? [prompt=claims.system@2.0.0] [llm=mock-llm]","metadata":{"claimsIntakeState":"{\"status\":\"collecting_information\",\"policy_number\":\"SYN-POL-0001\",\"event_date\":\"2026-08-01\",\"event_time\":null,\"event_location\":\"In my driveway\",\"loss_type\":\"collision\",\"loss_description\":\"Another car hit me while parked\",\"contact_name\":\"Jane Caller\",\"contact_phone\":null,\"contact_email\":null,\"injuries_reported\":null,\"third_parties_involved\":null,\"policy_validated\":false,\"policy_active\":null,\"payment_current\":null,\"claim_reference\":null,\"adjuster_assigned\":null,\"last_asked_field\":\"contact_phone\"}"}}
+USER: 555-123-4567
+  -> {"conversationId":"4b9c92ba-1db6-4aec-836e-a4cc917d690e","agent":"ClaimsAgent","intent":"CLAIMS","response":"Were there any injuries involved? (yes/no) [prompt=claims.system@2.0.0] [llm=mock-llm]","metadata":{"claimsIntakeState":"{\"status\":\"collecting_information\",\"policy_number\":\"SYN-POL-0001\",\"event_date\":\"2026-08-01\",\"event_time\":null,\"event_location\":\"In my driveway\",\"loss_type\":\"collision\",\"loss_description\":\"Another car hit me while parked\",\"contact_name\":\"Jane Caller\",\"contact_phone\":\"555-123-4567\",\"contact_email\":null,\"injuries_reported\":null,\"third_parties_involved\":null,\"policy_validated\":false,\"policy_active\":null,\"payment_current\":null,\"claim_reference\":null,\"adjuster_assigned\":null,\"last_asked_field\":\"injuries_reported\"}"}}
+USER: no
+  -> {"conversationId":"4b9c92ba-1db6-4aec-836e-a4cc917d690e","agent":"ClaimsAgent","intent":"CLAIMS","response":"Were any third parties involved? (yes/no) [prompt=claims.system@2.0.0] [llm=mock-llm]","metadata":{"claimsIntakeState":"{\"status\":\"collecting_information\",\"policy_number\":\"SYN-POL-0001\",\"event_date\":\"2026-08-01\",\"event_time\":null,\"event_location\":\"In my driveway\",\"loss_type\":\"collision\",\"loss_description\":\"Another car hit me while parked\",\"contact_name\":\"Jane Caller\",\"contact_phone\":\"555-123-4567\",\"contact_email\":null,\"injuries_reported\":false,\"third_parties_involved\":null,\"policy_validated\":false,\"policy_active\":null,\"payment_current\":null,\"claim_reference\":null,\"adjuster_assigned\":null,\"last_asked_field\":\"third_parties_involved\"}"}}
+USER: yes
+  -> {"conversationId":"4b9c92ba-1db6-4aec-836e-a4cc917d690e","agent":"ClaimsAgent","intent":"CLAIMS","response":"Your policy is active. Payments on this policy are up to date. Your claim notice has been registered. Your claim reference is SYN-CLM-2026-0001. Synthetic Adjuster Chen has been assigned to your claim SYN-CLM-2026-0001 and will contact you soon. [prompt=claims.system@2.0.0] [llm=mock-llm]","metadata":{"claimsIntakeState":"{\"status\":\"adjuster_assigned\",\"policy_number\":\"SYN-POL-0001\",\"event_date\":\"2026-08-01\",\"event_time\":null,\"event_location\":\"In my driveway\",\"loss_type\":\"collision\",\"loss_description\":\"Another car hit me while parked\",\"contact_name\":\"Jane Caller\",\"contact_phone\":\"555-123-4567\",\"contact_email\":null,\"injuries_reported\":false,\"third_parties_involved\":true,\"policy_validated\":true,\"policy_active\":true,\"payment_current\":true,\"claim_reference\":\"SYN-CLM-2026-0001\",\"adjuster_assigned\":\"Synthetic Adjuster Chen\",\"last_asked_field\":null}"}}
+
+--- Fallback routing still works for a genuinely new, unrelated conversation ---
+{"conversationId":"2b8e99bb-02a1-494b-878b-575385da8b7a","agent":"FallbackAgent","intent":"UNKNOWN","response":"I could not determine how to help with that. A human may need to assist you.","metadata":{}}

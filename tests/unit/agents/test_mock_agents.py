@@ -12,7 +12,7 @@ from src.agents.fallback_agent import FallbackAgent
 from src.llm.mock_provider import MockLLMProvider
 from src.prompts.filesystem_provider import FileSystemPromptProvider
 from src.prompts.manager import PromptManager
-from src.services.tools.claims_status_tool import ClaimsStatusTool
+from src.services.tools.policy_lookup_tool import PolicyLookupTool
 from src.supervisor.models import AgentRequest, ConversationContext, IntentCategory
 from src.tools.executor import ToolExecutor
 from src.tools.registry import InMemoryToolRegistry
@@ -20,7 +20,7 @@ from src.tools.registry import InMemoryToolRegistry
 
 def _build_claims_agent() -> ClaimsAgent:
     tool_registry = InMemoryToolRegistry()
-    tool_registry.register(ClaimsStatusTool())
+    tool_registry.register(PolicyLookupTool())
     prompt_manager = PromptManager(
         provider=FileSystemPromptProvider(prompts_root=Path("configs/prompts"))
     )
@@ -57,12 +57,13 @@ async def test_agent_returns_deterministic_response(
     assert len(response.response) > 0
 
 
-async def test_agent_non_llm_response_metadata_is_stable_across_different_messages() -> None:
-    """As of PBI-01-04, ClaimsAgent's response legitimately varies with the input message
-    (its text now comes from an LLM call over that message) — see
-    tests/unit/agents/test_claims_agent_llm_integration.py for that determinism-per-input
-    coverage. This test instead checks what is still invariant: agent identity, intent, and
-    the non-LLM-derived prompt/tool annotations."""
+async def test_agent_response_is_stable_when_input_has_no_recognizable_claims_fields() -> None:
+    """As of PBI-01-05, ClaimsAgent's business-fact text is fully deterministic (derived from
+    Tool/state-machine results, never LLM wording — see
+    tests/unit/agents/test_claims_agent_llm_integration.py). Two different first messages that
+    neither one contains a recognizable field (e.g. a policy number) both simply prompt for
+    the same first missing field, so the full response is identical, not just its agent/intent
+    identity."""
     agent = _build_claims_agent()
     context = ConversationContext(conversation_id="conv-1", user_id="user-1")
 
@@ -75,5 +76,5 @@ async def test_agent_non_llm_response_metadata_is_stable_across_different_messag
 
     assert first.agent == second.agent == "ClaimsAgent"
     assert first.intent == second.intent
-    assert "[prompt=claims.system@1.0.0]" in first.response
-    assert "[prompt=claims.system@1.0.0]" in second.response
+    assert first.response == second.response
+    assert "[prompt=claims.system@2.0.0]" in first.response
