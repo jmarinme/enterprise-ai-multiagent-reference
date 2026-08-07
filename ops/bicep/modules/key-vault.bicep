@@ -22,6 +22,9 @@ param enablePurgeProtection bool = false
 @description('Principal ID of the identity granted the built-in "Key Vault Secrets User" role on this vault. Empty string skips the role assignment.')
 param keyVaultAccessPrincipalId string = ''
 
+@description('Whether the vault is reachable over its public endpoint. Set false once a Private Endpoint is provisioned for production hardening (PBI-03-04) — see main.bicep\'s enablePrivateNetworking param. networkAcls.bypass stays "AzureServices" either way so this same Bicep template can still write the app-insights-connection-string secret (modules/key-vault-secret.bicep) through the ARM control plane even when the data-plane public endpoint is disabled — the standard, documented pattern for deploying secrets into a network-restricted vault.')
+param enablePublicNetworkAccess bool = true
+
 var keyVaultSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6'
 
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
@@ -38,7 +41,11 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
     enableSoftDelete: true
     softDeleteRetentionInDays: 90
     enablePurgeProtection: enablePurgeProtection ? true : null
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: enablePublicNetworkAccess ? 'Enabled' : 'Disabled'
+    networkAcls: {
+      bypass: 'AzureServices'
+      defaultAction: enablePublicNetworkAccess ? 'Allow' : 'Deny'
+    }
   }
 }
 

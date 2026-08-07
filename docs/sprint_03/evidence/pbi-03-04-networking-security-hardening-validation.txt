@@ -1,0 +1,107 @@
+===== PBI-03-04 Azure Networking & Security Hardening — Validation Evidence =====
+Date: 2026-08-07
+
+----- Manual RBAC grep audit: grep -rn "Contributor|Owner" ops/bicep/ -----
+ops/bicep/main.bicep:16:// Search Index Data Reader, Cosmos DB Data Contributor, Key Vault Secrets User, AcrPull) is
+ops/bicep/main.bicep:291:    dataContributorPrincipalId: managedIdentity.outputs.principalId
+ops/bicep/modules/cosmos-db.bicep:10:// built-in Cosmos DB "Data Contributor" data-plane role — no connection strings anywhere.
+ops/bicep/modules/cosmos-db.bicep:45:@description('Principal ID of the identity granted the built-in Cosmos DB "Data Contributor" data-plane role. Empty string skips the role assignment.')
+ops/bicep/modules/cosmos-db.bicep:46:param dataContributorPrincipalId string = ''
+ops/bicep/modules/cosmos-db.bicep:51:var cosmosDataContributorRoleId = '00000000-0000-0000-0000-000000000002'
+ops/bicep/modules/cosmos-db.bicep:116:resource dataContributorRoleAssignment 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-05-15' = if (!empty(dataContributorPrincipalId)) {
+ops/bicep/modules/cosmos-db.bicep:118:  name: guid(account.id, dataContributorPrincipalId, cosmosDataContributorRoleId)
+ops/bicep/modules/cosmos-db.bicep:120:    roleDefinitionId: '${account.id}/sqlRoleDefinitions/${cosmosDataContributorRoleId}'
+ops/bicep/modules/cosmos-db.bicep:121:    principalId: dataContributorPrincipalId
+
+----- Manual Private Endpoint group ID audit: grep -n "groupId:" ops/bicep/main.bicep -----
+375:    groupId: 'account'
+388:    groupId: 'searchService'
+401:    groupId: 'Sql'
+414:    groupId: 'vault'
+
+----- Manual Private DNS zone name audit: grep -n "PrivateDnsZoneName = " ops/bicep/main.bicep -----
+208:var azureOpenAiPrivateDnsZoneName = 'privatelink.openai.azure.com'
+209:var aiSearchPrivateDnsZoneName = 'privatelink.search.windows.net'
+210:var cosmosPrivateDnsZoneName = 'privatelink.documents.azure.com'
+211:var keyVaultPrivateDnsZoneName = 'privatelink.vaultcore.azure.net'
+
+----- az bicep build --file ops/bicep/modules/virtual-network.bicep (new module) -----
+exit: 0
+
+----- az bicep build --file ops/bicep/modules/private-dns-zone.bicep (new module) -----
+exit: 0
+
+----- az bicep build --file ops/bicep/modules/private-endpoint.bicep (new module) -----
+exit: 0
+
+----- az bicep build --file ops/bicep/main.bicep (full wiring) -----
+exit: 0
+
+----- az bicep build on all 13 modules -----
+> ops/bicep/modules/ai-search.bicep
+exit: 0
+> ops/bicep/modules/app-insights.bicep
+exit: 0
+> ops/bicep/modules/azure-openai.bicep
+exit: 0
+> ops/bicep/modules/container-app.bicep
+exit: 0
+> ops/bicep/modules/container-apps-environment.bicep
+exit: 0
+> ops/bicep/modules/container-registry.bicep
+exit: 0
+> ops/bicep/modules/cosmos-db.bicep
+exit: 0
+> ops/bicep/modules/key-vault.bicep
+exit: 0
+> ops/bicep/modules/key-vault-secret.bicep
+exit: 0
+> ops/bicep/modules/log-analytics.bicep
+exit: 0
+> ops/bicep/modules/managed-identity.bicep
+exit: 0
+> ops/bicep/modules/private-dns-zone.bicep
+exit: 0
+> ops/bicep/modules/private-endpoint.bicep
+exit: 0
+> ops/bicep/modules/virtual-network.bicep
+exit: 0
+
+----- az bicep build-params on dev/staging/prod -----
+> dev
+exit: 0
+> staging
+exit: 0
+> prod
+exit: 0
+
+----- pytest tests/ -q (regression check — no Python changed this PBI) -----
+ss...................................................................... [ 15%]
+........................................................................ [ 31%]
+........................................................................ [ 47%]
+........................................................................ [ 63%]
+........................................................................ [ 79%]
+........................................................................ [ 95%]
+.....................                                                    [100%]
+============================== warnings summary ===============================
+.venv\Lib\site-packages\fastapi\testclient.py:1
+  C:\MIGUEL\ARQUITECTURAIA\TF\TMX-Multiagente\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+451 passed, 2 skipped, 1 warning in 4.40s
+
+----- ruff check apps/api/src src tests ops/scripts -----
+All checks passed!
+
+----- mypy apps/api/src -----
+Success: no issues found in 13 source files
+
+----- mypy src -----
+Success: no issues found in 102 source files
+
+----- mypy ops/scripts/ingest_knowledge_base.py -----
+Success: no issues found in 1 source file
+
+----- docker compose config (temporary .env from .env.example) -----
+exit: 0

@@ -36,6 +36,16 @@ param llmProvider = 'azure_openai'
 param knowledgeProvider = 'local'
 param conversationStoreProvider = 'cosmos'
 
+// Networking (PBI-03-04): enabled — staging validates the same hardened network posture prod
+// will run, matching this file's own "modest headroom for pre-production validation" purpose.
+// containerAppsEnvironmentInternal stays false (the main.bicep default): Azure Front
+// Door/Application Gateway are out of scope for PBI-03-04, so true would make staging
+// unreachable. See docs/Architecture/adr/0002-vnet-private-endpoints-hardening.md.
+param enablePrivateNetworking = true
+param vnetAddressPrefix = '10.1.0.0/16'
+param containerAppsSubnetPrefix = '10.1.0.0/23'
+param privateEndpointsSubnetPrefix = '10.1.2.0/24'
+
 param apiImageName = 'tmx-api'
 param apiImageTag = 'pending-first-build'
 param apiCpuCores = '0.5'

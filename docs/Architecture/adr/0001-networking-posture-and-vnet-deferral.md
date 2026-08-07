@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted — 2026-08-07 (PBI-03-02)
+Accepted — 2026-08-07 (PBI-03-02). **Partially superseded by
+[ADR-0002](0002-vnet-private-endpoints-hardening.md) (PBI-03-04)**, which implements the VNet/
+Private Endpoint/NSG items this ADR named as deferred — kept here unmodified as the historical
+record of the all-public posture that existed between PBI-03-02 and PBI-03-04, and still
+accurate for any environment with `enablePrivateNetworking=false` (dev's default).
 
 ## Context
 

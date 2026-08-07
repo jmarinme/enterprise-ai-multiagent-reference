@@ -47,6 +47,9 @@ param modelCapacity int = 10
 @description('Principal ID of the identity granted the built-in "Cognitive Services OpenAI User" role. Empty string skips the role assignment.')
 param openAiUserPrincipalId string = ''
 
+@description('Whether the account is reachable over its public endpoint. Set false once a Private Endpoint is provisioned for production hardening (PBI-03-04) — see main.bicep\'s enablePrivateNetworking param.')
+param enablePublicNetworkAccess bool = true
+
 var cognitiveServicesOpenAiUserRoleId = '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'
 
 resource account 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
@@ -59,7 +62,7 @@ resource account 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
   }
   properties: {
     customSubDomainName: name
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: enablePublicNetworkAccess ? 'Enabled' : 'Disabled'
   }
 }
 
