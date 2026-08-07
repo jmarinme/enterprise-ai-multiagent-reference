@@ -29,6 +29,7 @@ guardrails, and a human-escalation foundation — per `CLAUDE.md` §14's Sprint 
 ## Deliverables
 
 - [x] PBI-01-01: Build the Supervisor Agent orchestration framework.
+- [x] PBI-01-02: Build the reusable Agent Tool Framework.
 
 ## Acceptance criteria
 
@@ -40,6 +41,9 @@ guardrails, and a human-escalation foundation — per `CLAUDE.md` §14's Sprint 
 | AC-04 | 100% deterministic tests, no Azure dependency | `pytest` evidence |
 | AC-05 | `ruff`/`mypy` clean | Evidence log |
 | AC-06 | API Docker image remains buildable after the shared-package wiring | `docker build`/`docker compose config` evidence |
+| AC-07 | Agents depend only on Tool abstractions (`ToolExecutor`), never a concrete Tool or integration | Code review — `src/agents/claims_agent.py`, `src/tools/` |
+| AC-08 | Tool routing is registry-driven; duplicate registration and missing-tool resolution both fail with typed errors | Code review + `pytest` evidence — `src/tools/registry.py` |
+| AC-09 | `ToolExecutor` never raises to its caller — always returns a typed `ToolResult` | `pytest` evidence — `tests/unit/tools/test_executor.py` |
 
 ## Dependencies
 
@@ -59,6 +63,9 @@ guardrails, and a human-escalation foundation — per `CLAUDE.md` §14's Sprint 
 
 PBI-01-01: Supervisor orchestration framework built (`src/supervisor/`): `Supervisor`/`Agent`/`IntentResolver`/`AgentRegistry` Protocols, `SupervisorOrchestrator` (depends only on interfaces, never a concrete agent, registry-driven routing with no if/else/switch), `RuleBasedIntentResolver` (deterministic keyword matching, no AI), `InMemoryAgentRegistry`, and 4 deterministic mock agents (`ClaimsAgent`, `BrokerAgent`, `CommercialIntakeAgent`, and `FallbackAgent` for `UNKNOWN` — the 4th is a deliberate addition beyond the 3 explicitly requested, keeping the registry total). `POST /chat` exposed via `apps/api/src/api/routes/chat.py`, composed in `apps/api/src/api/dependencies.py`. Fixed a real Docker build-context gap (API image had no access to the shared `src/` package) as a prerequisite, not scope creep. 60/60 new+existing unit tests pass deterministically with no Azure dependency (2 unrelated live-integration scaffolds skip as designed); ruff and mypy clean; live smoke test confirmed the full `POST /chat → Supervisor → Intent → Registry → Agent → Repository → JSON` pipeline against a running server. No Azure OpenAI, RAG, APIM, or business logic implemented. Started with Sprint 00 not yet formally closed (PBI-00-08/09 open) — user explicitly accepted this risk; see `docs/sprint_00/decisions.md`. — 2026-08-07
 Evidence: `docs/sprint_01/evidence/pbi-01-01-supervisor-orchestration-validation.txt`
+
+PBI-01-02: Reusable Agent Tool Framework built (`src/tools/`), mirroring the Supervisor framework's shape: `Tool` (generic `Protocol[ToolInputT]`), `ToolRegistry` Protocol + `InMemoryToolRegistry` (duplicate `register()` raises `ToolAlreadyRegisteredError`, unlike `AgentRegistry`'s silent overwrite), `ToolExecutor` (resolves → validates typed input → executes → normalizes every failure into a typed `ToolResult`, never raises to its caller, no business logic). Fully typed contracts (`ToolRequest`, `ToolResult[T]`, `ToolMetadata`, `ToolExecutionContext`) with exactly one deliberately-justified untyped boundary (`ToolRequest.tool_input: dict[str, Any]`, before schema resolution). Three synthetic Tools (`PolicyLookupTool`, `ClaimsStatusTool`, `BrokerAccountLookupTool`) under `src/services/tools/`, backed by a small (2 records each) isolated synthetic-data provider package — no real TMX data, no external calls. `ClaimsAgent` modified to depend on `ToolExecutor` (never a concrete Tool) via constructor injection, composed in the extended `apps/api/src/api/dependencies.py`; the Supervisor remains completely unaware of Tools. 82/82 tests pass deterministically with no Azure dependency (full Supervisor + `/chat` regression suite unchanged and passing); ruff and mypy clean; live smoke test confirmed the tool result flowing through a real `POST /chat` call. Branch topology note: this PBI's branch was cut before PBI-01-01 was merged to `main`; resolved via a clean fast-forward merge before work began (see decisions.md). No Azure OpenAI, RAG, APIM, real integrations, or real business data implemented. — 2026-08-07
+Evidence: `docs/sprint_01/evidence/pbi-01-02-tool-framework-validation.txt`
 
 ## Sprint validation
 
