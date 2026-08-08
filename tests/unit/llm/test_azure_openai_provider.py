@@ -24,6 +24,8 @@ from src.llm.models import (
     LLMMessageRole,
     LLMRequest,
     LLMToolDefinition,
+    ToolCallArgument,
+    ToolCallRequest,
 )
 
 if TYPE_CHECKING:
@@ -493,3 +495,131 @@ async def test_reasoning_model_with_fixed_temperature_succeeds_without_sending_t
     assert call_kwargs["model"] == "chat"
     assert "temperature" not in call_kwargs
     assert "max_completion_tokens" in call_kwargs
+
+
+# --- assistant tool_calls message mapping (PBI-04-03) -----------------------------------------
+# Fixes a real, previously-undetected Azure OpenAI protocol violation: a role="tool" message is
+# only valid immediately following the role="assistant" message whose own tool_calls it answers.
+# See src/core/tool_calling/orchestrator.py and docs/sprint_04/decisions.md.
+
+
+@patch("src.llm.azure_openai_provider.AsyncAzureOpenAI")
+@patch("azure.identity.aio.DefaultAzureCredential")
+@patch("azure.identity.aio.get_bearer_token_provider")
+async def test_generate_maps_an_assistant_tool_calls_message_to_the_sdk_shape(
+    mock_token_provider: MagicMock, mock_credential_cls: MagicMock, mock_client_cls: MagicMock
+) -> None:
+    """The exact fix under test: an ASSISTANT-role LLMMessage carrying tool_calls must be sent
+    to the SDK as role="assistant" with a tool_calls array — the message Azure OpenAI requires
+    to precede any role="tool" message answering it."""
+    mock_client = mock_client_cls.return_value
+    mock_client.chat.completions.create = AsyncMock(return_value=_fake_completion())
+    provider = _build_provider()
+
+    await provider.generate(
+        LLMRequest(
+            messages=[
+                LLMMessage(role=LLMMessageRole.USER, content="hello"),
+                LLMMessage(
+                    role=LLMMessageRole.ASSISTANT,
+                    content="",
+                    tool_calls=[
+                        ToolCallRequest(
+                            call_id="call_1",
+                            tool_name="policy_lookup",
+                            arguments=[
+                                ToolCallArgument(name="policy_number", value="SYN-POL-0001")
+                            ],
+                        )
+                    ],
+                ),
+                LLMMessage(
+                    role=LLMMessageRole.TOOL,
+                    content='{"success": true}',
+                    tool_call_id="call_1",
+                ),
+            ]
+        )
+    )
+
+    _, call_kwargs = mock_client.chat.completions.create.call_args
+    messages = call_kwargs["messages"]
+    assert messages[0] == {"role": "user", "content": "hello"}
+    assistant_message = messages[1]
+    assert assistant_message["role"] == "assistant"
+    assert assistant_message["content"] is None
+    assert assistant_message["tool_calls"] == [
+        {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+                "name": "policy_lookup",
+                "arguments": '{"policy_number": "SYN-POL-0001"}',
+            },
+        }
+    ]
+    assert messages[2] == {
+        "role": "tool",
+        "content": '{"success": true}',
+        "tool_call_id": "call_1",
+    }
+
+
+@patch("src.llm.azure_openai_provider.AsyncAzureOpenAI")
+@patch("azure.identity.aio.DefaultAzureCredential")
+@patch("azure.identity.aio.get_bearer_token_provider")
+async def test_generate_preserves_assistant_text_alongside_tool_calls_when_both_are_present(
+    mock_token_provider: MagicMock, mock_credential_cls: MagicMock, mock_client_cls: MagicMock
+) -> None:
+    """A model that returns both text and tool_calls in one response (some models do) must
+    still have its text preserved on the replayed assistant message, not silently dropped."""
+    mock_client = mock_client_cls.return_value
+    mock_client.chat.completions.create = AsyncMock(return_value=_fake_completion())
+    provider = _build_provider()
+
+    await provider.generate(
+        LLMRequest(
+            messages=[
+                LLMMessage(role=LLMMessageRole.USER, content="hello"),
+                LLMMessage(
+                    role=LLMMessageRole.ASSISTANT,
+                    content="Let me check that for you.",
+                    tool_calls=[
+                        ToolCallRequest(call_id="call_1", tool_name="policy_lookup", arguments=[])
+                    ],
+                ),
+            ]
+        )
+    )
+
+    _, call_kwargs = mock_client.chat.completions.create.call_args
+    assert call_kwargs["messages"][1]["content"] == "Let me check that for you."
+
+
+@patch("src.llm.azure_openai_provider.AsyncAzureOpenAI")
+@patch("azure.identity.aio.DefaultAzureCredential")
+@patch("azure.identity.aio.get_bearer_token_provider")
+async def test_generate_treats_an_assistant_message_without_tool_calls_as_plain_text(
+    mock_token_provider: MagicMock, mock_credential_cls: MagicMock, mock_client_cls: MagicMock
+) -> None:
+    """Regression guard: an ordinary assistant text message (tool_calls=None, the default)
+    must still map to the plain {"role": "assistant", "content": ...} shape used before this
+    PBI — the new branch must not swallow the existing, unaffected code path."""
+    mock_client = mock_client_cls.return_value
+    mock_client.chat.completions.create = AsyncMock(return_value=_fake_completion())
+    provider = _build_provider()
+
+    await provider.generate(
+        LLMRequest(
+            messages=[
+                LLMMessage(role=LLMMessageRole.USER, content="hello"),
+                LLMMessage(role=LLMMessageRole.ASSISTANT, content="a prior plain reply"),
+            ]
+        )
+    )
+
+    _, call_kwargs = mock_client.chat.completions.create.call_args
+    assert call_kwargs["messages"][1] == {
+        "role": "assistant",
+        "content": "a prior plain reply",
+    }

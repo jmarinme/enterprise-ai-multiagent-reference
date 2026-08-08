@@ -25,6 +25,8 @@ from src.llm.models import (
     LLMMessageRole,
     LLMRequest,
     LLMToolDefinition,
+    ToolCallArgument,
+    ToolCallRequest,
 )
 from src.llm.ollama_provider import OllamaLLMProvider
 
@@ -296,6 +298,53 @@ async def test_generate_maps_a_tool_role_message_to_the_ollama_shape() -> None:
                 ]
             )
         )
+
+
+async def test_generate_maps_an_assistant_tool_calls_message_to_the_ollama_shape() -> None:
+    """PBI-04-03: mirrors AzureOpenAIProvider's own fix — an ASSISTANT message carrying
+    tool_calls must be forwarded to Ollama too, in its own documented shape (no id, arguments
+    as a plain object), so the same protocol-compliant history the orchestrator now always
+    builds is honored by every provider, not special-cased to Azure OpenAI."""
+    fake_response = _FakePostContextManager(
+        json_data={"model": "llama3.1", "message": {"content": "ok"}}
+    )
+    provider = _build_provider()
+
+    with _patch_session(fake_response):
+        await provider.generate(
+            LLMRequest(
+                messages=[
+                    LLMMessage(role=LLMMessageRole.USER, content="hello"),
+                    LLMMessage(
+                        role=LLMMessageRole.ASSISTANT,
+                        content="",
+                        tool_calls=[
+                            ToolCallRequest(
+                                call_id="call-1",
+                                tool_name="policy_lookup",
+                                arguments=[
+                                    ToolCallArgument(name="policy_number", value="SYN-POL-0001")
+                                ],
+                            )
+                        ],
+                    ),
+                    LLMMessage(
+                        role=LLMMessageRole.TOOL,
+                        content='{"success": true}',
+                        tool_call_id="call-1",
+                    ),
+                ]
+            )
+        )
+
+    sent_messages = fake_response.request_json["messages"]
+    assert sent_messages[1] == {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {"function": {"name": "policy_lookup", "arguments": {"policy_number": "SYN-POL-0001"}}}
+        ],
+    }
 
     assert fake_response.request_json is not None
     assert fake_response.request_json["messages"][-1] == {

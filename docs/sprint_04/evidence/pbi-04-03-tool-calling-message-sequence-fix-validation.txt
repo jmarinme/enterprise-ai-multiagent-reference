@@ -1,0 +1,336 @@
+PBI-04-03: Fix Azure OpenAI Tool Calling message sequencing
+Condensed evidence log
+Date: 2026-08-08
+
+=====================================================================
+1. PREPARATION (read + inspect, before any code change)
+=====================================================================
+
+Read: CLAUDE.md, docs/sprint_04/{README,validation,decisions}.md, docs/Architecture/adr/*.
+
+Inspected (read-only):
+- src/core/tool_calling/orchestrator.py: run()'s loop (lines ~113-122) appends only a
+  role="tool" LLMMessage after executing a Tool call — never the preceding role="assistant"
+  message carrying the model's own tool_calls request.
+- src/llm/models.py: LLMMessage had role, content, tool_call_id — no field to represent
+  tool_calls on an ASSISTANT-role message. Root cause: the protocol-compliant message could
+  not be constructed at all with the existing typed vocabulary.
+- src/llm/azure_openai_provider.py: _to_openai_messages() had no branch for an ASSISTANT
+  message carrying tool_calls.
+- src/llm/mock_provider.py: generate() never sends request.messages anywhere external — pure
+  in-process derivation from message count / last-user-message length. No concept of
+  message-sequencing validity exists in this provider at all.
+- src/agents/claims_agent.py: always sends only [SYSTEM, USER] as the initial messages list to
+  ToolCallingOrchestrator.run() (rendered prompt + current turn's raw text) — confirms the bug
+  is entirely internal to a single run() invocation's own loop, not cross-turn Cosmos-history
+  reconstruction (an earlier, incorrect hypothesis from PBI-04-02's own investigation, now
+  definitively ruled out by reading the actual code).
+- apps/api/src/api/dependencies.py: re-confirmed only ClaimsAgent receives a
+  tool_calling_orchestrator constructor argument; BrokerAgent/CommercialIntakeAgent do not,
+  confirming they are structurally unaffected by this defect.
+- tests/unit/core/tool_calling/test_tool_calling_orchestrator.py: established existing test
+  conventions (_ScriptedLLMProvider double, per-test assertions on llm.requests[N].messages).
+- tests/unit/agents/test_claims_agent_tool_calling_integration.py: established ClaimsAgent-level
+  regression coverage conventions (MockLLMProvider with tool_call_plan).
+
+Verified OpenAI SDK types via direct Python introspection (not guessed):
+  ChatCompletionAssistantMessageParam: role, content, tool_calls: Iterable[...ToolCallUnionParam]
+  ChatCompletionMessageFunctionToolCallParam: id (Required[str]), function (Required[Function]),
+    type (Required[Literal["function"]])
+  Function: arguments (Required[str], JSON-encoded), name (Required[str])
+
+=====================================================================
+2. EXPLANATION (delivered before any code change, per explicit instruction)
+=====================================================================
+
+Current execution sequence: ToolCallingOrchestrator.run() sends [SYSTEM, USER] to the LLM. If
+the LLM requests tool_calls, each is executed and only a role="tool" message is appended, then
+the SAME conversation list is sent back to the LLM for a follow-up response.
+
+Exact protocol violation: per OpenAI/Azure OpenAI's chat-completions contract, a role="tool"
+message is only valid immediately following a role="assistant" message whose own tool_calls
+field named that exact tool_call_id. The orchestrator never appended that assistant message.
+Azure OpenAI validates this server-side and rejects it: "Invalid parameter: messages with role
+'tool' must be a response to a preceding message with 'tool_calls'." (HTTP 400), surfaced to
+the client as HTTP 500 via the existing LLMProviderError path.
+
+Why MockLLMProvider never exposed it: MockLLMProvider.generate() is a pure Python function
+that inspects the in-memory message list (count, last user message length) to compute a
+deterministic string — it never serializes messages to any real API and has no concept of
+"valid sequencing." Every automated test in this codebase (before this PBI) used
+MockLLMProvider or an equally non-validating scripted double, so the malformed conversation
+shape was structurally invisible until a real Azure OpenAI call happened during PBI-03-05/06's
+live validation, and even then only manifests on the SECOND LLM round-trip within a
+tool-calling turn (PBI-04-02's own live testing was the first time this exact path was
+exercised for a genuine multi-turn conversation).
+
+Minimum code change required:
+  - src/llm/models.py: add tool_calls: list[ToolCallRequest] | None = None to LLMMessage.
+  - src/core/tool_calling/orchestrator.py: append one ASSISTANT message carrying
+    llm_response.tool_calls to `conversation` before the TOOL-message-appending loop.
+  - src/llm/azure_openai_provider.py and src/llm/ollama_provider.py: extend each provider's
+    own message-mapping function to correctly serialize the new assistant+tool_calls shape.
+  - src/llm/mock_provider.py: no change needed.
+
+=====================================================================
+3. IMPLEMENTATION
+=====================================================================
+
+src/llm/models.py:
+  - Moved ToolCallArgument/ToolCallRequest class definitions before LLMMessage (pure
+    reordering, no behavior change) so the new field could reference ToolCallRequest directly.
+  - Added: tool_calls: list[ToolCallRequest] | None = None to LLMMessage, with a docstring
+    explaining exactly why (root-cause reference).
+
+src/core/tool_calling/orchestrator.py:
+  - run(): immediately after "if not llm_response.tool_calls: return ...", before the
+    "for call in llm_response.tool_calls:" loop, added:
+      conversation.append(
+          LLMMessage(
+              role=LLMMessageRole.ASSISTANT,
+              content=llm_response_text,
+              tool_calls=llm_response.tool_calls,
+          )
+      )
+    This is unconditional whenever tool_calls is non-empty, covering the success,
+    unauthorized, unknown-tool, malformed-argument, and execution-failure cases identically,
+    since all of them still produce a TOOL-role result message that now correctly has its
+    preceding assistant message.
+
+src/llm/azure_openai_provider.py:
+  - New imports: ChatCompletionAssistantMessageParam, ChatCompletionMessageFunctionToolCallParam.
+  - New _to_openai_tool_calls() helper — exact inverse of the existing _from_openai_tool_calls().
+  - _to_openai_messages(): new branch for role==ASSISTANT and message.tool_calls truthy, mapping
+    to {"role": "assistant", "content": message.content or None, "tool_calls": [...]}.
+
+src/llm/ollama_provider.py:
+  - _to_ollama_messages(): new branch for role==ASSISTANT and message.tool_calls truthy,
+    mapping to Ollama's own documented shape (tool_calls: [{"function": {"name", "arguments"}}],
+    no id, arguments as a plain dict — matching this file's existing, documented Ollama-specific
+    conventions, not a new invention).
+
+src/llm/mock_provider.py: unchanged.
+
+=====================================================================
+4. STATIC VALIDATION
+=====================================================================
+
+mypy src/llm/models.py src/llm/azure_openai_provider.py src/llm/ollama_provider.py
+  src/core/tool_calling/orchestrator.py
+  -> Success: no issues found in 4 source files
+
+ruff check src/llm/models.py src/llm/azure_openai_provider.py src/llm/ollama_provider.py
+  src/core/tool_calling/orchestrator.py
+  -> All checks passed!
+
+pytest tests/unit/core/tool_calling/ tests/unit/llm/ tests/unit/agents/
+  test_claims_agent_tool_calling_integration.py -v (BEFORE adding any new tests, to confirm
+  the fix itself causes zero regression)
+  -> 91 passed
+
+=====================================================================
+5. TESTS ADDED/UPDATED
+=====================================================================
+
+tests/unit/core/tool_calling/test_tool_calling_orchestrator.py:
+  NEW: test_run_persists_the_assistant_tool_calls_message_before_the_tool_result
+    -> asserts the exact role order [USER, ASSISTANT, TOOL] and tool_call_id linkage
+  NEW: test_run_omits_the_assistant_tool_calls_field_when_no_tool_call_was_requested
+    -> proves the fix is additive only, no spurious message on a plain-text turn
+  NEW: test_run_with_the_real_mock_llm_provider_sequences_messages_correctly
+    -> uses the REAL MockLLMProvider (not the scripted double) end-to-end through the fixed
+       orchestrator — dedicated "MockLLMProvider regression" coverage
+  UPDATED test_run_executes_an_allowed_tool_call_and_returns_the_final_response:
+    -> added assertions for the assistant message + its tool_calls content
+  UPDATED test_run_executes_multiple_tool_calls_within_a_single_llm_turn:
+    -> added assertions: ONE assistant message carrying BOTH tool_calls (in order),
+       followed by both TOOL messages in the same order
+  UPDATED test_run_executes_tool_calls_across_multiple_iterations:
+    -> added assertions: both iterations' assistant/tool pairs present, in order, in the
+       final (third) LLM request
+  UPDATED test_run_rejects_an_unauthorized_tool_call_without_executing_it,
+    test_run_rejects_an_unknown_tool_call_without_executing_it,
+    test_run_reports_a_tool_failure_for_malformed_arguments_missing_a_required_field:
+    -> each gained an assertion confirming the assistant message still precedes the TOOL
+       (error) message even when the call itself was rejected/failed
+  UPDATED test_run_stops_at_max_iterations_against_a_never_terminating_llm:
+    -> added an explicit assertion that iteration count still equals the configured cap
+       (max-iteration protection unaffected by the fix)
+
+  Result: pytest tests/unit/core/tool_calling/test_tool_calling_orchestrator.py -v
+    -> 15 passed (13 original + 2 net-new; several others strengthened in place)
+
+tests/unit/llm/test_azure_openai_provider.py:
+  NEW: test_generate_maps_an_assistant_tool_calls_message_to_the_sdk_shape
+    -> full round-trip: [USER, ASSISTANT(tool_calls), TOOL] through generate(), asserts the
+       exact SDK call_kwargs["messages"] shape sent to the (mocked) Azure OpenAI client
+  NEW: test_generate_preserves_assistant_text_alongside_tool_calls_when_both_are_present
+    -> a model returning both text and tool_calls must not have its text dropped
+  NEW: test_generate_treats_an_assistant_message_without_tool_calls_as_plain_text
+    -> regression guard: the new branch must not swallow the pre-existing plain-assistant-
+       message code path
+
+  Result: pytest tests/unit/llm/test_azure_openai_provider.py -v -> 20 passed (17 + 3 new)
+
+tests/unit/llm/test_ollama_provider.py:
+  NEW: test_generate_maps_an_assistant_tool_calls_message_to_the_ollama_shape
+    -> confirms Ollama's own request-side shape (no id, dict arguments) is sent correctly
+
+  Result: pytest tests/unit/llm/test_ollama_provider.py -v -> 14 passed (13 + 1 new)
+
+=====================================================================
+6. FULL REGRESSION SUITE
+=====================================================================
+
+pytest tests/ -q -> 468 passed, 2 skipped (461 baseline + 7 new)
+ruff check apps/api/src src tests ops/scripts -> All checks passed!
+mypy apps/api/src -> Success: no issues found in 13 source files
+mypy src -> Success: no issues found in 102 source files
+
+pytest tests/unit/agents/ tests/unit/api/test_chat.py -q
+  (explicit Broker/Commercial/Claims/full-chat-API regression, including the pre-existing
+  10-turn Claims, 3-turn commission, 2-turn policy-status, and 7-turn commercial-intake
+  end-to-end scenarios, all via MockLLMProvider)
+  -> 133 passed
+
+No Bicep or docker-compose files touched this PBI — no infrastructure change, consistent with
+the explicit "Do NOT touch... Networking" instruction; not re-validated.
+
+=====================================================================
+7. DEPLOYMENT (API image only)
+=====================================================================
+
+Pre-check: az resource list --resource-group rg-tmx-agent-platform-dev
+  -> All 12 resources present, Succeeded (unchanged from PBI-04-02)
+
+az acr build --registry acrtmxapdevl3fgxt --image tmx-api:dev-20260807212817-toolfix
+  --file apps/api/Dockerfile .
+  -> Local CLI hit the same known cosmetic Windows-console colorama encoding crash seen
+     throughout this session ('charmap' codec can't encode characters...). Confirmed via
+     az acr task list-runs that the remote build (run chb) completed successfully server-side:
+     STATUS Succeeded, duration 38s. Confirmed via az acr repository show-tags --orderby
+     time_desc that the tag dev-20260807212817-toolfix exists and is the most recent.
+
+az containerapp update --name ca-tmxap-dev-api --resource-group rg-tmx-agent-platform-dev
+  --image acrtmxapdevl3fgxt.azurecr.io/tmx-api:dev-20260807212817-toolfix
+  -> Succeeded. New revision ca-tmxap-dev-api--0000004, healthState Healthy.
+
+Confirmed NOT touched:
+  az containerapp revision list --name ca-tmxap-dev-web
+    -> Unchanged: ca-tmxap-dev-web--0000002 (identical to its state before this PBI)
+  az resource list --resource-group rg-tmx-agent-platform-dev
+    -> All 12 resources still present, unchanged (Cosmos, Azure OpenAI, Key Vault, Managed
+       Identity, Container Apps Environment, ACR, AI Search, Log Analytics, App Insights all
+       untouched)
+
+No az deployment group create was run.
+
+Note on the current session's branch/commit state: `git log` confirmed PBI-04-01 (PR #25) and
+PBI-04-02 (PR #26) are already merged into main; this PBI's work proceeded on a fresh branch
+(fix/pbi-04-03-tool-calling-message-sequence) created from that up-to-date main, so `git status`
+for this PBI cleanly shows only the 7 files this PBI itself touched.
+
+=====================================================================
+8. LIVE DEV VALIDATION
+=====================================================================
+
+--- 1. GET /health ---
+curl https://ca-tmxap-dev-api.../health -> 200 {"status":"ok"}
+
+--- 2. Claims turn 1 ---
+curl -X POST .../chat -H "Origin: https://ca-tmxap-dev-web..." \
+  -d '{"userId":"pbi0403-claims-retest","message":"I want to report an accident."}'
+-> 200. agent=ClaimsAgent, intent=CLAIMS, real gpt-5-mini-2025-08-07 response, 2 grounded
+   citations (KB-CLAIMS-0002, KB-POLICY-0001), groundingMetadata.isGrounded=true.
+conversationId = c5a9ae85-46f6-48c7-82f6-da8542c42bee
+
+--- 3. Claims turn 2 (THE EXACT SCENARIO THAT PREVIOUSLY RETURNED 500) ---
+curl -X POST .../chat -H "Origin: ..." \
+  -d '{"userId":"pbi0403-claims-retest","conversationId":"c5a9ae85-...",
+       "message":"SYN-POL-0001"}'
+-> 200 (was 500 before this fix). Response:
+{"conversationId":"c5a9ae85-...","agent":"ClaimsAgent","intent":"CLAIMS",
+ "response":"What date did the incident occur? (YYYY-MM-DD) [...] [llm=gpt-5-mini-2025-08-07]",
+ "metadata":{"claimsIntakeState":"{...\"policy_number\":\"SYN-POL-0001\",...}"},
+ "citations":[],
+ "groundingMetadata":{"retrievedCount":0,"citationCount":0,"topK":2,"isGrounded":false},
+ "toolCalls":[{"callId":"call_3INe23XW97bYeOGadvymBqYp","toolName":"policy_lookup",
+   "success":true,"data":{"policy_number":"SYN-POL-0001","status":"active",
+   "holder_name":"Synthetic Claimant One","line_of_business":"auto"},
+   "error":null,"errorType":null}]}
+-> A REAL, successful policy_lookup Tool call executed via LLM-driven Tool Calling against
+   the real gpt-5-mini deployment. This is the definitive proof the fix works.
+
+--- 4. Claims turns 3-9 (continuing the same conversation) ---
+Messages sent, in order, all 200:
+  "2026-08-01"                          -> 200, asks for event location
+  "In my driveway"                      -> 200, asks for loss type
+  "It was a collision"                  -> 200, asks for description (2 grounded citations)
+  "Another car hit me while parked"     -> 200, asks for contact name (2 grounded citations)
+  "Jane Caller"                         -> 200, asks for contact phone (1 grounded citation)
+  "555-123-4567"                        -> 200, asks about injuries
+  "no"                                  -> 200, asks about third parties
+
+--- 5. Claims turn 10 (final "yes") ---
+-> 200. claimsIntakeState:
+   {"...,\"policy_validated\":true,\"policy_active\":true,\"payment_current\":true,
+     \"claim_reference\":\"SYN-CLM-2026-0001\",
+     \"adjuster_assigned\":\"Synthetic Adjuster Chen\",\"last_asked_field\":null}
+-> A COMPLETE, REAL 10-turn Claims conversation, ending in a genuine claim registration and
+   adjuster assignment — the full ClaimsAgent workflow (multiple real Tool calls across the
+   conversation: policy_lookup, and implicitly claim_registration + adjuster_assignment near
+   the end) working end-to-end against the real Azure OpenAI deployment for the first time.
+
+--- 6. Broker regression (live, 2-turn) ---
+Turn 1: "I want to check my commissions." -> 200, BrokerAgent, asks for broker ID + period.
+Turn 2 (same conversationId): "SYN-BRK-0001 2026-Q1" -> 200
+  "response":"Commission for 2026-Q1: 1250.00 (status: available). ... [llm=gpt-5-mini-
+   2025-08-07]"
+  brokerInquiryState: commission_amount=1250.0, broker_active=true, commission_status=
+   "available"
+-> Identical shape/behavior to pre-fix testing (PBI-04-02's own evidence) — zero regression.
+
+--- 7. Commercial regression (live, 2-turn) ---
+Turn 1: "I need a commercial insurance quote." -> 200, CommercialIntakeAgent, asks for company
+  name.
+Turn 2 (same conversationId): "Acme Consulting LLC" -> 200
+  "response":"What is the best contact person's full name? ... [llm=gpt-5-mini-2025-08-07]"
+  commercialIntakeState: company_name="Acme Consulting LLC"
+-> Identical shape/behavior to pre-fix testing — zero regression.
+
+--- 8. Web page still loads (Web Container App untouched) ---
+curl https://ca-tmxap-dev-web.../ -> 200, real HTML (unchanged from PBI-04-02's own state)
+
+=====================================================================
+9. STOP CONDITION FINAL ACCOUNTING
+=====================================================================
+
+Azure OpenAI accepts the complete tool-calling sequence  -> MET (real policy_lookup call
+  succeeded live)
+Claims multi-turn works from the deployed Web UI         -> MET (10-turn conversation reached
+  a genuine claim reference via the same API path the Web UI calls; CORS/contract unchanged
+  from PBI-04-02's own confirmed-working state)
+Broker still works                                        -> MET (live 2-turn regression)
+Commercial still works                                     -> MET (live 2-turn regression)
+All tests remain green                                     -> MET (468 passed, 2 skipped)
+No architecture regression exists                          -> MET (zero changes outside
+  src/llm/, src/core/tool_calling/orchestrator.py, and their tests; full regression suite +
+  live Broker/Commercial re-verification both confirm this)
+
+=====================================================================
+10. FINAL STATE
+=====================================================================
+
+Files changed: src/llm/models.py, src/core/tool_calling/orchestrator.py,
+src/llm/azure_openai_provider.py, src/llm/ollama_provider.py,
+tests/unit/core/tool_calling/test_tool_calling_orchestrator.py,
+tests/unit/llm/test_azure_openai_provider.py, tests/unit/llm/test_ollama_provider.py,
+docs/sprint_04/{README,validation,decisions}.md,
+docs/sprint_04/evidence/pbi-04-03-tool-calling-message-sequence-fix-validation.txt (this file).
+
+No Supervisor, ClaimsAgent/BrokerAgent/CommercialAgent business logic, PromptManager, RAG,
+Grounding, citation generation, Tool allow-list, conversation history mechanism, Cosmos, Key
+Vault, Managed Identity, Container Apps Environment, ACR, or networking code/resource touched.
+No frontend code touched. No new provider-specific hacks; no Azure-only special-casing — both
+real providers (Azure OpenAI, Ollama) updated consistently. No commit, no push, per standing
+instruction.

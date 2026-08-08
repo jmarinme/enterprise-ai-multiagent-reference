@@ -126,12 +126,26 @@ class OllamaLLMProvider:
 
 def _to_ollama_messages(messages: list[LLMMessage]) -> list[dict[str, Any]]:
     """Maps typed LLMMessages to Ollama's chat message shape — structurally the same
-    role/content dict OpenAI uses, including role="tool" for a fed-back ToolCallResult."""
+    role/content dict OpenAI uses, including role="tool" for a fed-back ToolCallResult, and
+    (PBI-04-03) role="assistant" + tool_calls for the request that result answers, matching
+    the same OpenAI-compatible protocol AzureOpenAIProvider's own mapping now sends. Ollama's
+    own tool_calls shape carries no id (see module docstring) and arguments as a plain object,
+    not a JSON-encoded string."""
     result: list[dict[str, Any]] = []
     for message in messages:
         entry: dict[str, Any] = {"role": message.role.value, "content": message.content}
         if message.role == LLMMessageRole.TOOL and message.tool_call_id:
             entry["tool_call_id"] = message.tool_call_id
+        elif message.role == LLMMessageRole.ASSISTANT and message.tool_calls:
+            entry["tool_calls"] = [
+                {
+                    "function": {
+                        "name": call.tool_name,
+                        "arguments": {argument.name: argument.value for argument in call.arguments},
+                    }
+                }
+                for call in message.tool_calls
+            ]
         result.append(entry)
     return result
 
