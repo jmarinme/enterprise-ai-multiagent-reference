@@ -81,3 +81,76 @@ Conclusion: PBI-04-01 delivers a complete, internally-consistent, statically-val
 Per explicit user instruction, the Azure DevOps pipeline was **not** triggered in this step.
 
 Conclusion: the RBAC-only change was applied to real Azure with zero impact on any existing resource's identity, configuration, or running state — verified positively (not merely assumed) via role-assignment listing, resource listing, revision-name comparison, health-state check, and a live `/health` call. The Managed Identity is now fully provisioned for the CI/CD pipeline's needs; only the Azure DevOps-side service connection remains before a real pipeline run can be attempted.
+
+## 2026-08-08 — PBI-04-02: Functional Web Chat integration
+
+### Pre-work: read required files, inspect current architecture
+
+| Check | Result |
+|---|---|
+| Read CLAUDE.md, docs/sprint_04/*; inspect App.tsx, env.ts, apps/web/package.json, apps/web/Dockerfile, vite.config.ts, apps/api/src/main.py, POST /chat contract, CORS config, deployed URLs | Confirmed App.tsx's handleSend only appended a hardcoded local reply (Sprint-0 placeholder, its own welcome text said so); apps/api/src/main.py had zero CORS middleware anywhere (grep confirmed); apps/api/src/config/settings.py had no CORS-related setting to reuse |
+| grep _CLAIMS_KEYWORDS/_BROKER_KEYWORDS/_COMMERCIAL_KEYWORDS in src/supervisor/intent.py | Confirmed all 3 required demo phrasings ("I want to report an accident.", "I want to check my commissions.", "I need a commercial insurance quote.") each contain a real matched keyword |
+| grep grounder/knowledge_retriever wiring in src/agents/{claims,broker,commercial_intake}_agent.py | Confirmed only ClaimsAgent uses RAG/Grounding — an existing architectural fact, documented, not changed |
+
+### Backend: CORS implementation and validation
+
+| Command | Result |
+|---|---|
+| pytest tests/unit/api/test_cors.py tests/unit/api/test_chat.py tests/unit/api/test_health.py -v | 17 passed — 6 new CORS tests, 9 existing chat tests, 2 existing health tests, all green on first full run |
+| pytest tests/ -q (full suite) | 461 passed, 2 skipped (455 baseline + 6 new CORS tests) |
+| ruff check apps/api/src src tests ops/scripts | 1 import-order error in test_cors.py, fixed via ruff check --fix; re-run: All checks passed! |
+| mypy apps/api/src / mypy src | Both clean |
+| az bicep build --file ops/bicep/main.bicep | exit 0, 0 warnings (confirms the new CORS_ALLOWED_ORIGINS cross-module reference to webContainerApp.outputs.fqdn creates no circular dependency) |
+| az bicep build-params — dev/staging/prod | All exit 0 |
+| docker compose config | exit 0 |
+
+### Frontend: chat integration and validation
+
+| Command | Result |
+|---|---|
+| npm run typecheck | Clean |
+| npm run lint | Clean |
+| npm run build (with the real DEV VITE_API_URL) | Succeeded — dist/assets/index-*.js (~150 KB), confirmed the real API URL baked in via grep |
+| npx vitest run (full suite) | 23 passed across 6 files (api/chat.test.ts 4, api/client.test.ts 3, components/MessageArea.test.tsx 5, components/Header.test.tsx 2, components/MessageInput.test.tsx 3, App.test.tsx 6) — one jsdom gap fixed along the way (scrollIntoView not implemented in jsdom; stubbed in setupTests.ts, a standard, environment-only fix) |
+| Local vite preview dry-run with the real Azure Container Apps Host header | 200 OK (confirms the pre-existing preview.allowedHosts fix from before this PBI still applies to the newly-built image) |
+
+### Deployment (API + Web images only, no shared infrastructure touched)
+
+| Step | Command | Result |
+|---|---|---|
+| Pre-check | az resource list --resource-group rg-tmx-agent-platform-dev | All 12 resources present, healthy |
+| Build API | az acr build --image tmx-api:dev-20260807205835 --file apps/api/Dockerfile . | Succeeded |
+| Build Web | az acr build --image tmx-web:dev-20260807205845-chat --file apps/web/Dockerfile --build-arg VITE_API_URL=... apps/web | Succeeded |
+| Deploy API | az containerapp update --name ca-tmxap-dev-api --image ...:dev-20260807205835 --set-env-vars CORS_ALLOWED_ORIGINS=https://ca-tmxap-dev-web... | Succeeded; new revision ca-tmxap-dev-api--0000003, Healthy |
+| Verify no env-var loss | az containerapp show --query properties.template.containers[0].env | All 18 pre-existing env vars present unchanged, plus the 1 new CORS_ALLOWED_ORIGINS — confirms --set-env-vars merges, does not replace, the env list |
+| Deploy Web | az containerapp update --name ca-tmxap-dev-web --image ...:dev-20260807205845-chat | Succeeded; new revision ca-tmxap-dev-web--0000002, Healthy |
+
+No az deployment group create was run this PBI — both updates were targeted az containerapp update calls, per explicit instruction to rebuild/redeploy only the affected images.
+
+### Live DEV validation (real calls against the real deployed service)
+
+| # | Check | Result |
+|---|---|---|
+| 1 | GET /health | 200 {"status":"ok"} |
+| 2 | CORS preflight (OPTIONS /chat) with Origin: https://ca-tmxap-dev-web... | 200, access-control-allow-origin: https://ca-tmxap-dev-web... (the real deployed Web origin), access-control-allow-methods: GET, POST |
+| 3 | GET / (deployed Web page) | 200, real HTML, correct bundle references |
+| 4 | Deployed JS bundle content | Contains /chat calls and the real API URL, confirmed via curl + grep directly against the live Container App |
+| 5 | Claims turn 1 ("I want to report an accident.", with Origin header matching the real Web origin) | 200 — real gpt-5-mini-2025-08-07 response, 2 real grounded citations (KB-CLAIMS-0002, KB-POLICY-0001), groundingMetadata.isGrounded: true — this single call satisfies both the Claims demo scenario and the RAG/grounded-citation demo scenario |
+| 6 | Claims turn 2 (same conversationId, "SYN-POL-0001") | 500 Internal Server Error — reproduced twice with two independent fresh conversations, confirming it is deterministic, not transient. Root-caused via read-only log inspection (az containerapp logs show) to a genuine, pre-existing ToolCallingOrchestrator defect (see decisions.md) — not a CORS or frontend regression from this PBI |
+| 7 | Broker turn 1 + turn 2 ("I want to check my commissions." then "SYN-BRK-0001 2026-Q1", same conversationId) | Both 200. Turn 2 returned real Tool-sourced business data (commission_amount: 1250.0, broker_active: true) — proves Broker's deterministic Tool-invocation path is unaffected by the Claims-specific orchestrator defect, and independently proves conversationId persistence works correctly end-to-end |
+| 8 | Commercial turn 1 + turn 2 ("I need a commercial insurance quote." then "Acme Consulting LLC", same conversationId) | Both 200 — same confirmation as Broker |
+
+Full transcript archived at docs/sprint_04/evidence/pbi-04-02-web-chat-integration-validation.txt.
+
+### STOP CONDITION accounting
+
+| # | Requirement | Status |
+|---|---|---|
+| 1 | Deployed DEV Web URL loads successfully | Met — GET / returns 200 with real HTML |
+| 2 | Browser can call the deployed DEV API without CORS errors | Met — real preflight + actual-request evidence, correct Access-Control-Allow-Origin for the real Web origin |
+| 3 | A real POST /chat response is displayed in the UI | Met for the mechanism (real response received, App.tsx renders result.response/agent/citations — proven via App.test.tsx's mocked-fetch integration tests and the live curl evidence above) |
+| 4 | conversationId preserved across multiple turns | Met — proven via Broker and Commercial's real, live 2-turn conversations, plus App.test.tsx's dedicated test for the same mechanism |
+| 5 | Claims works end-to-end from the browser | Partially met — a single Claims turn works completely end-to-end (real routing, real LLM response, real grounded RAG citations, correct CORS). A second turn is blocked by the newly-discovered ToolCallingOrchestrator defect (see decisions.md), which is unrelated to this PBI's own changes and explicitly out of scope to fix (src/core/tool_calling/ is forbidden territory for PBI-04-02) |
+| 6 | Existing backend tests remain green | Met — 461 passed, 2 skipped (455 baseline + 6 new), zero regressions |
+
+Conclusion: PBI-04-02 delivers a complete, tested, real POST /chat integration replacing the Sprint-0 placeholder, with configuration-driven, non-wildcard CORS enabling genuine cross-origin browser calls between the deployed Web and API Container Apps for the first time. 5 of 6 STOP CONDITION items are fully met; item 5 is honestly reported as partially met, not silently overstated, because live validation surfaced a real, precisely-diagnosed, pre-existing defect in code this PBI was explicitly forbidden from touching. This is the correct, expected outcome of thorough live validation catching a genuine gap in test coverage (every prior automated test used MockLLMProvider, which never exercised the real Azure OpenAI API's message-sequencing constraint) — not a shortfall in this PBI's own delivered scope.

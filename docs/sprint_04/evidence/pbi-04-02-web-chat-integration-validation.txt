@@ -1,0 +1,324 @@
+PBI-04-02: Build the functional Web Chat integration for the existing TMX Agent Platform DEV environment
+Condensed evidence log
+Date: 2026-08-08
+
+=====================================================================
+1. PRE-WORK
+=====================================================================
+
+Read: CLAUDE.md, docs/sprint_04/{README,validation,decisions}.md.
+Inspected: apps/web/src/App.tsx, apps/web/src/config/env.ts, apps/web/package.json,
+apps/web/Dockerfile, apps/web/vite.config.ts, apps/api/src/main.py, POST /chat request/response
+contract (apps/api/src/api/routes/chat.py), current CORS configuration, deployed DEV
+frontend/API URLs.
+
+Findings:
+- App.tsx's handleSend only appended a hardcoded PLACEHOLDER_REPLY_TEXT string locally — zero
+  network call. Welcome message literally said "chat processing and agents are not
+  implemented yet." Confirmed Sprint-0 placeholder, not wired to POST /chat at all.
+- apps/api/src/main.py: zero CORS code (grep -rn "cors|CORS|Origin" apps/api/src/ -> no
+  matches). apps/api/src/config/settings.py: no CORS-related field to reuse.
+- ChatResponse contract confirmed: conversationId, agent, intent, response, metadata,
+  citations, groundingMetadata, toolCalls (apps/api/src/api/routes/chat.py).
+- Citation/GroundingMetadata shape confirmed from src/rag/grounding_models.py:
+  Citation{reference{referenceId,chunkId}, documentId, title, section, sourcePath, score};
+  GroundingMetadata{retrievedCount, citationCount, topK, isGrounded (computed)}.
+- ToolCallResult shape confirmed from src/core/tool_calling/models.py: callId, toolName,
+  success, data, error, errorType — "Never contains a stack trace or raw internal exception
+  text" per its own docstring.
+- grep _CLAIMS_KEYWORDS/_BROKER_KEYWORDS/_COMMERCIAL_KEYWORDS in src/supervisor/intent.py:
+  ("claim","accident","siniestro","adjuster","damage") / ("broker","commission","policy",
+  "transaction","receipt","payment") / ("quote","new business","commercial","lead",
+  "coverage options"). Confirmed all 3 required demo phrasings route correctly:
+  "I want to report an accident." -> accident -> CLAIMS
+  "I want to check my commissions." -> commission -> BROKER
+  "I need a commercial insurance quote." -> quote/commercial -> COMMERCIAL
+- grep grounder/knowledge_retriever wiring in src/agents/{claims,broker,
+  commercial_intake}_agent.py: only claims_agent.py imports/uses Grounder and
+  KnowledgeRetriever. Confirmed via apps/api/src/api/dependencies.py's get_supervisor():
+  BrokerAgent/CommercialIntakeAgent constructors receive no grounder/knowledge_retriever
+  arguments at all. Existing architectural fact, documented, not changed.
+- Existing frontend test conventions read (client.test.ts, MessageInput.test.tsx) to match
+  style for new tests.
+- Existing backend test conventions read (tests/unit/api/test_health.py, test_chat.py,
+  conftest.py) to match style for the new CORS test file.
+
+=====================================================================
+2. BACKEND CHANGE: CORS (minimum necessary, no other API behavior touched)
+=====================================================================
+
+apps/api/src/config/settings.py:
+  + cors_allowed_origins: str = "http://localhost:3000"
+  + cors_allowed_origins_list property (comma-split, trimmed, empty entries dropped)
+
+apps/api/src/main.py:
+  + from fastapi.middleware.cors import CORSMiddleware
+  + app.add_middleware(CORSMiddleware, allow_origins=settings.cors_allowed_origins_list,
+      allow_credentials=False, allow_methods=["GET","POST"],
+      allow_headers=["Content-Type","X-Correlation-ID"])
+    added BEFORE CorrelationIdMiddleware (Starlette: first-added = outermost wrapper)
+
+.env.example: + CORS_ALLOWED_ORIGINS=http://localhost:3000 (documented, matches
+  docker-compose's default Web port)
+
+ops/bicep/main.bicep: apiContainerApp env list gained
+  { name: 'CORS_ALLOWED_ORIGINS', value: 'https://${webContainerApp.outputs.fqdn}' }
+  — dynamically resolved from the existing webContainerApp module's own output, never a
+  hardcoded domain string. Confirmed no circular Bicep dependency (webContainerApp does not
+  reference apiContainerApp): az bicep build --file ops/bicep/main.bicep -> EXIT:0, 0 warnings.
+
+New tests/unit/api/test_cors.py (6 tests):
+  test_cors_allowed_origins_list_parses_comma_separated_values
+  test_cors_allowed_origins_list_drops_empty_entries
+  test_cors_allowed_origins_default_is_never_a_wildcard
+  test_cors_preflight_allows_the_configured_origin
+  test_cors_rejects_an_unconfigured_origin
+  test_cors_actual_get_request_includes_allow_origin_header_for_allowed_origin
+
+pytest tests/unit/api/test_cors.py tests/unit/api/test_chat.py tests/unit/api/test_health.py -v
+  -> 17 passed (first full run, zero fixes needed on the CORS logic itself)
+
+ruff check apps/api/src src tests ops/scripts
+  -> 1 import-order error in test_cors.py (Settings import placement) -> fixed via
+     `ruff check tests/unit/api/test_cors.py --fix` -> re-run: All checks passed!
+
+mypy apps/api/src -> Success: no issues found in 13 source files
+mypy src -> Success: no issues found in 102 source files
+
+pytest tests/ -q (full suite) -> 461 passed, 2 skipped (455 baseline + 6 new)
+
+az bicep build-params (dev/staging/prod) -> all exit 0
+docker compose config (temp .env from .env.example) -> exit 0
+
+=====================================================================
+3. FRONTEND CHANGE: real POST /chat integration
+=====================================================================
+
+New files:
+  apps/web/src/api/chat.ts — typed sendChatMessage(), ChatResponse/Citation/
+    GroundingMetadata/ToolCallResult interfaces matching the real wire contract exactly,
+    ChatRequestError (carries only HTTP status, never the response body)
+  apps/web/src/utils/userId.ts — getOrCreateUserId(), localStorage-persisted synthetic id
+  apps/web/src/api/chat.test.ts — 4 tests: first-turn request mapping (no conversationId),
+    follow-up request mapping (conversationId included), full typed response resolution
+    (citations/groundingMetadata), ChatRequestError on non-ok response (status only, no body
+    leak)
+  apps/web/src/App.test.tsx — 6 integration tests: first-turn/follow-up conversationId
+    reuse, response text rendering, loading/disabled-send state, safe generic error message +
+    working Retry, New Conversation reset, sidebar example-prompt send
+  apps/web/src/components/MessageArea.test.tsx — 5 tests: basic rendering, citations +
+    grounding badge rendering, no grounding badge when not grounded, typing indicator,
+    error-message styling
+
+Modified files:
+  apps/web/src/App.tsx — replaced hardcoded placeholder logic with real sendChatMessage()
+    calls; state: messages, conversationId (null on first turn, set from every response),
+    isSending, lastFailedMessage (for retry), userId (stable per browser via
+    getOrCreateUserId()); handleNewConversation() resets messages+conversationId+
+    lastFailedMessage
+  apps/web/src/components/MessageArea.tsx — extended Message type (agent, intent,
+    citations, groundingMetadata, toolCalls, isError); added AgentBadge, CitationCard,
+    GroundingBadge, ToolCallBadge (toolName+success only, never data/error text) sub-
+    components; scroll-to-latest via useEffect+ref; isAssistantTyping prop renders a
+    role="status" typing indicator
+  apps/web/src/components/MessageInput.tsx — added disabled prop (defaults false);
+    disables both the field and the Send button; guards handleSubmit against submission
+    while disabled
+  apps/web/src/components/Sidebar.tsx — repurposed (not replaced) the existing sidebar
+    element: "+ New conversation" button, 4 example-prompt buttons (Claims/Broker/
+    Commercial/Claims+RAG, using the exact demo phrasings), platform-capability description
+    text; no hardcoded per-Agent screens
+  apps/web/src/App.css — new styles: agent-badge, citation-list/citation-card,
+    grounding-badge, tool-call-list/tool-call-badge, message--error, typing-indicator
+    (+ @keyframes), sidebar__new-conversation, sidebar__item--button, retry-banner
+  apps/web/src/setupTests.ts — added a scrollIntoView stub (jsdom does not implement it;
+    standard, environment-only test fix, not a production behavior change)
+  apps/web/src/components/MessageInput.test.tsx — added 1 test: disabled state blocks
+    both the field and onSend
+
+npm run typecheck -> clean (multiple runs throughout implementation, all clean)
+npm run lint -> clean
+npm run build (VITE_API_URL=https://ca-tmxap-dev-api...) -> succeeded, dist/assets/
+  index-CGm9s-0d.js (149.83 kB), grep confirmed the real API URL baked into the output
+npx vitest run (full suite) -> 23 passed across 6 files (after the scrollIntoView stub fix)
+
+Local dry-run: started `npm run preview -- --host 0.0.0.0 --port 4173` locally, curl'd with
+  Host: ca-tmxap-dev-web.bluemushroom-e2f74836.eastus2.azurecontainerapps.io -> 200 OK
+  (confirms the pre-PBI-04-02 vite.config.ts allowedHosts fix still applies to a freshly
+  built image using the same config)
+
+=====================================================================
+4. DEPLOYMENT (API + Web images only)
+=====================================================================
+
+Pre-check: az resource list --resource-group rg-tmx-agent-platform-dev
+  -> all 12 resources present, Succeeded (unchanged from PBI-04-01)
+
+az acr build --registry acrtmxapdevl3fgxt --image tmx-api:dev-20260807205835
+  --file apps/api/Dockerfile .
+  -> Succeeded. Digest confirmed via az acr repository show-tags.
+
+az acr build --registry acrtmxapdevl3fgxt --image tmx-web:dev-20260807205845-chat
+  --file apps/web/Dockerfile --build-arg VITE_API_URL=https://ca-tmxap-dev-api...
+  apps/web
+  -> Succeeded. Digest confirmed via az acr repository show-tags.
+
+az containerapp update --name ca-tmxap-dev-api --resource-group rg-tmx-agent-platform-dev
+  --image acrtmxapdevl3fgxt.azurecr.io/tmx-api:dev-20260807205835
+  --set-env-vars "CORS_ALLOWED_ORIGINS=https://ca-tmxap-dev-web...azurecontainerapps.io"
+  -> Succeeded. New revision ca-tmxap-dev-api--0000003, healthState Healthy.
+
+Verification: az containerapp show --query properties.template.containers[0].env
+  -> All 18 pre-existing env vars present unchanged (ENVIRONMENT, PROJECT_NAME, LOG_LEVEL,
+     AZURE_CLIENT_ID, LLM_PROVIDER, KNOWLEDGE_PROVIDER, CONVERSATION_STORE_PROVIDER,
+     AZURE_OPENAI_ENDPOINT/DEPLOYMENT/MODEL_NAME/API_VERSION/USE_API_KEY,
+     AZURE_AI_SEARCH_ENDPOINT/INDEX_NAME/USE_API_KEY, COSMOS_DB_ENDPOINT/DATABASE/CONTAINER,
+     APPLICATIONINSIGHTS_CONNECTION_STRING) PLUS the new CORS_ALLOWED_ORIGINS — confirms
+     --set-env-vars merges rather than replaces the env array.
+
+az containerapp update --name ca-tmxap-dev-web --resource-group rg-tmx-agent-platform-dev
+  --image acrtmxapdevl3fgxt.azurecr.io/tmx-web:dev-20260807205845-chat
+  -> Succeeded. New revision ca-tmxap-dev-web--0000002, healthState Healthy.
+
+No az deployment group create was run. No Resource Group/Container Apps Environment/Azure
+OpenAI/Cosmos/Key Vault/Managed Identity/ACR/AI Search/networking resource was touched.
+
+=====================================================================
+5. LIVE DEV VALIDATION
+=====================================================================
+
+--- 1. GET /health ---
+curl https://ca-tmxap-dev-api.../health -> 200 {"status":"ok"}
+
+--- 2. CORS preflight from the real deployed Web origin ---
+curl -i -X OPTIONS https://ca-tmxap-dev-api.../chat \
+  -H "Origin: https://ca-tmxap-dev-web...azurecontainerapps.io" \
+  -H "Access-Control-Request-Method: POST" \
+  -H "Access-Control-Request-Headers: content-type"
+-> 200 OK
+   access-control-allow-methods: GET, POST
+   access-control-allow-headers: Accept, Accept-Language, Content-Language, Content-Type,
+     X-Correlation-ID
+   access-control-allow-origin: https://ca-tmxap-dev-web...azurecontainerapps.io
+
+--- 3. Deployed Web page loads ---
+curl https://ca-tmxap-dev-web.../  -> 200, real HTML (title "TMX Enterprise AI Reference
+  Platform", correct script/link asset references)
+
+--- 4. Deployed bundle content ---
+JS_FILE resolved from the live index.html; curl'd directly from the deployed Container App:
+  grep -o "/chat" -> 3 matches (confirms the real /chat wiring is in the deployed bundle)
+  grep -o "ca-tmxap-dev-api[^\"']*" -> matches the real API FQDN (confirms VITE_API_URL was
+  baked in correctly this time, unlike the pre-PBI-04-02 image)
+
+--- 5. Claims turn 1 (real, with Origin header) ---
+curl -X POST https://ca-tmxap-dev-api.../chat -H "Origin: https://ca-tmxap-dev-web..." \
+  -d '{"userId":"pbi0402-claims-demo","message":"I want to report an accident."}'
+-> 200
+{"conversationId":"b6cfc55c-ecd1-4485-92fd-5d3d61b93eb6","agent":"ClaimsAgent",
+ "intent":"CLAIMS","response":"Could you provide your policy number?
+ [prompt=claims.system@3.0.0] [llm=gpt-5-mini-2025-08-07]",
+ "citations":[
+   {"documentId":"KB-CLAIMS-0002","title":"Documents Typically Requested After a Claim Is
+     Reported", ...},
+   {"documentId":"KB-POLICY-0001","title":"What Policy Payment Status Means", ...}
+ ],
+ "groundingMetadata":{"retrievedCount":2,"citationCount":2,"topK":2,"isGrounded":true},
+ "toolCalls":[]}
+-> Satisfies BOTH the Claims demo scenario AND the RAG/grounded-citations demo scenario in
+   one real call.
+
+--- 6. Claims turn 2 (same conversationId, "SYN-POL-0001") ---
+-> "Internal Server Error" (500)
+Reproduced with a completely independent, fresh conversation (different userId,
+conversationId be67d461-...) -> same result. Deterministic, not transient/flaky.
+
+Root cause (read-only investigation, no source modified):
+  az containerapp logs show --name ca-tmxap-dev-api --tail 40
+  -> Traceback:
+     File "/app/src/core/tool_calling/orchestrator.py", line 93, in run
+       llm_response = await self._llm_provider.generate(...)
+     File "/app/src/llm/azure_openai_provider.py", line 219, in generate
+       raise LLMProviderError(_PROVIDER_NAME, str(exc)) from exc
+     LLM provider 'azure_openai' failed: Error code: 400 - {'error': {'message':
+     "Invalid parameter: messages with role 'tool' must be a response to a preceeding
+     message with 'tool_calls'.", 'type': 'invalid_request_error',
+     'param': 'messages.[2].role', 'code': None}}
+
+  Read src/core/tool_calling/orchestrator.py (read-only): run()'s loop (lines ~113-122)
+  appends only a role="tool" LLMMessage to `conversation` after executing a tool call — it
+  never appends the preceding role="assistant" message carrying the model's own tool_calls
+  request. On the next loop iteration's LLM call, the conversation sent to Azure OpenAI
+  contains an orphaned "tool" message with no preceding "assistant...tool_calls" message,
+  which the real API rejects outright. MockLLMProvider (the only provider every existing
+  automated test exercises) never validates this OpenAI-specific sequencing constraint, so
+  the defect was invisible through this entire project's test suite until this PBI's live,
+  real-Azure-OpenAI multi-turn validation.
+
+  Read src/agents/claims_agent.py (read-only): confirmed ClaimsAgent always sends only
+  [SYSTEM, USER] as the initial messages list to ToolCallingOrchestrator.run() (no manual
+  history reconstruction) — the bug is entirely internal to a single orchestrator.run()
+  invocation's own loop, not a cross-turn Cosmos-history-reconstruction issue as initially
+  hypothesized.
+
+  Confirmed apps/api/src/api/dependencies.py: get_supervisor() passes
+  tool_calling_orchestrator= only to ClaimsAgent — BrokerAgent/CommercialIntakeAgent receive
+  no such argument, confirming they use a separate, deterministic Tool-invocation path, not
+  LLM-driven function-calling.
+
+NOT FIXED — src/core/tool_calling/ is explicitly forbidden for PBI-04-02
+  ("Do not modify... Tools..."). Documented in full in docs/sprint_04/decisions.md as an
+  urgent, precisely-scoped follow-up.
+
+--- 7. Broker turn 1 + turn 2 (real, live, multi-turn) ---
+Turn 1: "I want to check my commissions." -> 200, BrokerAgent, asks for broker ID + period.
+Turn 2 (same conversationId): "SYN-BRK-0001 2026-Q1" -> 200
+{"agent":"BrokerAgent","response":"Commission for 2026-Q1: 1250.00 (status: available).
+ Would you like to request payment for this commission? (yes/no) [...] [llm=gpt-5-mini-
+ 2025-08-07]","metadata":{"brokerInquiryState":"{...\"broker_id\":\"SYN-BRK-0001\",
+ \"commission_period\":\"2026-Q1\",\"broker_active\":true,\"commission_amount\":1250.0,
+ \"commission_status\":\"available\"...}"},"toolCalls":[]}
+-> Real Tool-sourced business data returned successfully. Proves: (a) Broker's deterministic
+   Tool path is unaffected by the Claims-specific orchestrator bug; (b) conversationId
+   persistence works correctly end-to-end for a real multi-turn conversation.
+
+--- 8. Commercial turn 1 + turn 2 (real, live, multi-turn) ---
+Turn 1: "I need a commercial insurance quote." -> 200, CommercialIntakeAgent, asks for
+  company name.
+Turn 2 (same conversationId): "Acme Consulting LLC" -> 200
+{"agent":"CommercialIntakeAgent","response":"What is the best contact person's full name?
+ [...] [llm=gpt-5-mini-2025-08-07]","metadata":{"commercialIntakeState":
+ "{...\"company_name\":\"Acme Consulting LLC\"...}"},"toolCalls":[]}
+-> Same confirmation as Broker.
+
+=====================================================================
+6. STOP CONDITION FINAL ACCOUNTING
+=====================================================================
+
+1. Deployed DEV Web URL loads successfully                       -> MET
+2. Browser can call the deployed DEV API without CORS errors     -> MET
+3. A real POST /chat response is displayed in the UI              -> MET (mechanism proven
+   live + via App.test.tsx)
+4. conversationId preserved across multiple turns                 -> MET (Broker + Commercial
+   live evidence)
+5. Claims works end-to-end from the browser                       -> PARTIALLY MET (single
+   turn works completely, including real grounded RAG citations; second turn blocked by a
+   discovered, pre-existing, out-of-scope ToolCallingOrchestrator defect)
+6. Existing backend tests remain green                             -> MET (461 passed,
+   2 skipped, zero regressions)
+
+=====================================================================
+7. FINAL STATE
+=====================================================================
+
+Files changed: apps/api/src/{main.py,config/settings.py}, .env.example,
+ops/bicep/main.bicep (1 new env-var line), apps/web/src/{App.tsx,App.css,setupTests.ts,
+api/chat.ts (new),api/chat.test.ts (new),utils/userId.ts (new),App.test.tsx (new),
+components/{MessageArea.tsx,MessageArea.test.tsx (new),MessageInput.tsx,
+MessageInput.test.tsx,Sidebar.tsx}}, tests/unit/api/test_cors.py (new),
+docs/sprint_04/{README,validation,decisions}.md,
+docs/sprint_04/evidence/pbi-04-02-web-chat-integration-validation.txt (this file).
+
+No Agent, Supervisor, Tools, RAG, PromptManager, LLMProvider, Cosmos, or Azure infrastructure
+code touched (confirmed via git status/diff scope). No QA/Prod environment created. No major
+visual redesign. No commit, no push, per standing instruction.

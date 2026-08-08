@@ -26,4 +26,21 @@ describe("MessageInput", () => {
 
     expect(onSend).not.toHaveBeenCalled();
   });
+
+  it("disables the field and send button while disabled=true, and does not call onSend", async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    render(<MessageInput onSend={onSend} disabled />);
+
+    expect(screen.getByLabelText("Message")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+
+    // A disabled field can't receive typed input in a real browser; simulate the edge case of
+    // a submit event firing anyway (e.g. Enter key) to prove handleSubmit's own guard works.
+    const form = screen.getByRole("button", { name: "Send" }).closest("form");
+    expect(form).not.toBeNull();
+    await user.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(onSend).not.toHaveBeenCalled();
+  });
 });

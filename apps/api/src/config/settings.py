@@ -16,6 +16,16 @@ class Settings(BaseSettings):
     api_port: int = 8000
     log_level: str = "INFO"
     api_version: str = "0.1.0"
+    # cors_allowed_origins (PBI-04-02): comma-separated origins, never "*" — the Web app is the
+    # only real caller today. Configuration-driven per environment: docker-compose/local dev
+    # default to the local Vite preview port; ops/bicep/main.bicep sets this to the deployed
+    # Web Container App's own FQDN (resolved dynamically, never hardcoded) for DEV/staging/prod.
+    cors_allowed_origins: str = "http://localhost:3000"
+
+    @property
+    def cors_allowed_origins_list(self) -> list[str]:
+        """Parsed, whitespace-trimmed origin list — empty entries dropped."""
+        return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
 
 
 @lru_cache
