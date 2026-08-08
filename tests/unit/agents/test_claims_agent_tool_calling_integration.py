@@ -19,6 +19,8 @@ from src.rag.retriever import KnowledgeRetriever
 from src.services.tools.adjuster_assignment_tool import AdjusterAssignmentTool
 from src.services.tools.claim_registration_tool import ClaimRegistrationTool
 from src.services.tools.claims_status_tool import ClaimsStatusTool
+from src.services.tools.coverage_lookup_tool import CoverageLookupTool
+from src.services.tools.customer_lookup_tool import CustomerLookupTool
 from src.services.tools.lead_registration_tool import LeadRegistrationTool
 from src.services.tools.payment_status_tool import PaymentStatusTool
 from src.services.tools.policy_lookup_tool import PolicyLookupTool
@@ -41,9 +43,11 @@ def _build_full_claims_tool_registry() -> InMemoryToolRegistry:
     """Registers every Tool src.core.tool_calling.policies.CLAIMS_ALLOWED_TOOLS names — required
     because ClaimsAgent always builds tool definitions for its full allow-list every turn."""
     registry = InMemoryToolRegistry()
+    registry.register(CustomerLookupTool())
     registry.register(PolicyLookupTool())
     registry.register(ClaimsStatusTool())
     registry.register(PaymentStatusTool())
+    registry.register(CoverageLookupTool())
     registry.register(ClaimRegistrationTool())
     registry.register(AdjusterAssignmentTool())
     return registry

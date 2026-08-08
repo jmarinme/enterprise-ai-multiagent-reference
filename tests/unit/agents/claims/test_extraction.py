@@ -2,8 +2,8 @@
 here must be resolvable by regex/keyword rules alone (MockLLMProvider cannot do real NLU).
 """
 
-from src.agents.claims.extraction import extract_fields
-from src.agents.claims.state import ClaimsIntakeState
+from src.agents.claims.extraction import extract_fields, resolve_selection
+from src.agents.claims.state import ClaimsIntakeState, PolicyCandidate
 
 
 def test_extracts_policy_number_in_either_case() -> None:
@@ -88,11 +88,11 @@ def test_free_text_fallback_does_not_apply_to_structured_fields() -> None:
 
 
 def test_free_text_fallback_is_skipped_when_a_structured_field_matched_instead() -> None:
-    state = ClaimsIntakeState(last_asked_field="contact_name")
+    state = ClaimsIntakeState(last_asked_field="customer_name")
 
     updated = extract_fields("it's SYN-POL-0002", state)
 
-    assert updated.contact_name is None
+    assert updated.customer_name is None
     assert updated.policy_number == "SYN-POL-0002"
 
 
@@ -102,3 +102,73 @@ def test_free_text_fallback_never_overwrites_an_already_filled_field() -> None:
     updated = extract_fields("something else entirely", state)
 
     assert updated.event_location == "already set"
+
+
+def test_grouped_question_recovers_event_location_alongside_a_structured_date() -> None:
+    """Regression guard: a combined "what date, where, and what type of loss?" question sets
+    last_asked_field to only the first field in the group (event_date) — event_location must
+    still be captured from the same reply via last_asked_group, not silently dropped just
+    because a structured field (the date) also matched in the same message."""
+    state = ClaimsIntakeState(
+        last_asked_field="event_date",
+        last_asked_group=["event_date", "event_location", "loss_type"],
+    )
+
+    updated = extract_fields("2026-08-07, en Avenida Reforma, Ciudad de Mexico", state)
+
+    assert updated.event_date == "2026-08-07"
+    assert updated.event_location == "Avenida Reforma, Ciudad de Mexico"
+
+
+def test_grouped_question_does_not_recover_event_location_when_not_part_of_the_group() -> None:
+    state = ClaimsIntakeState(
+        last_asked_field="contact_phone", last_asked_group=["contact_phone"]
+    )
+
+    updated = extract_fields("2026-08-07", state)
+
+    assert updated.event_location is None
+
+
+def test_resolve_selection_matches_a_spanish_ordinal_word() -> None:
+    candidates = [
+        PolicyCandidate(
+            policy_number="SYN-POL-1001", customer_name="Juan Pérez", line_of_business="auto",
+            vehicle_description="Nissan Sentra 2022",
+        ),
+        PolicyCandidate(
+            policy_number="SYN-POL-1002", customer_name="Juan Pérez", line_of_business="auto",
+            vehicle_description="Toyota Hilux 2021",
+        ),
+    ]
+
+    assert resolve_selection("la segunda", candidates).policy_number == "SYN-POL-1002"
+
+
+def test_resolve_selection_matches_a_vehicle_description_word_in_a_short_reply() -> None:
+    """Regression guard: the caller's reply ("la Hilux") is much shorter than the full stored
+    description ("Toyota Hilux 2021") — matching must look for the description's own words
+    inside the reply, not the other way around."""
+    candidates = [
+        PolicyCandidate(
+            policy_number="SYN-POL-1001", customer_name="Juan Pérez", line_of_business="auto",
+            vehicle_description="Nissan Sentra 2022",
+        ),
+        PolicyCandidate(
+            policy_number="SYN-POL-1002", customer_name="Juan Pérez", line_of_business="auto",
+            vehicle_description="Toyota Hilux 2021",
+        ),
+    ]
+
+    assert resolve_selection("la Hilux", candidates).policy_number == "SYN-POL-1002"
+
+
+def test_resolve_selection_returns_none_for_an_unrecognizable_reply() -> None:
+    candidates = [
+        PolicyCandidate(
+            policy_number="SYN-POL-1001", customer_name="Juan Pérez", line_of_business="auto",
+            vehicle_description="Nissan Sentra 2022",
+        ),
+    ]
+
+    assert resolve_selection("no estoy seguro", candidates) is None

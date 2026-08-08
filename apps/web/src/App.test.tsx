@@ -36,8 +36,8 @@ describe("App", () => {
       .mockResolvedValueOnce({ ...claimsResponse("conv-123"), response: "Thank you." });
     render(<App />);
 
-    await user.type(screen.getByLabelText("Message"), "I want to report an accident.");
-    await user.click(screen.getByRole("button", { name: "Send" }));
+    await user.type(screen.getByLabelText("Mensaje"), "I want to report an accident.");
+    await user.click(screen.getByRole("button", { name: "Enviar" }));
 
     await waitFor(() => expect(sendChatMessageMock).toHaveBeenCalledTimes(1));
     expect(sendChatMessageMock.mock.calls[0][0]).toMatchObject({
@@ -45,8 +45,8 @@ describe("App", () => {
       conversationId: null,
     });
 
-    await user.type(screen.getByLabelText("Message"), "SYN-POL-0001");
-    await user.click(screen.getByRole("button", { name: "Send" }));
+    await user.type(screen.getByLabelText("Mensaje"), "SYN-POL-0001");
+    await user.click(screen.getByRole("button", { name: "Enviar" }));
 
     await waitFor(() => expect(sendChatMessageMock).toHaveBeenCalledTimes(2));
     expect(sendChatMessageMock.mock.calls[1][0]).toMatchObject({
@@ -60,8 +60,8 @@ describe("App", () => {
     sendChatMessageMock.mockResolvedValueOnce(claimsResponse("conv-1"));
     render(<App />);
 
-    await user.type(screen.getByLabelText("Message"), "I want to report an accident.");
-    await user.click(screen.getByRole("button", { name: "Send" }));
+    await user.type(screen.getByLabelText("Mensaje"), "I want to report an accident.");
+    await user.click(screen.getByRole("button", { name: "Enviar" }));
 
     expect(await screen.findByText("Could you provide your policy number?")).toBeInTheDocument();
   });
@@ -76,14 +76,14 @@ describe("App", () => {
     );
     render(<App />);
 
-    await user.type(screen.getByLabelText("Message"), "hello");
-    await user.click(screen.getByRole("button", { name: "Send" }));
+    await user.type(screen.getByLabelText("Mensaje"), "hello");
+    await user.click(screen.getByRole("button", { name: "Enviar" }));
 
-    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
-    expect(screen.getByLabelText("Message")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Enviar" })).toBeDisabled();
+    expect(screen.getByLabelText("Mensaje")).toBeDisabled();
 
     resolveRequest(claimsResponse("conv-1"));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Enviar" })).not.toBeDisabled());
   });
 
   it("shows a safe, generic error message (never raw exception details) and offers a working retry", async () => {
@@ -93,13 +93,13 @@ describe("App", () => {
       .mockResolvedValueOnce(claimsResponse("conv-1"));
     render(<App />);
 
-    await user.type(screen.getByLabelText("Message"), "I want to report an accident.");
-    await user.click(screen.getByRole("button", { name: "Send" }));
+    await user.type(screen.getByLabelText("Mensaje"), "I want to report an accident.");
+    await user.click(screen.getByRole("button", { name: "Enviar" }));
 
-    expect(await screen.findByText(/Sorry, something went wrong/)).toBeInTheDocument();
+    expect(await screen.findByText(/ocurrió un problema/)).toBeInTheDocument();
     expect(screen.queryByText(/500/)).not.toBeInTheDocument();
 
-    const retryButton = await screen.findByRole("button", { name: "Retry" });
+    const retryButton = await screen.findByRole("button", { name: "Reintentar" });
     await user.click(retryButton);
 
     await waitFor(() => expect(sendChatMessageMock).toHaveBeenCalledTimes(2));
@@ -114,19 +114,19 @@ describe("App", () => {
     const { container } = render(<App />);
     const messageArea = () => within(container.querySelector(".message-area") as HTMLElement);
 
-    await user.type(screen.getByLabelText("Message"), "I want to report an accident.");
-    await user.click(screen.getByRole("button", { name: "Send" }));
+    await user.type(screen.getByLabelText("Mensaje"), "I want to report an accident.");
+    await user.click(screen.getByRole("button", { name: "Enviar" }));
     await screen.findByText("Could you provide your policy number?");
 
-    await user.click(screen.getByRole("button", { name: "+ New conversation" }));
+    await user.click(screen.getByRole("button", { name: "+ Nueva conversación" }));
 
     expect(messageArea().queryByText("I want to report an accident.")).not.toBeInTheDocument();
     expect(
       messageArea().queryByText("Could you provide your policy number?"),
     ).not.toBeInTheDocument();
 
-    await user.type(screen.getByLabelText("Message"), "another message");
-    await user.click(screen.getByRole("button", { name: "Send" }));
+    await user.type(screen.getByLabelText("Mensaje"), "another message");
+    await user.click(screen.getByRole("button", { name: "Enviar" }));
 
     await waitFor(() => expect(sendChatMessageMock).toHaveBeenCalledTimes(2));
     expect(sendChatMessageMock.mock.calls[1][0]).toMatchObject({ conversationId: null });
@@ -137,11 +137,11 @@ describe("App", () => {
     sendChatMessageMock.mockResolvedValueOnce(claimsResponse("conv-1"));
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: /Broker Services/ }));
+    await user.click(screen.getByRole("button", { name: /Servicios a corredores/ }));
 
     await waitFor(() => expect(sendChatMessageMock).toHaveBeenCalledTimes(1));
     expect(sendChatMessageMock.mock.calls[0][0]).toMatchObject({
-      message: "I want to check my commissions.",
+      message: "Quiero conocer mis comisiones.",
     });
   });
 });

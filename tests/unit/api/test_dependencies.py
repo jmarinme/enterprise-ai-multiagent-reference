@@ -26,6 +26,7 @@ def _clear_dependency_caches() -> None:
     dependencies.get_grounder.cache_clear()
     dependencies.get_llm_provider.cache_clear()
     dependencies.get_tool_calling_orchestrator.cache_clear()
+    dependencies.get_conversation_repository_dep.cache_clear()
     dependencies.get_supervisor.cache_clear()
 
 

@@ -1,0 +1,164 @@
+PBI-04-04: Demo Readiness — evidence transcript
+=================================================
+
+FULL REGRESSION (final, after all live-validation-driven fixes)
+------------------------------------------------------------------
+$ ./.venv/Scripts/python.exe -m pytest tests/unit -q
+........................................................................ [ 75%]
+........................................................................ [ 90%]
+...............................................                          [100%]
+479 passed, 1 warning in 5.05s
+
+$ ./.venv/Scripts/python.exe -m ruff check tests src apps/api/src
+All checks passed!
+
+$ ./.venv/Scripts/python.exe -m mypy src apps/api/src
+Success: no issues found in 120 source files
+
+$ npx vitest run   (apps/web)
+Test Files  8 passed (8)
+     Tests  33 passed (33)
+
+$ npx tsc --noEmit   (apps/web)
+(clean, no output)
+
+$ npx eslint .   (apps/web)
+(clean, no output)
+
+$ npx vite build   (apps/web)
+dist/index.html                  0.43 kB
+dist/assets/index-*.css          5.60 kB
+dist/assets/index-*.js         152.48 kB
+built in 858ms
+
+
+DEPLOYMENT
+------------------------------------------------------------------
+Resource group: rg-tmx-agent-platform-dev
+ACR: acrtmxapdevl3fgxt.azurecr.io
+API: ca-tmxap-dev-api.bluemushroom-e2f74836.eastus2.azurecontainerapps.io
+Web: ca-tmxap-dev-web.bluemushroom-e2f74836.eastus2.azurecontainerapps.io
+
+Web image built once (az acr build, VITE_API_URL baked in) and deployed once.
+API image rebuilt/redeployed 5 times as live validation surfaced 5 real
+defects — each round: fix -> full regression -> rebuild -> redeploy ->
+re-validate live, never batched. Final API revision confirmed Healthy via
+`az containerapp revision list`. `az acr build`'s local Azure CLI log
+streaming crashed on Windows with the same known cosmetic
+UnicodeEncodeError/colorama bug seen in every prior PBI this sprint; the
+remote build itself was confirmed Succeeded every time via
+`az acr task list-runs --top 1`.
+
+
+LIVE DEV VALIDATION — FINAL COMPLETE CLAIMS CONVERSATION (Spanish)
+------------------------------------------------------------------
+userId: pbi0404-e2e-<timestamp>
+conversationId: b125ce5d-2729-465a-8e34-0ce7b5e6dd06
+
+T1 -> "Quiero reportar un accidente, tuve un choque."
+   agent: ClaimsAgent
+   response: "¿Cuál es tu nombre completo? Así puedo buscar tus pólizas."
+   metadata.language: es-MX
+   metadata.diagnostics: "[prompt=claims.system@3.1.0] [llm=gpt-5-mini-2025-08-07]"
+   (diagnostics present in metadata, absent from response text)
+
+T2 -> "Juan Pérez"
+   response: "Encontré estas pólizas a tu nombre: la primera (Nissan Sentra 2022);
+              la segunda (Toyota Hilux 2021). ¿Cuál corresponde a tu siniestro?"
+   toolCalls: [{name: customer_lookup, success: true}]
+
+T3 -> "la Hilux"
+   response: "¿Qué día ocurrió el incidente? (AAAA-MM-DD) ¿Dónde ocurrió el incidente?"
+   (resolved to SYN-POL-1002; loss_type "collision" already known from T1's "choque",
+    correctly excluded from the question)
+
+T4 -> "2026-08-07, en Avenida Reforma, Ciudad de Mexico"
+   response: "¿Podrías describir brevemente qué sucedió?"
+   (both event_date and event_location captured from one combined answer)
+
+T5 -> "Otro auto se pasó el semáforo en rojo y me golpeó por el costado derecho."
+   response: "¿Cuál es el mejor teléfono para contactarte?"
+
+T6 -> "555-123-4567"
+   response: "¿Hubo personas lesionadas, y estuvieron involucrados terceros? (sí/no para cada una)"
+
+T7 -> "No hubo lesionados y sí, hubo un tercero involucrado."
+   response: "¿Estuvieron involucrados terceros? (sí/no)"
+   (only the first yes/no answer captured; re-asks the second — documented, accepted limitation)
+
+T8 -> "sí"
+   response: "Tu póliza está vigente. Los pagos de esta póliza están al corriente.
+              Tu cobertura es 'Cobertura amplia', con suma asegurada de $320,000.00
+              y deducible de $5,000.00. Antes de registrar tu siniestro, confirmemos
+              los datos: póliza SYN-POL-1002, incidente del 2026-08-07 en Avenida
+              Reforma, Ciudad de Mexico, tipo 'collision'. ¿Confirmas que deseamos
+              registrar tu siniestro con esta información? (sí/no)"
+   (policy + payment + coverage all validated and reported; confirmation gate reached;
+    no double "en en" location text)
+
+T9 -> "sí, confirmo"
+   response: "Tu aviso de siniestro ha sido registrado. Tu número de referencia es
+              SYN-CLM-2026-0001. Synthetic Adjuster Chen fue asignado a tu siniestro
+              SYN-CLM-2026-0001 y te contactará pronto."
+   (real claim registration + adjuster assignment; full orchestration completed
+    inside ClaimsAgent, Supervisor never re-entered mid-flow)
+
+
+LIVE DEV VALIDATION — CONVERSATION HISTORY
+------------------------------------------------------------------
+GET /conversations?userId=pbi0404-e2e-<timestamp>
+-> 200
+[{"conversationId":"b125ce5d-...","title":"Quiero reportar un accidente, tuve un choque.",
+  "status":"active","currentAgent":"ClaimsAgent",
+  "createdAt":"2026-08-08T15:41:35...","updatedAt":"2026-08-08T15:43:03..."}]
+
+GET /conversations/b125ce5d-...?userId=pbi0404-e2e-<timestamp>
+-> 200
+title: Quiero reportar un accidente, tuve un choque.
+messages: 18
+currentAgent: ClaimsAgent
+first message: user - Quiero reportar un accidente, tuve un choque.
+
+
+LIVE DEV VALIDATION — BROKER / COMMERCIAL / CORS REGRESSION
+------------------------------------------------------------------
+"Quiero conocer mis comisiones." -> 200, agent: BrokerAgent
+  response: "Por favor indica tu ID de corredor y el período que deseas revisar."
+
+"Necesito una cotización para asegurar mi empresa." -> 200, agent: CommercialIntakeAgent
+  response: "¿Cuál es el nombre de tu empresa o negocio?"
+
+OPTIONS /chat  (Origin: https://ca-tmxap-dev-web...)
+-> 200
+access-control-allow-methods: GET, POST
+access-control-allow-origin: https://ca-tmxap-dev-web.bluemushroom-e2f74836.eastus2.azurecontainerapps.io
+
+GET / (Web homepage) -> 200
+GET /health -> 200 {"status":"ok"}
+
+
+FIVE BUGS FOUND AND FIXED VIA LIVE VALIDATION (full rationale in decisions.md)
+------------------------------------------------------------------
+1. Customer lookup deferred until every incident-detail field was collected,
+   instead of right after the name — reordered _handle_collecting_information.
+2. Vehicle-description matching compared the strings backwards ("la Hilux"
+   can never contain "Toyota Hilux 2021") — fixed to word-set intersection.
+3. A combined/grouped question silently dropped its free-text field
+   (event_location) when a structured field (event_date) matched in the same
+   message — new ClaimsIntakeState.last_asked_group + group-aware recovery.
+4. Declining the confirmation step created a silent dead loop (nothing was
+   cleared, so the next turn walked straight back to the same summary) —
+   decline now clears the correctable incident-detail fields.
+5. GET /conversations only accepted "user_id", not the "userId" every other
+   caller on this API actually uses — fixed with Query(alias="userId").
+
+Each was fixed, covered by a new regression test, and re-validated live
+before moving to the next (never batched).
+
+
+NOT PERFORMED
+------------------------------------------------------------------
+Interactive browser click-through: no browser-automation tool was available
+in this environment. Verified instead via the full frontend automated test
+suite (33 tests), a clean production build, and live HTTP/CORS confirmation
+that the deployed Web app serves correctly.

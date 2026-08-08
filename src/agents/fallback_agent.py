@@ -8,7 +8,13 @@ for UNKNOWN specifically). Deterministic response only, same as the other mock a
 
 from __future__ import annotations
 
+from src.agents.shared.language import LANGUAGE_METADATA_KEY, resolve_language
 from src.supervisor.models import AgentRequest, AgentResponse, ConversationContext, IntentCategory
+
+_MESSAGES = {
+    "es-MX": "No pude identificar cómo ayudarte con eso. Es posible que una persona deba asistirte.",
+    "en": "I could not determine how to help with that. A human may need to assist you.",
+}
 
 
 class FallbackAgent:
@@ -17,11 +23,11 @@ class FallbackAgent:
     name = "FallbackAgent"
 
     async def handle(self, request: AgentRequest, context: ConversationContext) -> AgentResponse:
+        language = resolve_language(context.metadata, request.message)
         return AgentResponse(
             conversation_id=context.conversation_id,
             agent=self.name,
             intent=IntentCategory.UNKNOWN,
-            response=(
-                "I could not determine how to help with that. A human may need to assist you."
-            ),
+            response=_MESSAGES[language],
+            metadata={LANGUAGE_METADATA_KEY: language},
         )

@@ -21,7 +21,10 @@ def _build_executor() -> ToolExecutor:
 
 async def test_new_conversation_asks_for_company_name() -> None:
     state, notices = await advance_commercial_intake(
-        CommercialIntakeState(), "I'd like a quote for new business coverage", _build_executor()
+        CommercialIntakeState(),
+        "I'd like a quote for new business coverage",
+        _build_executor(),
+        language="en",
     )
 
     assert state.status == CommercialIntakeStatus.COLLECTING_INFORMATION
@@ -44,7 +47,7 @@ async def test_full_multi_turn_conversation_registers_a_synthetic_lead() -> None
 
     all_notices: list[str] = []
     for message in turns:
-        state, notices = await advance_commercial_intake(state, message, executor)
+        state, notices = await advance_commercial_intake(state, message, executor, language="en")
         all_notices.append(" ".join(notices))
 
     assert state.status == CommercialIntakeStatus.REGISTERED
@@ -57,7 +60,7 @@ async def test_full_multi_turn_conversation_registers_a_synthetic_lead() -> None
 
 async def test_missing_company_name_blocks_progression() -> None:
     state, notices = await advance_commercial_intake(
-        CommercialIntakeState(), "just some random message", _build_executor()
+        CommercialIntakeState(), "just some random message", _build_executor(), language="en"
     )
 
     assert state.status == CommercialIntakeStatus.COLLECTING_INFORMATION
@@ -77,10 +80,10 @@ async def test_a_message_after_registration_does_not_register_a_second_lead() ->
         "general liability",
         "We provide small business consulting services.",
     ]:
-        state, _ = await advance_commercial_intake(state, message, executor)
+        state, _ = await advance_commercial_intake(state, message, executor, language="en")
     original_reference = state.lead_reference
 
-    state, notices = await advance_commercial_intake(state, "thanks!", executor)
+    state, notices = await advance_commercial_intake(state, "thanks!", executor, language="en")
 
     assert state.lead_reference == original_reference
     assert state.status == CommercialIntakeStatus.REGISTERED
@@ -100,7 +103,7 @@ async def test_lead_registration_tool_failure_is_handled_safely() -> None:
         risk_description="A small consulting business.",
     )
 
-    state, notices = await advance_commercial_intake(state, "go ahead", executor)
+    state, notices = await advance_commercial_intake(state, "go ahead", executor, language="en")
 
     assert state.status == CommercialIntakeStatus.READY_TO_REGISTER
     assert state.lead_reference is None

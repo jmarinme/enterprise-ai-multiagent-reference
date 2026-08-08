@@ -2,6 +2,11 @@
 per-status handlers, driven end-to-end through real synthetic Tools via ToolExecutor. Covers
 the four required synthetic policy scenarios, the not-found retry path, and duplicate
 registration prevention.
+
+PBI-04-04: the flow now asks for the customer's name first (skipped when a policy number is
+given directly), validates policy/payment/coverage, and requires an explicit yes/no
+confirmation turn before actually registering the claim. All tests here use language="en"
+because they assert on exact English notice text.
 """
 
 import re
@@ -10,6 +15,8 @@ from src.agents.claims.state import ClaimsIntakeState, ClaimsIntakeStatus
 from src.agents.claims.workflow import advance_claims_intake
 from src.services.tools.adjuster_assignment_tool import AdjusterAssignmentTool
 from src.services.tools.claim_registration_tool import ClaimRegistrationTool
+from src.services.tools.coverage_lookup_tool import CoverageLookupTool
+from src.services.tools.customer_lookup_tool import CustomerLookupTool
 from src.services.tools.payment_status_tool import PaymentStatusTool
 from src.services.tools.policy_lookup_tool import PolicyLookupTool
 from src.tools.executor import ToolExecutor
@@ -20,8 +27,10 @@ _CLAIM_REFERENCE_PATTERN = re.compile(r"^SYN-CLM-\d{4}-\d{4}$")
 
 def _build_executor() -> ToolExecutor:
     registry = InMemoryToolRegistry()
+    registry.register(CustomerLookupTool())
     registry.register(PolicyLookupTool())
     registry.register(PaymentStatusTool())
+    registry.register(CoverageLookupTool())
     registry.register(ClaimRegistrationTool())
     registry.register(AdjusterAssignmentTool())
     return ToolExecutor(tool_registry=registry)
@@ -35,7 +44,7 @@ def _ready_state(policy_number: str) -> ClaimsIntakeState:
         event_location="Main St",
         loss_type="collision",
         loss_description="Rear-ended at a stoplight.",
-        contact_name="Jane Caller",
+        customer_name="Jane Caller",
         contact_phone="555-123-4567",
         injuries_reported=False,
         third_parties_involved=True,
@@ -44,12 +53,13 @@ def _ready_state(policy_number: str) -> ClaimsIntakeState:
 
 async def test_new_conversation_asks_for_the_first_missing_field() -> None:
     state, notices = await advance_claims_intake(
-        ClaimsIntakeState(), "I need to file a claim", _build_executor()
+        ClaimsIntakeState(), "I need to file a claim", _build_executor(), language="en"
     )
 
     assert state.status == ClaimsIntakeStatus.COLLECTING_INFORMATION
-    assert state.last_asked_field == "policy_number"
+    assert state.last_asked_field == "customer_name"
     assert len(notices) == 1
+    assert "name" in notices[0].lower()
 
 
 async def test_full_multi_turn_conversation_registers_and_assigns_an_adjuster() -> None:
@@ -62,51 +72,64 @@ async def test_full_multi_turn_conversation_registers_and_assigns_an_adjuster() 
         "In my driveway",
         "It was a collision",
         "Another car hit me while parked",
-        "Jane Caller",
         "555-123-4567",
         "no",
+        "yes",
         "yes",
     ]
 
     all_notices: list[str] = []
     for message in turns:
-        state, notices = await advance_claims_intake(state, message, executor)
+        state, notices = await advance_claims_intake(state, message, executor, language="en")
         all_notices.append(" ".join(notices))
 
+    combined = " ".join(all_notices).lower()
     assert state.status == ClaimsIntakeStatus.ADJUSTER_ASSIGNED
     assert state.claim_reference is not None
     assert _CLAIM_REFERENCE_PATTERN.match(state.claim_reference)
     assert state.adjuster_assigned is not None
-    assert "active" in all_notices[-1].lower()
-    assert "claim reference is" in all_notices[-1].lower()
+    assert "active" in combined
+    assert "claim reference is" in combined
     assert "assigned" in all_notices[-1].lower()
 
 
 async def test_active_policy_with_payment_issue_does_not_block_registration() -> None:
+    executor = _build_executor()
     state, notices = await advance_claims_intake(
-        _ready_state("SYN-POL-0002"), "confirmed", _build_executor()
+        _ready_state("SYN-POL-0002"), "confirmed", executor, language="en"
     )
 
     combined = " ".join(notices).lower()
     assert "payment issue" in combined
-    assert state.status == ClaimsIntakeStatus.ADJUSTER_ASSIGNED
-    assert state.claim_reference is not None
+    assert state.status == ClaimsIntakeStatus.CONFIRMING
+
+    final_state, final_notices = await advance_claims_intake(state, "yes", executor, language="en")
+
+    assert final_state.status == ClaimsIntakeStatus.ADJUSTER_ASSIGNED
+    assert final_state.claim_reference is not None
+    assert "assigned" in " ".join(final_notices).lower()
 
 
 async def test_inactive_policy_does_not_block_registration() -> None:
+    executor = _build_executor()
     state, notices = await advance_claims_intake(
-        _ready_state("SYN-POL-0003"), "confirmed", _build_executor()
+        _ready_state("SYN-POL-0003"), "confirmed", executor, language="en"
     )
 
     combined = " ".join(notices).lower()
     assert "not active" in combined
-    assert state.status == ClaimsIntakeStatus.ADJUSTER_ASSIGNED
-    assert state.claim_reference is not None
+    assert state.status == ClaimsIntakeStatus.CONFIRMING
+
+    final_state, final_notices = await advance_claims_intake(state, "yes", executor, language="en")
+
+    assert final_state.status == ClaimsIntakeStatus.ADJUSTER_ASSIGNED
+    assert final_state.claim_reference is not None
+    assert "assigned" in " ".join(final_notices).lower()
 
 
 async def test_unknown_policy_number_blocks_and_asks_to_recheck() -> None:
     state, notices = await advance_claims_intake(
-        _ready_state("SYN-POL-9999"), "confirmed", _build_executor()
+        _ready_state("SYN-POL-9999"), "confirmed", _build_executor(), language="en"
     )
 
     assert state.status == ClaimsIntakeStatus.VALIDATING_POLICY
@@ -117,28 +140,40 @@ async def test_unknown_policy_number_blocks_and_asks_to_recheck() -> None:
 async def test_supplying_a_corrected_policy_number_after_not_found_retries_validation() -> None:
     executor = _build_executor()
     first_state, _ = await advance_claims_intake(
-        _ready_state("SYN-POL-9999"), "confirmed", executor
+        _ready_state("SYN-POL-9999"), "confirmed", executor, language="en"
     )
 
     second_state, notices = await advance_claims_intake(
-        first_state, "sorry, it's SYN-POL-0001", executor
+        first_state, "sorry, it's SYN-POL-0001", executor, language="en"
     )
 
-    assert second_state.status == ClaimsIntakeStatus.ADJUSTER_ASSIGNED
-    assert second_state.claim_reference is not None
+    assert second_state.status == ClaimsIntakeStatus.CONFIRMING
     assert "could not find" not in " ".join(notices).lower()
+
+    third_state, third_notices = await advance_claims_intake(
+        second_state, "yes", executor, language="en"
+    )
+
+    assert third_state.status == ClaimsIntakeStatus.ADJUSTER_ASSIGNED
+    assert third_state.claim_reference is not None
+    assert "assigned" in " ".join(third_notices).lower()
 
 
 async def test_a_message_after_adjuster_assignment_does_not_register_a_second_claim() -> None:
     executor = _build_executor()
+    confirming_state, _ = await advance_claims_intake(
+        _ready_state("SYN-POL-0001"), "confirmed", executor, language="en"
+    )
+    assert confirming_state.status == ClaimsIntakeStatus.CONFIRMING
+
     registered_state, _ = await advance_claims_intake(
-        _ready_state("SYN-POL-0001"), "confirmed", executor
+        confirming_state, "yes", executor, language="en"
     )
     assert registered_state.status == ClaimsIntakeStatus.ADJUSTER_ASSIGNED
     original_reference = registered_state.claim_reference
 
     final_state, notices = await advance_claims_intake(
-        registered_state, "thanks!", executor
+        registered_state, "thanks!", executor, language="en"
     )
 
     assert final_state.claim_reference == original_reference

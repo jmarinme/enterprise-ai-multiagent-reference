@@ -99,7 +99,9 @@ async def test_agent_degrades_gracefully_when_the_knowledge_retriever_fails() ->
         AgentRequest(message="I need to report a claim after hours", user_id="user-1"), context
     )
 
-    assert "Could you provide your policy number?" in response.response
+    # PBI-04-04: the first question is now the customer's name (customer discovery), not the
+    # policy number directly.
+    assert "What is your full name?" in response.response
     assert response.citations == []
     assert "traceback" not in response.response.lower()
     assert "exception" not in response.response.lower()

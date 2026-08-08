@@ -26,6 +26,7 @@ from __future__ import annotations
 from src.agents.broker.state import BrokerInquiryState
 from src.agents.broker.workflow import advance_broker_inquiry
 from src.agents.shared.annotation import annotate_with_prompt_and_llm
+from src.agents.shared.language import LANGUAGE_METADATA_KEY, resolve_language
 from src.agents.shared.state_persistence import load_agent_state
 from src.llm.provider import LLMProvider
 from src.prompts.manager import PromptManager
@@ -34,11 +35,17 @@ from src.supervisor.models import AgentRequest, AgentResponse, ConversationConte
 from src.tools.executor import ToolExecutor
 
 _STATE_METADATA_KEY = "brokerInquiryState"
-_SAFE_FALLBACK_MESSAGE = (
-    "We're sorry, something went wrong while processing your broker request. Please try "
-    "again, or contact support if the issue continues."
-)
-_NO_NOTICE_FALLBACK = "Thanks — please continue."
+_SAFE_FALLBACK_MESSAGE = {
+    "es-MX": (
+        "Lo sentimos, algo salió mal al procesar tu solicitud de corredor. Intenta de nuevo, o "
+        "contacta a soporte si el problema continúa."
+    ),
+    "en": (
+        "We're sorry, something went wrong while processing your broker request. Please try "
+        "again, or contact support if the issue continues."
+    ),
+}
+_NO_NOTICE_FALLBACK = {"es-MX": "Gracias — continuemos.", "en": "Thanks — please continue."}
 
 
 class BrokerAgent:
@@ -55,12 +62,14 @@ class BrokerAgent:
 
     async def handle(self, request: AgentRequest, context: ConversationContext) -> AgentResponse:
         state = load_agent_state(context.metadata, _STATE_METADATA_KEY, BrokerInquiryState)
+        language = resolve_language(context.metadata, request.message)
 
         try:
             state, notices = await advance_broker_inquiry(
                 state=state,
                 message=request.message,
                 tool_executor=self._tool_executor,
+                language=language,
                 correlation_id=request.correlation_id,
                 conversation_id=context.conversation_id,
                 user_id=request.user_id,
@@ -73,13 +82,16 @@ class BrokerAgent:
                 conversation_id=context.conversation_id,
                 agent=self.name,
                 intent=IntentCategory.BROKER,
-                response=_SAFE_FALLBACK_MESSAGE,
-                metadata={_STATE_METADATA_KEY: state.model_dump_json()},
+                response=_SAFE_FALLBACK_MESSAGE[language],
+                metadata={
+                    _STATE_METADATA_KEY: state.model_dump_json(),
+                    LANGUAGE_METADATA_KEY: language,
+                },
             )
 
-        response_text = " ".join(notices) if notices else _NO_NOTICE_FALLBACK
-        response_text = await annotate_with_prompt_and_llm(
-            response_text=response_text,
+        response_text = " ".join(notices) if notices else _NO_NOTICE_FALLBACK[language]
+        # PBI-04-04: diagnostic is metadata-only (technical detail end users must never see).
+        diagnostics = await annotate_with_prompt_and_llm(
             prompt_identifier="broker.system",
             prompt_manager=self._prompt_manager,
             llm_provider=self._llm_provider,
@@ -102,5 +114,9 @@ class BrokerAgent:
             agent=self.name,
             intent=IntentCategory.BROKER,
             response=response_text,
-            metadata={_STATE_METADATA_KEY: state.model_dump_json()},
+            metadata={
+                _STATE_METADATA_KEY: state.model_dump_json(),
+                LANGUAGE_METADATA_KEY: language,
+                "diagnostics": diagnostics,
+            },
         )

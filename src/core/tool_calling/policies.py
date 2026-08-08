@@ -12,9 +12,11 @@ complete and ready for a future PBI to wire without re-deriving it.
 from __future__ import annotations
 
 CLAIMS_ALLOWED_TOOLS: tuple[str, ...] = (
+    "customer_lookup",
     "policy_lookup",
     "claims_status",
     "payment_status",
+    "coverage_lookup",
     "claim_registration",
     "adjuster_assignment",
 )

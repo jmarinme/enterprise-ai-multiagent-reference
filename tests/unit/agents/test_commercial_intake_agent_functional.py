@@ -178,5 +178,5 @@ async def test_agent_degrades_gracefully_when_llm_provider_fails() -> None:
     )
 
     assert "company" in response.response.lower()
-    assert "[prompt=commercial.system@2.0.0]" in response.response
-    assert "[llm=" not in response.response
+    assert "[prompt=commercial.system@2.0.0]" in response.metadata["diagnostics"]
+    assert "[llm=" not in response.metadata["diagnostics"]

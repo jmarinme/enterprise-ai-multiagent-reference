@@ -21,6 +21,10 @@ class SyntheticPolicyRecord(BaseModel):
     status: Literal["active", "lapsed", "cancelled"]
     holder_name: str
     line_of_business: str
+    # Optional, additive (PBI-04-04): a short human description ("Toyota Hilux 2021") used only
+    # to let a caller disambiguate between a customer's own multiple policies in natural
+    # language (e.g. "la Hilux", "la de auto") — never a source of a business fact by itself.
+    vehicle_description: str | None = None
 
 
 class SyntheticClaimRecord(BaseModel):
@@ -202,5 +206,115 @@ SYNTHETIC_COMMISSIONS: dict[tuple[str, str], SyntheticCommissionRecord] = {
     ),
     ("SYN-BRK-0002", "2026-Q1"): SyntheticCommissionRecord(
         broker_id="SYN-BRK-0002", commission_period="2026-Q1", amount=430.00, status="pending"
+    ),
+}
+
+
+class SyntheticCustomerRecord(BaseModel):
+    customer_id: str
+    full_name: str
+    policy_numbers: list[str]
+
+
+# Customer-discovery scenarios (PBI-04-04), additive, new SYN-POL-1xxx policy-number namespace
+# so the pre-existing SYN-POL-000x direct-policy-number-first tests/scenarios are left
+# byte-for-byte unchanged:
+#   Juan Pérez  -> two active auto policies (disambiguation demo: "la primera"/"la segunda"/
+#                  "la Hilux"/the Sentra)
+#   Ana Torres  -> a single active property policy (single-match auto-select demo)
+# Any other name has no match -> "customer not found".
+SYNTHETIC_CUSTOMERS: dict[str, SyntheticCustomerRecord] = {
+    "CUS-SYN-0001": SyntheticCustomerRecord(
+        customer_id="CUS-SYN-0001",
+        full_name="Juan Pérez",
+        policy_numbers=["SYN-POL-1001", "SYN-POL-1002"],
+    ),
+    "CUS-SYN-0002": SyntheticCustomerRecord(
+        customer_id="CUS-SYN-0002",
+        full_name="Ana Torres",
+        policy_numbers=["SYN-POL-1003"],
+    ),
+}
+
+SYNTHETIC_POLICIES["SYN-POL-1001"] = SyntheticPolicyRecord(
+    policy_number="SYN-POL-1001",
+    status="active",
+    holder_name="Juan Pérez",
+    line_of_business="auto",
+    vehicle_description="Nissan Sentra 2022",
+)
+SYNTHETIC_POLICIES["SYN-POL-1002"] = SyntheticPolicyRecord(
+    policy_number="SYN-POL-1002",
+    status="active",
+    holder_name="Juan Pérez",
+    line_of_business="auto",
+    vehicle_description="Toyota Hilux 2021",
+)
+SYNTHETIC_POLICIES["SYN-POL-1003"] = SyntheticPolicyRecord(
+    policy_number="SYN-POL-1003",
+    status="active",
+    holder_name="Ana Torres",
+    line_of_business="property",
+)
+
+SYNTHETIC_PAYMENT_STATUSES["SYN-POL-1001"] = SyntheticPaymentStatusRecord(
+    policy_number="SYN-POL-1001", payment_current=True, last_payment_date="2026-07-15"
+)
+SYNTHETIC_PAYMENT_STATUSES["SYN-POL-1002"] = SyntheticPaymentStatusRecord(
+    policy_number="SYN-POL-1002", payment_current=True, last_payment_date="2026-07-15"
+)
+SYNTHETIC_PAYMENT_STATUSES["SYN-POL-1003"] = SyntheticPaymentStatusRecord(
+    policy_number="SYN-POL-1003", payment_current=False, last_payment_date="2026-03-01"
+)
+
+
+class SyntheticCoverageRecord(BaseModel):
+    policy_number: str
+    coverage_type: str
+    limit_amount: float
+    deductible: float
+
+
+# Coverage scenarios (PBI-04-04): one record per policy that ClaimsAgent's business-validation
+# step (CLAUDE.md §2's "coverage" fact-gathering, never adjudication) can report on. Covers
+# every policy number ClaimsAgent's flow can reach, both the pre-existing SYN-POL-000x set and
+# the new SYN-POL-1xxx customer-discovery set. Any other policy number is absent -> "coverage
+# information not available".
+SYNTHETIC_COVERAGES: dict[str, SyntheticCoverageRecord] = {
+    "SYN-POL-0001": SyntheticCoverageRecord(
+        policy_number="SYN-POL-0001",
+        coverage_type="Cobertura amplia",
+        limit_amount=250000.00,
+        deductible=5000.00,
+    ),
+    "SYN-POL-0002": SyntheticCoverageRecord(
+        policy_number="SYN-POL-0002",
+        coverage_type="Cobertura amplia",
+        limit_amount=250000.00,
+        deductible=5000.00,
+    ),
+    "SYN-POL-0003": SyntheticCoverageRecord(
+        policy_number="SYN-POL-0003",
+        coverage_type="Cobertura básica de daños",
+        limit_amount=150000.00,
+        deductible=10000.00,
+    ),
+    "SYN-POL-1001": SyntheticCoverageRecord(
+        policy_number="SYN-POL-1001",
+        coverage_type="Cobertura amplia",
+        limit_amount=280000.00,
+        deductible=5000.00,
+    ),
+    "SYN-POL-1002": SyntheticCoverageRecord(
+        policy_number="SYN-POL-1002",
+        coverage_type="Cobertura amplia",
+        limit_amount=320000.00,
+        deductible=5000.00,
+    ),
+    "SYN-POL-1003": SyntheticCoverageRecord(
+        policy_number="SYN-POL-1003",
+        coverage_type="Cobertura básica de daños",
+        limit_amount=150000.00,
+        deductible=10000.00,
     ),
 }

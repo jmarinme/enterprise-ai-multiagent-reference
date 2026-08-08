@@ -1,4 +1,5 @@
-"""Deterministic field extraction for broker-services inquiries (PBI-01-06).
+"""Deterministic field extraction for broker-services inquiries (PBI-01-06, bilingual keyword
+coverage added by PBI-04-04).
 
 MockLLMProvider is intentionally content-agnostic and cannot perform real NLU, so every
 business fact (which inquiry this is, which synthetic IDs were given, yes/no answers) must
@@ -16,16 +17,16 @@ _POLICY_NUMBER_PATTERN = re.compile(r"\b(SYN-POL-\d{3,6})\b", re.IGNORECASE)
 _TRANSACTION_REFERENCE_PATTERN = re.compile(r"\b(SYN-TXN-\d{3,6})\b", re.IGNORECASE)
 _COMMISSION_PERIOD_PATTERN = re.compile(r"\b(\d{4}-(?:Q[1-4]|[01]\d))\b", re.IGNORECASE)
 
-_YES_WORDS = {"yes", "yeah", "yep", "affirmative", "correct", "si", "sí"}
-_NO_WORDS = {"no", "nope", "negative", "none"}
+_YES_WORDS = {"yes", "yeah", "yep", "affirmative", "correct", "si", "sí", "claro", "correcto"}
+_NO_WORDS = {"no", "nope", "negative", "none", "para nada"}
 
 # Checked in order (most distinctive keyword first, mirroring
 # src.supervisor.intent.RuleBasedIntentResolver's own ordered-keyword-list pattern) so a
 # message mentioning both "policy" and "commission" resolves to the more specific commission
-# inquiry rather than the generic policy fallback.
-_COMMISSION_KEYWORDS = ("commission",)
-_TRANSACTION_KEYWORDS = ("transaction",)
-_POLICY_KEYWORDS = ("policy", "coverage")
+# inquiry rather than the generic policy fallback. Bilingual (PBI-04-04).
+_COMMISSION_KEYWORDS = ("commission", "comisión", "comision", "comisiones")
+_TRANSACTION_KEYWORDS = ("transaction", "transacción", "transaccion")
+_POLICY_KEYWORDS = ("policy", "coverage", "póliza", "poliza", "cobertura")
 
 _PAYMENT_REQUEST_KEYWORDS = (
     "request payment",
@@ -34,6 +35,11 @@ _PAYMENT_REQUEST_KEYWORDS = (
     "pay my commission",
     "process the payment",
     "process payment",
+    "solicitar el pago",
+    "solicitar pago",
+    "pagar mi comisión",
+    "pagar mi comision",
+    "procesar el pago",
 )
 
 _YES_NO_FIELDS = {"wants_payment_request"}

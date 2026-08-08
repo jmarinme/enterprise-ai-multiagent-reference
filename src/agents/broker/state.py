@@ -1,4 +1,5 @@
-"""Typed working state for a single conversation's broker-services flow (PBI-01-06).
+"""Typed working state for a single conversation's broker-services flow (PBI-01-06, bilingual
+messages added by PBI-04-04).
 
 Structurally mirrors src.agents.claims.state (same reasoning: this is in-progress session
 notes, not core business truth — CLAUDE.md §4.3 — serialized into
@@ -12,6 +13,9 @@ from __future__ import annotations
 from enum import Enum
 
 from pydantic import BaseModel, Field
+
+from src.agents.shared.language import Language
+from src.agents.shared.messages import t
 
 
 class BrokerInquiryType(str, Enum):
@@ -70,17 +74,32 @@ REQUIRED_FIELDS_BY_INQUIRY: dict[BrokerInquiryType, tuple[str, ...]] = {
     BrokerInquiryType.COMMISSION: ("broker_id", "commission_period"),
 }
 
-FIELD_PROMPTS: dict[str, str] = {
-    "policy_number": "Please provide the synthetic policy number.",
-    "transaction_reference": "Please provide the synthetic transaction reference.",
-    "broker_id": "Please provide your synthetic broker ID.",
-    "commission_period": "Which commission period would you like to review (e.g., 2026-Q1)?",
+FIELD_PROMPTS: dict[str, dict[Language, str]] = {
+    "policy_number": {
+        "es-MX": "Por favor indica el número de póliza sintética.",
+        "en": "Please provide the synthetic policy number.",
+    },
+    "transaction_reference": {
+        "es-MX": "Por favor indica la referencia de transacción sintética.",
+        "en": "Please provide the synthetic transaction reference.",
+    },
+    "broker_id": {
+        "es-MX": "Por favor indica tu ID de corredor sintético.",
+        "en": "Please provide your synthetic broker ID.",
+    },
+    "commission_period": {
+        "es-MX": "¿Qué período de comisión te gustaría revisar (por ejemplo, 2026-Q1)?",
+        "en": "Which commission period would you like to review (e.g., 2026-Q1)?",
+    },
 }
 
 # Matches the PBI's own example dialogue verbatim when both commission fields are missing at
 # once, rather than asking for them one at a time as ClaimsAgent does — this Agent's examples
 # explicitly show both fields requested together.
-_COMBINED_COMMISSION_PROMPT = "Please provide your broker ID and the period you want to review."
+_COMBINED_COMMISSION_PROMPT: dict[Language, str] = {
+    "es-MX": "Por favor indica tu ID de corredor y el período que deseas revisar.",
+    "en": "Please provide your broker ID and the period you want to review.",
+}
 
 
 def missing_required_fields(state: BrokerInquiryState) -> list[str]:
@@ -91,8 +110,8 @@ def missing_required_fields(state: BrokerInquiryState) -> list[str]:
     return [field for field in required if getattr(state, field) is None]
 
 
-def prompt_for_missing(missing: list[str]) -> str:
+def prompt_for_missing(missing: list[str], language: Language) -> str:
     """One combined, professional prompt for every currently-missing field."""
     if set(missing) == {"broker_id", "commission_period"}:
-        return _COMBINED_COMMISSION_PROMPT
-    return " ".join(FIELD_PROMPTS[field] for field in missing)
+        return _COMBINED_COMMISSION_PROMPT.get(language) or _COMBINED_COMMISSION_PROMPT["es-MX"]
+    return " ".join(t(FIELD_PROMPTS, field, language) for field in missing)

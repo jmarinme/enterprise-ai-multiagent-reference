@@ -1,4 +1,5 @@
-"""Deterministic field extraction for commercial intake (PBI-01-07).
+"""Deterministic field extraction for commercial intake (PBI-01-07, bilingual keyword coverage
+added by PBI-04-04).
 
 MockLLMProvider is intentionally content-agnostic and cannot perform real NLU, so every
 business fact must come from regex/keyword rules here — same rationale as
@@ -19,22 +20,34 @@ _PHONE_PATTERN = re.compile(r"\b(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.
 _CHANNEL_KEYWORDS: dict[str, str] = {
     "e-mail": "email",
     "email": "email",
+    "correo": "email",
+    "correo electrónico": "email",
+    "correo electronico": "email",
     "phone": "phone",
     "call": "phone",
     "telephone": "phone",
+    "teléfono": "phone",
+    "telefono": "phone",
+    "llamada": "phone",
 }
 
 _INSURANCE_NEED_KEYWORDS: dict[str, str] = {
     "general liability": "general liability",
     "liability": "general liability",
+    "responsabilidad civil": "general liability",
     "property": "commercial property",
+    "propiedad": "commercial property",
     "commercial auto": "commercial auto",
     "auto": "commercial auto",
     "workers compensation": "workers compensation",
     "workers comp": "workers compensation",
+    "riesgos de trabajo": "workers compensation",
     "cyber": "cyber liability",
+    "cibernético": "cyber liability",
+    "cibernetico": "cyber liability",
     "professional liability": "professional liability",
     "errors and omissions": "professional liability",
+    "responsabilidad profesional": "professional liability",
 }
 
 # Fields free-form enough that, absent any structured match, the raw answer to the most

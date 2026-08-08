@@ -14,7 +14,7 @@ describe("MessageArea", () => {
 
     expect(screen.getByText("Hello")).toBeInTheDocument();
     expect(screen.getByText("Hi there")).toBeInTheDocument();
-    expect(screen.getByText("ClaimsAgent")).toBeInTheDocument();
+    expect(screen.getByText("Siniestros")).toBeInTheDocument();
   });
 
   it("renders citations and grounding status when present", () => {
@@ -43,7 +43,7 @@ describe("MessageArea", () => {
     expect(
       screen.getByText("Documents Typically Requested After a Claim Is Reported"),
     ).toBeInTheDocument();
-    expect(screen.getByText(/Grounded — 1 source/)).toBeInTheDocument();
+    expect(screen.getByText(/Basado en 1 fuente/)).toBeInTheDocument();
   });
 
   it("does not render a grounding badge when not grounded", () => {
@@ -59,7 +59,7 @@ describe("MessageArea", () => {
 
     render(<MessageArea messages={messages} isAssistantTyping={false} />);
 
-    expect(screen.queryByText(/Grounded/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Basado en/)).not.toBeInTheDocument();
   });
 
   it("renders a typing indicator while a request is in flight", () => {

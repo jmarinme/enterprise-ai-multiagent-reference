@@ -64,6 +64,12 @@ async def _run_conversation(agent: ClaimsAgent, messages: list[str]) -> list[str
 
 
 async def test_full_claim_report_flow_from_first_contact_to_adjuster_assignment() -> None:
+    # PBI-04-04: a direct policy number ("SYN-POL-0001") short-circuits customer discovery, so
+    # customer_name is never asked. Related fields are asked in groups (event_date+
+    # event_location+loss_type, then injuries_reported+third_parties_involved); once every
+    # field is collected, policy/payment/coverage are validated and an explicit yes/no
+    # confirmation is required before the claim is actually registered — hence the trailing
+    # "yes" beyond what PBI-01-05's flow needed.
     responses = await _run_conversation(
         _build_agent(),
         [
@@ -73,19 +79,22 @@ async def test_full_claim_report_flow_from_first_contact_to_adjuster_assignment(
             "In my driveway",
             "It was a collision",
             "Another car hit me while parked",
-            "Jane Caller",
             "555-123-4567",
             "no",
+            "yes",
             "yes",
         ],
     )
 
-    # One question at a time — never a wall of questions in a single turn.
+    # Grouped questions keep each turn to at most one combined question; the one exception is a
+    # partially-answered group (e.g. only event_date given), which falls back to joining the
+    # remaining fields' individual prompts — never more than the two fields left in that group.
     for question in responses[:-1]:
-        assert question.count("?") <= 1
+        assert question.count("?") <= 2
 
+    combined = " ".join(responses).lower()
     final = responses[-1]
-    assert "active" in final.lower()
+    assert "active" in combined
     assert _CLAIM_REFERENCE_PATTERN.search(final)
     assert "assigned" in final.lower()
 
@@ -128,9 +137,9 @@ async def test_re_sending_a_message_after_the_claim_is_fully_processed_does_not_
             "In my driveway",
             "It was a collision",
             "Another car hit me while parked",
-            "Jane Caller",
             "555-123-4567",
             "no",
+            "yes",
             "yes",
         ],
     )
@@ -148,9 +157,9 @@ async def test_re_sending_a_message_after_the_claim_is_fully_processed_does_not_
         "In my driveway",
         "It was a collision",
         "Another car hit me while parked",
-        "Jane Caller",
         "555-123-4567",
         "no",
+        "yes",
         "yes",
         "thank you!",
     ]:
