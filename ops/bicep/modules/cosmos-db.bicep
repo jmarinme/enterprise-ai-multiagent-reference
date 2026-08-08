@@ -19,7 +19,7 @@ param accountName string
 param tags object
 
 @description('SQL API database name.')
-param databaseName string = 'tmxai-conversation-db'
+param databaseName string = 'tmxap-conversation-db'
 
 @description('Conversation container name.')
 param containerName string = 'conversations'
@@ -74,9 +74,17 @@ resource account 'Microsoft.DocumentDB/databaseAccounts@2024-05-15' = {
     ] : []
     // Periodic backup is Cosmos's cost-effective default, appropriate for this conservative
     // dev/academic scope; Continuous backup was not requested and would add cost. Revisit via
-    // ADR if a future PBI needs point-in-time restore.
+    // ADR if a future PBI needs point-in-time restore. periodicModeProperties is required by the
+    // 2024-05-15 API when type is Periodic (confirmed via a real deployment failure in PBI-03-05:
+    // "PeriodicModeProperties must be specified when BackupPolicyType is Periodic") — these are
+    // Azure's own documented minimum/default values, not a new design choice.
     backupPolicy: {
       type: 'Periodic'
+      periodicModeProperties: {
+        backupIntervalInMinutes: 240
+        backupRetentionIntervalInHours: 8
+        backupStorageRedundancy: 'Local'
+      }
     }
     publicNetworkAccess: enablePublicNetworkAccess ? 'Enabled' : 'Disabled'
     disableLocalAuth: true

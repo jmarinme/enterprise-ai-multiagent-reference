@@ -1,0 +1,334 @@
+PBI-03-05: Azure Deployment Validation — condensed evidence log
+Date: 2026-08-07/08
+Subscription: 4112e852-665c-44c4-ad9d-67432600fc65 ("Pay-As-You-Go")
+Tenant: TOKIO MARINE COMPAÑÍA DE SEGUROS, S.A. DE C.V. (c69fc17c-00cf-4fad-be2a-d64f1b2dab4c)
+Resource Group: rg-tmx-agent-platform-dev (eastus2)
+
+=====================================================================
+1. PREFLIGHT (read-only, before any rename or deployment)
+=====================================================================
+
+az account show / az account list
+  -> Confirmed real, live subscription; Owner role at subscription scope.
+
+az role assignment list --assignee jose_marin@tokiomarine.com.mx
+  -> Owner at subscription scope confirmed.
+
+az provider show --namespace <11 required providers>
+  -> All registered.
+
+az group list / az cognitiveservices account list
+  -> Discovered pre-existing, unrelated internal resource groups using the "tm-ai" prefix
+     (rg-tm-ai-dev, oai-tm-ai-dev, rg-tm-core-dev, rg-tm-legalito-dev, Azure-OpenAI/OpenAI-TMX),
+     mostly in eastus/eastus2. This directly motivated the tmxai -> tmxap rename below (avoiding
+     operator confusion with this unrelated, pre-existing "tm-ai" prefix in the same tenant).
+
+docker info
+  -> Server unreachable (npipe:////./pipe/dockerDesktopLinuxEngine). Same recurring
+     environmental limitation as every prior PBI this sprint. Worked around for image builds
+     via `az acr build` (ACR Tasks, remote build in Azure, no local daemon required).
+
+=====================================================================
+2. RENAME: tmxai -> tmxap (static, before any deployment)
+=====================================================================
+
+Key Vault name-limit derivation:
+  kv-${projectName}-${environmentName}-${uniqueSuffix(6 chars)}, cap 24 chars.
+  Worst case environmentName = "staging" (7 chars):
+  len("kv-") + len(projectName) + len("-") + 7 + len("-") + 6 = 18 + len(projectName) <= 24
+  => projectName must be <= 6 characters. "tmx-agent-platform" (18 chars) does not fit.
+  "tmxap" (5 chars) chosen: same length as the original "tmxai", same safety margin.
+
+Files changed (pure literal-string substitution, no structural changes):
+  ops/bicep/main.bicep, ops/bicep/modules/cosmos-db.bicep,
+  ops/bicep/parameters/{dev,staging,prod}.bicepparam, src/config/settings.py, .env.example,
+  tests/unit/pipelines/knowledge_ingestion/{test_ingestion_pipeline,test_ingestion_models,
+  test_ingestion_index_schema}.py, tests/unit/api/test_dependencies.py,
+  tests/integration/test_cosmos_conversation_repository.py, TMX_initialprompt_Sprint0.md
+
+Post-rename confirmation grep (tmxai, case-insensitive, whole repo):
+  Only 2 matches remain, both deliberately preserved (historical record, never edited):
+    - docs/sprint_03/evidence/pbi-03-01-ollama-provider-validation.txt (timestamped evidence log)
+    - docs/sprint_03/decisions.md (one old PBI-03-02 entry, preserved per CLAUDE.md Sec.12)
+
+pytest tests/ -q (before and after rename)
+  -> 451 passed, 2 skipped (both runs identical — pure rename caused zero regression)
+
+ruff check apps/api/src src tests ops/scripts -> All checks passed!
+mypy apps/api/src / mypy src / mypy ops/scripts/ingest_knowledge_base.py -> Clean (13/102/1 files)
+
+az bicep build (main.bicep + all modules) -> All exit 0, 0 warnings
+az bicep build-params (dev/staging/prod) -> All exit 0
+  Resolved projectName confirmed "tmxap" in all three via --stdout JSON inspection.
+
+docker compose config (temp .env from .env.example) -> exit 0
+  COSMOS_DB_DATABASE=tmxap-conversation-db correctly interpolated.
+
+=====================================================================
+3. APPROVAL (AskUserQuestion, before any Azure-mutating command)
+=====================================================================
+
+Q: Subscription approval -> A: "Approve this subscription" (4112e852-665c-44c4-ad9d-67432600fc65)
+Q: Region -> A: "eastus2 (Recommended)"
+Q: enablePrivateNetworking override for this run -> A: "Keep dev's default: false (Recommended)"
+
+=====================================================================
+4. DEPLOYMENT SEQUENCE
+=====================================================================
+
+--- Step 1: az group create ---
+az group create --name rg-tmx-agent-platform-dev --location eastus2 --tags ...
+  -> provisioningState: Succeeded
+
+--- Step 2: az deployment group what-if ---
+  -> status: Succeeded. 3 top-level resources previewed (App Insights, Managed Identity,
+     Log Analytics); nested-module resources reported "NestedDeploymentShortCircuited"
+     (documented ARM what-if limitation with cross-module reference() dependencies, not a defect;
+     see aka.ms/WhatIfEvalStopped).
+
+--- Step 3: az deployment group create (attempt 1, name tmxap-dev-20260807180759) ---
+  -> FAILED. Real errors:
+  (a) ai-search-deployment: InsufficientResourcesAvailable
+      "The region 'eastus2' is currently out of the resources required to provision new
+      services. Try creating the service in another region."
+  (b) azure-openai-deployment: ServiceModelDeprecated
+      "The model 'Format:OpenAI,Name:gpt-4o-mini,Version:2024-07-18' has been deprecated
+      since 03/31/2026 00:00:00."
+  (c) cosmos-db-deployment: BadRequest
+      "PeriodicModeProperties must be specified when BackupPolicyType is Periodic."
+
+  Actual resources created despite failure (az resource list):
+    log-tmxap-dev, id-tmxap-dev, kv-tmxap-dev-l3fgxt, acrtmxapdevl3fgxt, appi-tmxap-dev
+
+  Fixes applied:
+    - cosmos-db.bicep: added periodicModeProperties (backupIntervalInMinutes: 240,
+      backupRetentionIntervalInHours: 8, backupStorageRedundancy: 'Local')
+    - azure-openai.bicep: deployment sku.name 'Standard' -> 'GlobalStandard'
+  az bicep build on both modules + main.bicep -> exit 0, 0 warnings
+
+--- Step 4: az deployment group create (attempt 2, name tmxap-dev-20260807181550) ---
+  -> FAILED. Cosmos DB now succeeds. Remaining errors:
+  (a) web-container-app-deployment: ContainerAppOperationError
+      "MANIFEST_UNKNOWN: manifest tagged by 'pending-first-build' is not found" (expected —
+      no image pushed yet)
+  (b) ai-search-deployment: InsufficientResourcesAvailable (again, same region, 2nd occurrence)
+  (c) azure-openai-deployment: ServiceModelDeprecating
+      "The model 'Format:OpenAI,Name:gpt-4o-mini,Version:2024-07-18' is in deprecating state
+      and cannot be used for new deployments." (a deeper issue than the SKU fix addressed —
+      the MODEL itself, not just the Standard SKU, is rejected for new deployments)
+
+  Live model catalog query (az rest GET .../locations/eastus2/models):
+    gpt-4o-mini 2024-07-18: lifecycleStatus "Deprecating" -- rejected for new deployments
+    gpt-5-mini  2025-08-07: lifecycleStatus "GenerallyAvailable", GlobalStandard valid to
+                            2027-02-09 -- chosen replacement (user-approved, closest
+                            "mini"-tier successor to the original choice)
+
+  Fixes applied (user-approved):
+    - main.bicep + all 3 .bicepparam: azureOpenAiModelName/Version 'gpt-4o-mini'/'2024-07-18'
+      -> 'gpt-5-mini'/'2025-08-07'
+    - main.bicep: new aiSearchLocation param (defaults to `location`); dev.bicepparam only:
+      aiSearchLocation = 'eastus' (works around the eastus2 capacity shortage)
+  az bicep build/build-params full re-sweep -> all exit 0, 0 warnings
+
+--- Step 5: az deployment group create (attempt 3, name tmxap-dev-20260807182522) ---
+  -> provisioningState: Succeeded. All 12 resources created:
+     log-tmxap-dev, id-tmxap-dev, kv-tmxap-dev-l3fgxt, srch-tmxap-dev-l3fgxt (eastus),
+     acrtmxapdevl3fgxt, cosmos-tmxap-dev-l3fgxt, appi-tmxap-dev, cae-tmxap-dev,
+     ca-tmxap-dev-web, ca-tmxap-dev-api, aoai-tmxap-dev-l3fgxt,
+     "Failure Anomalies - appi-tmxap-dev" (smart detector alert rule)
+  Container App *revisions* not yet healthy — no image pushed yet (expected).
+
+--- Step 6: Image builds via az acr build (local Docker daemon unavailable) ---
+  az acr build --registry acrtmxapdevl3fgxt --image tmx-api:pending-first-build
+    --file apps/api/Dockerfile .
+  -> Local az CLI crashed: UnicodeEncodeError ('charmap' codec, colorama Windows-console
+     log-streaming bug) — cosmetic only. Confirmed via `az acr task list-runs` that the
+     remote build (run ch1) completed server-side: STATUS Succeeded, duration 41s.
+     `az acr repository show-tags` confirmed the image was pushed.
+
+  Discovered gap: apps/api/Dockerfile never installed openai/azure-identity/azure-cosmos,
+  despite dev.bicepparam selecting llmProvider=azure_openai, conversationStoreProvider=cosmos.
+  Fix: added the 3 packages to the Dockerfile's pip install. Rebuilt (run ch2, Succeeded, 38s).
+
+--- Step 7: az acr build for tmx-web (build context apps/web, not repo root) ---
+  -> Succeeded (run ch3, 43s). Confirmed via az acr repository show-tags.
+
+--- Step 8: az containerapp update (api, web) -> new image ---
+  az containerapp update --image acrtmxapdevl3fgxt.azurecr.io/tmx-api:pending-first-build
+  az containerapp update --image acrtmxapdevl3fgxt.azurecr.io/tmx-web:pending-first-build
+  -> Both succeeded. az containerapp revision list: both healthState "Healthy".
+  curl https://ca-tmxap-dev-api...azurecontainerapps.io/health
+  -> 200 {"status":"ok"}
+
+--- Step 9: POST /chat (first real end-to-end attempt) ---
+  curl -X POST .../chat -d '{"userId":"synthetic-user-pbi-03-05","message":"..."}'
+  -> 500 Internal Server Error
+  az containerapp logs show (api):
+    "DefaultAzureCredential failed to retrieve a token from the included credentials...
+     Unable to load the proper Managed Identity."
+
+  Root cause: main.bicep never set AZURE_CLIENT_ID on the API Container App's env vars,
+  despite already exposing managedIdentity.outputs.clientId as a top-level output. A
+  user-assigned identity is ambiguous to DefaultAzureCredential without it. Confirmed via
+  grep across src/: every provider (azure_openai_provider.py, cosmos.py,
+  azure_ai_search_provider.py, key_vault.py) calls plain DefaultAzureCredential() by design
+  (no hardcoded client ID in source, per CLAUDE.md).
+
+  Fix: main.bicep -- added { name: 'AZURE_CLIENT_ID', value: managedIdentity.outputs.clientId }
+  to the API Container App's env list. Zero Python source change.
+
+--- Step 10: az deployment group create (attempt 4, name tmxap-dev-20260807183xxx) ---
+  -> provisioningState: Succeeded. New revision ca-tmxap-dev-api--0000001, Healthy.
+
+--- Step 11: POST /chat (retest) ---
+  -> 500. Logs: "LLM provider 'azure_openai' failed: Error code: 400 - {'error':
+     {'message': \"Unsupported parameter: 'max_tokens' is not supported with this model.
+     Use 'max_completion_tokens' instead.\", ...}}"
+  Progress: auth now succeeds (past DefaultAzureCredential entirely).
+
+  Fix (user-approved): src/llm/azure_openai_provider.py -- create_kwargs now sends
+  "max_completion_tokens" instead of "max_tokens" (OpenAI's universal, forward-compatible
+  replacement, not gpt-5-specific).
+  pytest tests/ -q -> 451 passed, 2 skipped. ruff/mypy clean.
+
+--- Step 12: Rebuild + redeploy API image; POST /chat (retest) ---
+  az acr build (run ch4) -> Succeeded (local CLI crashed again on the same cosmetic
+  Unicode bug; confirmed server-side success via az acr task list-runs).
+  az containerapp update --revision-suffix v2 -> new revision Healthy.
+  -> 500. Logs: "Unsupported value: 'temperature' does not support 0.0 with this model.
+     Only the default (1) value is supported."
+
+  This is LLMGenerationSettings' own deliberate temperature=0.0 default (src/llm/models.py),
+  a real, earlier-PBI business design choice for deterministic agent responses -- a genuine
+  reasoning-family-model capability gap, not a naming quirk.
+
+  User direction (verbatim, condensed): keep gpt-5-mini; treat as a capability gap in
+  AzureOpenAIProvider only; verify supported params; identify affected LLMGenerationSettings
+  fields; implement minimum capability-aware adaptation in AzureOpenAIProvider only; do not
+  change Agent code or business workflows; preserve deterministic behavior for
+  Mock/Ollama/traditional models; add tests for both traditional and gpt-5-mini behavior;
+  document as ADR/Sprint-03 decision; do not silently drop parameters; if temperature=0 cannot
+  be represented, document the semantic difference and stop before changing business behavior.
+
+  Fix: src/llm/azure_openai_provider.py -- new _is_reasoning_model() (prefix check: gpt-5,
+  o1, o3, o4), raises typed LLMConfigurationError BEFORE any network call when a reasoning
+  model + non-default temperature is requested; omits the temperature key only when it
+  already equals the fixed default (1.0) -- reasoning models reject the key even at their own
+  default value. Traditional models unaffected (temperature sent exactly as before).
+  3 new unit tests added (tests/unit/llm/test_azure_openai_provider.py).
+  pytest tests/ -q -> 454 passed, 2 skipped. ruff/mypy clean.
+
+--- Step 13: Rebuild + redeploy API image; POST /chat (retest) ---
+  az acr build (run ch4, this rebuild) -> Succeeded (polled az acr task list-runs until
+  "Succeeded" rather than trusting the crashed local CLI's exit code).
+  az containerapp update --revision-suffix v3 -> new revision Healthy.
+  -> 500. Logs: STILL the raw, untranslated API error text
+     ("Unsupported value: 'temperature' does not support 0.0...") -- meaning the new
+     LLMConfigurationError pre-check never fired.
+
+  Root cause found: Azure OpenAI addresses deployments by an arbitrary ALIAS
+  (AZURE_OPENAI_DEPLOYMENT="chat" in this template), never by the real model name
+  ("gpt-5-mini"). The _is_reasoning_model(model) check used `model = request.settings.model
+  or self._deployment`, which resolves to "chat" -- a string that does not start with
+  "gpt-5", so the check silently never matched. A real bug in the PBI's own fix, caught only
+  by testing against the real deployed service.
+
+  User direction: pass the real model name through explicitly (not react to the API's error
+  text) -- more robust, matches "capability-aware" intent, touches Bicep + settings +
+  composition root in addition to AzureOpenAIProvider, still zero Agent/business code.
+
+  Fix:
+    - ops/bicep/modules/azure-openai.bicep: new `output modelName string = modelName`
+    - ops/bicep/main.bicep: new env var { name: 'AZURE_OPENAI_MODEL_NAME',
+      value: azureOpenAi.outputs.modelName }
+    - src/config/settings.py: new LLMSettings.azure_openai_model_name field (auto-binds
+      AZURE_OPENAI_MODEL_NAME via pydantic-settings' default field-name-to-env-var mapping)
+    - src/llm/azure_openai_provider.py: new AzureOpenAIProvider(model_name=...) constructor
+      param, defaults to `deployment` when unset (zero behavior change for any caller that
+      omits it); generate() now uses self._model_name (not the deployment alias `model`) for
+      the reasoning-family check; `model` (the alias) is still what's sent to the API as
+      `model=`, unchanged.
+    - src/llm/factory.py: passes settings.azure_openai_model_name through.
+  Tests: 1 new regression-guard test (confirms the check uses model_name, not the deployment
+  alias, and that a provider without model_name does NOT falsely detect "chat" as
+  reasoning-family); all 3 capability tests rewritten to use realistic, distinct
+  deployment="chat"/model_name="gpt-5-mini" pairs so this exact regression cannot silently
+  reappear.
+  az bicep build (main.bicep, azure-openai.bicep) -> exit 0, 0 warnings.
+  az bicep build-params (dev/staging/prod) -> all exit 0.
+  pytest tests/ -q -> 455 passed, 2 skipped. ruff/mypy clean (apps/api/src, src).
+
+--- Step 14: az deployment group create (attempt 5, redeploy with AZURE_OPENAI_MODEL_NAME) ---
+  -> provisioningState: Succeeded.
+
+--- Step 15: Rebuild + redeploy API image (v4); POST /chat (final retest) ---
+  az acr build -> polled az acr task list-runs -> Succeeded.
+  az containerapp update --revision-suffix v4 -> new revision Healthy.
+  curl -X POST .../chat -d '...'
+  -> 500 (still, as expected/documented). Logs now show the NEW, CLEAN, TYPED error:
+     "Model 'gpt-5-mini' (deployment 'chat') is a reasoning-family model and only supports
+     the API's fixed default temperature (1.0); the requested temperature=0.0 cannot be
+     honored. Configure a non-reasoning-family deployment, or explicitly pass temperature=1.0
+     via LLMGenerationSettings if deterministic (temperature=0) behavior is not required for
+     this call."
+  No raw OpenAI API error text. No unhandled exception. This IS the correct, honest,
+  documented outcome per explicit user direction -- not a defect to keep patching around.
+
+--- Step 16: Cosmos DB access confirmation (via stack-trace inspection) ---
+  The failed request's traceback shows execution reached orchestrator.py:60
+  (`response = await agent.handle(...)`), meaning orchestrator.py:51-56
+  (`load_conversation_context(repository=self._conversation_repository, ...)`, which reads
+  via the Cosmos-backed ConversationRepository using the same Managed Identity) completed
+  successfully first -- positive, real confirmation of Cosmos DB READ access via Managed
+  Identity. Write access (create_conversation/append_message, orchestrator.py:100-108) was
+  not exercised, since it only runs after a successful agent response.
+  az cosmosdb sql database list / az cosmosdb sql container list -> confirmed
+  tmxap-conversation-db / conversations exist as expected.
+
+=====================================================================
+5. FINAL STATE
+=====================================================================
+
+Resources in rg-tmx-agent-platform-dev (az resource list):
+  log-tmxap-dev (Log Analytics), id-tmxap-dev (Managed Identity),
+  kv-tmxap-dev-l3fgxt (Key Vault), srch-tmxap-dev-l3fgxt (AI Search, eastus),
+  acrtmxapdevl3fgxt (ACR), cosmos-tmxap-dev-l3fgxt (Cosmos DB),
+  appi-tmxap-dev (App Insights), cae-tmxap-dev (Container Apps Environment),
+  ca-tmxap-dev-web, ca-tmxap-dev-api (Container Apps), aoai-tmxap-dev-l3fgxt (Azure OpenAI),
+  "Failure Anomalies - appi-tmxap-dev" (alert rule)
+
+All Succeeded. Both Container Apps Healthy. /health: 200. POST /chat: fails with a clean,
+typed, documented LLMConfigurationError (a known, honest, business-decision-gated limitation,
+not a wiring defect) -- see docs/sprint_03/decisions.md for the full writeup and how to apply.
+
+Final regression state: 455 tests passed, 2 skipped; ruff clean; mypy clean
+(apps/api/src: 13 files, src: 102 files); az bicep build/build-params: all exit 0,
+0 warnings; docker compose config: exit 0.
+
+No Agent, Supervisor, Prompt, Tool, or RAG business logic touched. No real company/customer
+data used (all test requests used synthetic userId/messages). No irreversible business action
+executed (no Tool was ever invoked -- every test request failed before reaching Tool Calling).
+No commit, no push, per standing instruction.
+
+=====================================================================
+6. RESOURCE RETENTION (explicit user instruction, 2026-08-08)
+=====================================================================
+
+By explicit user instruction, given after this PBI's own summary was first produced:
+"Keep the DEV resources running for now. We still need them to resolve and validate the
+remaining Azure OpenAI model-capability issue and obtain a successful end-to-end POST /chat.
+Do not delete or tear down any Azure resources."
+
+`az resource list --resource-group rg-tmx-agent-platform-dev` re-run to confirm current state
+before closing this PBI: all 12 resources still present, all `Succeeded`, unchanged from the
+final state recorded in section 5 above. Nothing was deleted, stopped, or modified after that
+point.
+
+rg-tmx-agent-platform-dev therefore remains intentionally deployed and billing (dev's
+conservative-cost SKUs: Free AI Search, Serverless Cosmos, S0/GlobalStandard Azure OpenAI at
+modelCapacity=10, Basic ACR, single-replica Container Apps) for the next validation PBI, whose
+job is to resolve the gpt-5-mini + temperature=0 capability gap documented above and obtain a
+genuinely successful end-to-end POST /chat against this same stack. See
+docs/sprint_03/decisions.md's final entry ("DEV Azure resources deliberately kept running...")
+for the full retention rationale and the explicit teardown decision point (user must be asked
+before any future `az group delete`).

@@ -38,8 +38,8 @@ param location string = resourceGroup().location
 @allowed(['dev', 'staging', 'prod'])
 param environmentName string
 
-@description('Short, generic project identifier used to build resource names. Safe for a public academic reference repository.')
-param projectName string = 'tmxai'
+@description('Short, generic project identifier used to build resource names. Safe for a public academic reference repository. "tmxap" = "TMX Agent Platform" abbreviated to 5 characters — Key Vault names are capped at 24 characters (kv-{projectName}-{environmentName}-{6-char uniqueString suffix}), and with "staging" (7 chars) as the longest environmentName, projectName must be <= 6 characters or the uniqueness suffix gets silently truncated off. See docs/sprint_03/decisions.md (PBI-03-05) for the full derivation.')
+param projectName string = 'tmxap'
 
 @description('Tag value describing what this resource group is for.')
 param purpose string = 'academic-reference-platform'
@@ -88,7 +88,10 @@ param cosmosConversationTtlSeconds int = -1
 param aiSearchSkuName string = 'free'
 
 @description('Azure AI Search index name AzureAISearchProvider will query. Index creation/ingestion is out of scope for PBI-03-02 — this only plumbs the name through; leave the default placeholder until a future PBI actually creates the index.')
-param aiSearchIndexName string = 'tmxai-knowledge-index'
+param aiSearchIndexName string = 'tmxap-knowledge-index'
+
+@description('Azure region for the AI Search service. Defaults to the same region as everything else (location); override only to work around a transient regional capacity shortage for new AI Search service creation (PBI-03-05 hit this in eastus2 — see docs/sprint_03/decisions.md). WARNING: if enablePrivateNetworking is true, this MUST stay equal to location — Private Endpoints live in the same VNet as the rest of the stack and cannot reach a cross-region resource without VNet peering, which this template does not provision.')
+param aiSearchLocation string = location
 
 @description('Azure OpenAI Cognitive Services pricing tier. S0 is the only tier Azure OpenAI deployments support.')
 @allowed(['S0'])
@@ -97,11 +100,11 @@ param azureOpenAiSkuName string = 'S0'
 @description('Azure OpenAI model deployment name — becomes AZURE_OPENAI_DEPLOYMENT on the API Container App.')
 param azureOpenAiDeploymentName string = 'chat'
 
-@description('Azure OpenAI model name to deploy.')
-param azureOpenAiModelName string = 'gpt-4o-mini'
+@description('Azure OpenAI model name to deploy. gpt-5-mini (PBI-03-05): gpt-4o-mini is lifecycle status "Deprecating" in the live Azure OpenAI model catalog and rejected for new deployments — see docs/sprint_03/decisions.md.')
+param azureOpenAiModelName string = 'gpt-5-mini'
 
 @description('Azure OpenAI model version to deploy.')
-param azureOpenAiModelVersion string = '2024-07-18'
+param azureOpenAiModelVersion string = '2025-08-07'
 
 @description('Azure OpenAI deployment capacity in units of 1,000 tokens-per-minute (TPM). Conservative default sized for dev/academic use.')
 @minValue(1)
@@ -296,7 +299,7 @@ module cosmosDb 'modules/cosmos-db.bicep' = {
 module aiSearch 'modules/ai-search.bicep' = {
   name: 'ai-search-deployment'
   params: {
-    location: location
+    location: aiSearchLocation
     name: aiSearchName
     tags: tags
     skuName: aiSearchSkuName
@@ -467,6 +470,11 @@ module apiContainerApp 'modules/container-app.bicep' = {
       { name: 'ENVIRONMENT', value: environmentName }
       { name: 'PROJECT_NAME', value: projectName }
       { name: 'LOG_LEVEL', value: 'INFO' }
+      // AZURE_CLIENT_ID (PBI-03-05): required so DefaultAzureCredential's ManagedIdentityCredential
+      // component knows which identity to use. A user-assigned identity is ambiguous to
+      // DefaultAzureCredential without this — confirmed via a real deployment failure ("Unable to
+      // load the proper Managed Identity"). See docs/sprint_03/decisions.md.
+      { name: 'AZURE_CLIENT_ID', value: managedIdentity.outputs.clientId }
       // Provider selection (PBI-03-02): every Azure resource below is always provisioned by
       // this template regardless of these values — they only tell the running app which one
       // to actually call. See the llmProvider/knowledgeProvider/conversationStoreProvider
@@ -478,6 +486,11 @@ module apiContainerApp 'modules/container-app.bicep' = {
       // stays false); no API key is ever placed in a Container App env var.
       { name: 'AZURE_OPENAI_ENDPOINT', value: azureOpenAi.outputs.endpoint }
       { name: 'AZURE_OPENAI_DEPLOYMENT', value: azureOpenAi.outputs.deploymentName }
+      // AZURE_OPENAI_MODEL_NAME (PBI-03-05): the underlying model, distinct from the deployment
+      // alias above — AzureOpenAIProvider needs this to detect reasoning-family model capability
+      // differences (e.g. gpt-5-mini rejecting a non-default temperature). See
+      // src/llm/azure_openai_provider.py and docs/sprint_03/decisions.md.
+      { name: 'AZURE_OPENAI_MODEL_NAME', value: azureOpenAi.outputs.modelName }
       { name: 'AZURE_OPENAI_API_VERSION', value: azureOpenAiApiVersion }
       { name: 'AZURE_OPENAI_USE_API_KEY', value: 'false' }
       // Azure AI Search — same Managed-Identity-default posture.

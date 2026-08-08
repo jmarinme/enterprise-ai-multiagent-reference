@@ -123,7 +123,7 @@ def test_get_knowledge_retriever_selects_azure_ai_search_from_environment(
 
     monkeypatch.setenv("KNOWLEDGE_PROVIDER", "azure_ai_search")
     monkeypatch.setenv("AZURE_AI_SEARCH_ENDPOINT", "https://example.search.windows.net")
-    monkeypatch.setenv("AZURE_AI_SEARCH_INDEX_NAME", "tmxai-knowledge-index")
+    monkeypatch.setenv("AZURE_AI_SEARCH_INDEX_NAME", "tmxap-knowledge-index")
 
     retriever = dependencies.get_knowledge_retriever()
 
@@ -148,7 +148,7 @@ def test_get_knowledge_retriever_uses_managed_identity_by_default_not_secret_pro
 ) -> None:
     monkeypatch.setenv("KNOWLEDGE_PROVIDER", "azure_ai_search")
     monkeypatch.setenv("AZURE_AI_SEARCH_ENDPOINT", "https://example.search.windows.net")
-    monkeypatch.setenv("AZURE_AI_SEARCH_INDEX_NAME", "tmxai-knowledge-index")
+    monkeypatch.setenv("AZURE_AI_SEARCH_INDEX_NAME", "tmxap-knowledge-index")
     monkeypatch.delenv("AZURE_AI_SEARCH_USE_API_KEY", raising=False)
 
     with patch("api.dependencies.build_secret_provider") as mock_build_secret_provider:
@@ -214,7 +214,7 @@ def test_get_supervisor_wires_all_three_azure_providers_together(
     monkeypatch.setenv("AZURE_OPENAI_DEPLOYMENT", "chat")
     monkeypatch.setenv("KNOWLEDGE_PROVIDER", "azure_ai_search")
     monkeypatch.setenv("AZURE_AI_SEARCH_ENDPOINT", "https://example.search.windows.net")
-    monkeypatch.setenv("AZURE_AI_SEARCH_INDEX_NAME", "tmxai-knowledge-index")
+    monkeypatch.setenv("AZURE_AI_SEARCH_INDEX_NAME", "tmxap-knowledge-index")
     monkeypatch.setenv("CONVERSATION_STORE_PROVIDER", "cosmos")
     monkeypatch.setenv("COSMOS_DB_ENDPOINT", "https://example.documents.azure.com:443/")
 

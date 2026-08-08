@@ -44,7 +44,7 @@ The architecture document is the source of truth. If this prompt conflicts with 
 ## 1. PROJECT CONTEXT
 
 - Project name: `TMX Enterprise AI Reference Platform`
-- Short resource prefix: `tmxai`
+- Short resource prefix: `tmxap` ("TMX Agent Platform" abbreviated; renamed from the original `tmxai` in PBI-03-05 — see docs/sprint_03/decisions.md — to avoid confusion with an unrelated, pre-existing internal `tm-ai` project prefix in the target Azure tenant, and to keep the projectName short enough for Key Vault's 24-character name limit)
 - Repository type: vibecoding monorepo
 - Cloud: Microsoft Azure
 - Environments:
@@ -364,7 +364,7 @@ ops/bicep/
 7. Cosmos DB for NoSQL:
    - Serverless for dev.
    - Session consistency.
-   - Database: `tmxai-conversation-db`.
+   - Database: `tmxap-conversation-db`.
    - Container: `conversations`.
    - Partition key: `/userId`.
    - TTL configurable.

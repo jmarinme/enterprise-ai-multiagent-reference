@@ -82,7 +82,7 @@ def _build_pipeline(
     pipeline = KnowledgeIngestionPipeline(
         index_client=index_client,
         search_client=search_client,
-        index_name="tmxai-knowledge-index",
+        index_name="tmxap-knowledge-index",
         loaders=loaders,
         embedding_provider=embedding_provider,
     )
@@ -96,7 +96,7 @@ async def test_ensure_index_creates_or_updates_the_configured_index() -> None:
 
     index_client.create_or_update_index.assert_called_once()
     (index_arg,), _ = index_client.create_or_update_index.call_args
-    assert index_arg.name == "tmxai-knowledge-index"
+    assert index_arg.name == "tmxap-knowledge-index"
 
 
 async def test_ingest_uploads_new_chunks_when_the_index_is_empty(tmp_path: Path) -> None:

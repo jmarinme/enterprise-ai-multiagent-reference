@@ -18,7 +18,13 @@ from src.llm.exceptions import (
     LLMRateLimitError,
     LLMTimeoutError,
 )
-from src.llm.models import LLMMessage, LLMMessageRole, LLMRequest, LLMToolDefinition
+from src.llm.models import (
+    LLMGenerationSettings,
+    LLMMessage,
+    LLMMessageRole,
+    LLMRequest,
+    LLMToolDefinition,
+)
 
 if TYPE_CHECKING:
     from src.llm.azure_openai_provider import AzureOpenAIProvider
@@ -48,13 +54,16 @@ def test_missing_deployment_raises_configuration_error() -> None:
         )
 
 
-def _build_provider() -> "AzureOpenAIProvider":
+def _build_provider(
+    deployment: str = "gpt-4o-mini", model_name: str | None = None
+) -> "AzureOpenAIProvider":
     from src.llm.azure_openai_provider import AzureOpenAIProvider
 
     return AzureOpenAIProvider(
         endpoint="https://example.openai.azure.com/",
-        deployment="gpt-4o-mini",
+        deployment=deployment,
         api_version="2024-10-21",
+        model_name=model_name,
     )
 
 
@@ -351,3 +360,115 @@ async def test_generate_maps_a_tool_role_message_to_the_sdk_tool_message_shape(
         "content": '{"success": true}',
         "tool_call_id": "call_1",
     }
+
+
+# Model-capability adaptation (PBI-03-05): reasoning-family models (gpt-5*, o1*, o3*, o4*)
+# reject an explicit, non-default temperature outright — confirmed via a real Azure OpenAI
+# deployment failure against gpt-5-mini. See src/llm/azure_openai_provider.py's
+# _is_reasoning_model and docs/sprint_03/decisions.md for the full writeup.
+#
+# Azure OpenAI addresses deployments by an arbitrary alias (e.g. "chat"), never by the
+# underlying model name — confirmed by a second real deployment failure when the capability
+# check below was first implemented against `deployment` alone (it silently never fired,
+# because the real deployment alias in this codebase's own Bicep template is "chat", which does
+# not start with "gpt-5"). These tests therefore always use a realistic, distinct
+# deployment/model_name pair (deployment="chat", model_name="gpt-5-mini") for the reasoning-
+# model cases, not the same string for both, so this exact regression cannot reappear silently.
+
+
+@patch("src.llm.azure_openai_provider.AsyncAzureOpenAI")
+@patch("azure.identity.aio.DefaultAzureCredential")
+@patch("azure.identity.aio.get_bearer_token_provider")
+async def test_traditional_model_sends_explicit_temperature_and_max_completion_tokens(
+    mock_token_provider: MagicMock, mock_credential_cls: MagicMock, mock_client_cls: MagicMock
+) -> None:
+    """A traditional (non-reasoning) model like gpt-4o-mini keeps receiving an explicit
+    temperature exactly as configured — LLMGenerationSettings' deterministic temperature=0.0
+    default is preserved unchanged for every model this provider already supported."""
+    mock_client = mock_client_cls.return_value
+    mock_client.chat.completions.create = AsyncMock(return_value=_fake_completion())
+    provider = _build_provider(deployment="chat", model_name="gpt-4o-mini")
+
+    await provider.generate(
+        LLMRequest(messages=[LLMMessage(role=LLMMessageRole.USER, content="hello")])
+    )
+
+    _, call_kwargs = mock_client.chat.completions.create.call_args
+    assert call_kwargs["model"] == "chat"
+    assert call_kwargs["temperature"] == 0.0
+    assert "max_completion_tokens" in call_kwargs
+    assert "max_tokens" not in call_kwargs
+
+
+@patch("src.llm.azure_openai_provider.AsyncAzureOpenAI")
+@patch("azure.identity.aio.DefaultAzureCredential")
+@patch("azure.identity.aio.get_bearer_token_provider")
+async def test_reasoning_model_capability_check_uses_model_name_not_deployment_alias(
+    mock_token_provider: MagicMock, mock_credential_cls: MagicMock, mock_client_cls: MagicMock
+) -> None:
+    """Regression guard: the reasoning-family check must key off the real model name
+    (model_name="gpt-5-mini"), not the arbitrary deployment alias ("chat") that is actually
+    sent to the API as `model=`. A provider built with only `deployment="chat"` (no
+    model_name) must NOT detect this as a reasoning model — it has no way to know the real
+    model without model_name being explicitly supplied."""
+    mock_client = mock_client_cls.return_value
+    mock_client.chat.completions.create = AsyncMock(return_value=_fake_completion())
+    provider = _build_provider(deployment="chat")  # model_name defaults to "chat", not gpt-5*
+
+    await provider.generate(
+        LLMRequest(messages=[LLMMessage(role=LLMMessageRole.USER, content="hello")])
+    )
+
+    _, call_kwargs = mock_client.chat.completions.create.call_args
+    assert call_kwargs["temperature"] == 0.0
+
+
+@patch("src.llm.azure_openai_provider.AsyncAzureOpenAI")
+@patch("azure.identity.aio.DefaultAzureCredential")
+@patch("azure.identity.aio.get_bearer_token_provider")
+async def test_reasoning_model_with_default_temperature_raises_configuration_error_without_calling_the_api(
+    mock_token_provider: MagicMock, mock_credential_cls: MagicMock, mock_client_cls: MagicMock
+) -> None:
+    """gpt-5-mini cannot honor LLMGenerationSettings' deterministic temperature=0.0 default.
+    This must fail loudly and typed (LLMConfigurationError) before any network call is made,
+    never silently drop the caller's requested temperature or silently change response
+    determinism."""
+    mock_client = mock_client_cls.return_value
+    mock_client.chat.completions.create = AsyncMock(return_value=_fake_completion())
+    provider = _build_provider(deployment="chat", model_name="gpt-5-mini")
+
+    with pytest.raises(LLMConfigurationError):
+        await provider.generate(
+            LLMRequest(messages=[LLMMessage(role=LLMMessageRole.USER, content="hello")])
+        )
+
+    mock_client.chat.completions.create.assert_not_called()
+
+
+@patch("src.llm.azure_openai_provider.AsyncAzureOpenAI")
+@patch("azure.identity.aio.DefaultAzureCredential")
+@patch("azure.identity.aio.get_bearer_token_provider")
+async def test_reasoning_model_with_fixed_temperature_succeeds_without_sending_temperature(
+    mock_token_provider: MagicMock, mock_credential_cls: MagicMock, mock_client_cls: MagicMock
+) -> None:
+    """gpt-5-mini rejects an explicit temperature even when it equals the API's own fixed
+    default (1.0) — a caller that explicitly opts into non-deterministic behavior via
+    LLMGenerationSettings(temperature=1.0) can still generate successfully, with the
+    temperature key omitted from the SDK call entirely. The deployment alias ("chat"), not the
+    model name, is still what gets sent to the API as `model=`."""
+    mock_client = mock_client_cls.return_value
+    mock_client.chat.completions.create = AsyncMock(return_value=_fake_completion())
+    provider = _build_provider(deployment="chat", model_name="gpt-5-mini")
+
+    response = await provider.generate(
+        LLMRequest(
+            messages=[LLMMessage(role=LLMMessageRole.USER, content="hello")],
+            settings=LLMGenerationSettings(temperature=1.0),
+        )
+    )
+
+    assert response.text == "a mocked completion"
+    _, call_kwargs = mock_client.chat.completions.create.call_args
+    assert call_kwargs["model"] == "chat"
+    assert "temperature" not in call_kwargs
+    assert "max_completion_tokens" in call_kwargs
