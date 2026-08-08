@@ -478,6 +478,12 @@ module apiContainerApp 'modules/container-app.bicep' = {
       { name: 'ENVIRONMENT', value: environmentName }
       { name: 'PROJECT_NAME', value: projectName }
       { name: 'LOG_LEVEL', value: 'INFO' }
+      // CORS_ALLOWED_ORIGINS (PBI-04-02): the deployed Web Container App's own FQDN, resolved
+      // dynamically via the webContainerApp module's own output — never a hardcoded domain
+      // string. Bicep infers the apiContainerApp -> webContainerApp dependency from this
+      // reference automatically; webContainerApp does not reference apiContainerApp back, so
+      // no cycle. Never "*" — see docs/sprint_04/decisions.md.
+      { name: 'CORS_ALLOWED_ORIGINS', value: 'https://${webContainerApp.outputs.fqdn}' }
       // AZURE_CLIENT_ID (PBI-03-05): required so DefaultAzureCredential's ManagedIdentityCredential
       // component knows which identity to use. A user-assigned identity is ambiguous to
       // DefaultAzureCredential without this — confirmed via a real deployment failure ("Unable to
