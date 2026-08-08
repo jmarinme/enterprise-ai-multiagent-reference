@@ -52,7 +52,7 @@ def test_chunk_defaults_version_and_section_and_embedding() -> None:
 
 def test_ingestion_report_total_processed_sums_uploaded_and_unchanged() -> None:
     report = IngestionReport(
-        index_name="tmxai-knowledge-index",
+        index_name="tmxap-knowledge-index",
         uploaded_chunk_ids=["a", "b"],
         unchanged_chunk_ids=["c"],
     )
@@ -61,8 +61,8 @@ def test_ingestion_report_total_processed_sums_uploaded_and_unchanged() -> None:
 
 
 def test_ingestion_report_has_failures_reflects_failed_dict() -> None:
-    clean = IngestionReport(index_name="tmxai-knowledge-index")
-    failed = IngestionReport(index_name="tmxai-knowledge-index", failed={"a.md": "parse error"})
+    clean = IngestionReport(index_name="tmxap-knowledge-index")
+    failed = IngestionReport(index_name="tmxap-knowledge-index", failed={"a.md": "parse error"})
 
     assert clean.has_failures is False
     assert failed.has_failures is True

@@ -62,6 +62,23 @@ from src.llm.models import (
 _PROVIDER_NAME = "azure_openai"
 _ENTRA_ID_SCOPE = "https://cognitiveservices.azure.com/.default"
 
+# Reasoning-family models (PBI-03-05): confirmed via a real Azure OpenAI deployment failure
+# against gpt-5-mini ("Unsupported value: 'temperature' does not support 0.0 with this model.
+# Only the default (1) value is supported.") that this model family accepts no explicit
+# temperature at all — only the API's own built-in default. This is documented, industry-wide
+# reasoning-model behavior (OpenAI's o-series and gpt-5 family), not specific to this one model
+# version. Traditional chat-completions models (gpt-4o*, gpt-4.1*, gpt-3.5*, ...) are unaffected
+# and keep receiving an explicit temperature exactly as before. See
+# docs/sprint_03/decisions.md (PBI-03-05) for the full capability-gap writeup.
+_REASONING_MODEL_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+_REASONING_MODEL_FIXED_TEMPERATURE = 1.0
+
+
+def _is_reasoning_model(model: str) -> bool:
+    """True for OpenAI/Azure OpenAI "reasoning-family" models, which reject a caller-supplied
+    temperature other than the API's own fixed default."""
+    return model.startswith(_REASONING_MODEL_PREFIXES)
+
 
 class AzureOpenAIProvider:
     """LLMProvider implementation backed by Azure OpenAI."""
@@ -73,6 +90,7 @@ class AzureOpenAIProvider:
         api_version: str,
         secret_provider: SecretProvider | None = None,
         api_key_secret_name: str | None = None,
+        model_name: str | None = None,
     ) -> None:
         if not endpoint:
             raise LLMConfigurationError(
@@ -88,6 +106,13 @@ class AzureOpenAIProvider:
         self._api_version = api_version
         self._secret_provider = secret_provider
         self._api_key_secret_name = api_key_secret_name
+        # model_name (PBI-03-05): the underlying model (e.g. "gpt-5-mini"), used only for
+        # reasoning-family capability detection — distinct from `deployment`, an arbitrary
+        # Azure OpenAI deployment alias (e.g. "chat") that is what actually gets sent to the
+        # API as `model=`. Defaults to `deployment` when not given so a caller that never
+        # passes it behaves exactly as before this PBI (the alias happens to be usable as a
+        # capability hint only in the pre-PBI-03-05 tests, which use "gpt-4o-mini" as both).
+        self._model_name = model_name or deployment
         self._client: AsyncAzureOpenAI | None = None
         self._credential_close: object | None = None
 
@@ -123,17 +148,52 @@ class AzureOpenAIProvider:
 
     async def generate(self, request: LLMRequest) -> LLMResponse:
         client = await self._get_client()
+        # model: what is actually sent to the API as `model=` — an Azure OpenAI deployment
+        # alias (e.g. "chat"), never the underlying model name. self._model_name (constructor-
+        # level, PBI-03-05) is the real model name (e.g. "gpt-5-mini") used only for capability
+        # detection below — the two are deliberately kept distinct; see __init__'s docstring.
         model = request.settings.model or self._deployment
+
+        if _is_reasoning_model(self._model_name) and request.settings.temperature != (
+            _REASONING_MODEL_FIXED_TEMPERATURE
+        ):
+            # A real capability gap, not a bug to paper over: this reasoning-family model
+            # cannot honor a non-default temperature, and LLMGenerationSettings' own
+            # temperature=0.0 default (src/llm/models.py) encodes a deliberate, deterministic-
+            # response design choice made by callers (agents) — silently dropping or
+            # renegotiating it here would silently change their response-determinism guarantee,
+            # which is out of this provider's scope. Fail loudly and typed instead. See
+            # docs/sprint_03/decisions.md (PBI-03-05).
+            raise LLMConfigurationError(
+                f"Model '{self._model_name}' (deployment '{model}') is a reasoning-family "
+                f"model and only supports the API's fixed default temperature "
+                f"({_REASONING_MODEL_FIXED_TEMPERATURE}); the requested "
+                f"temperature={request.settings.temperature} cannot be honored. Configure a "
+                "non-reasoning-family deployment, or explicitly pass "
+                f"temperature={_REASONING_MODEL_FIXED_TEMPERATURE} via LLMGenerationSettings "
+                "if deterministic (temperature=0) behavior is not required for this call."
+            )
 
         try:
             messages = _to_openai_messages(request.messages)
             create_kwargs: dict[str, Any] = {
                 "model": model,
                 "messages": messages,
-                "temperature": request.settings.temperature,
-                "max_tokens": request.settings.max_output_tokens,
+                # max_completion_tokens, not max_tokens (PBI-03-05): current-generation models
+                # (e.g. gpt-5-mini) reject max_tokens outright ("Unsupported parameter"), and
+                # max_completion_tokens is OpenAI's now-recommended replacement, accepted by
+                # every model this provider currently targets — confirmed via a real deployment
+                # failure. See docs/sprint_03/decisions.md.
+                "max_completion_tokens": request.settings.max_output_tokens,
                 "timeout": request.settings.timeout_seconds,
             }
+            if not _is_reasoning_model(self._model_name):
+                # Reasoning-family models reject an explicit temperature outright, even when it
+                # equals their own fixed default — the key above already guarantees temperature
+                # equals _REASONING_MODEL_FIXED_TEMPERATURE for that branch, so omitting it here
+                # is safe and required, not a silent drop of a value that differs from what was
+                # requested.
+                create_kwargs["temperature"] = request.settings.temperature
             if request.tools:
                 create_kwargs["tools"] = _to_openai_tools(request.tools)
             completion = await client.chat.completions.create(**create_kwargs)

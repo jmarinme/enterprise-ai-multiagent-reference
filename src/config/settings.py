@@ -20,7 +20,7 @@ class ConversationStoreSettings(BaseSettings):
 
     conversation_store_provider: Literal["in_memory", "cosmos"] = "in_memory"
     cosmos_db_endpoint: str | None = None
-    cosmos_db_database: str = "tmxai-conversation-db"
+    cosmos_db_database: str = "tmxap-conversation-db"
     cosmos_db_container: str = "conversations"
 
 
@@ -58,6 +58,12 @@ class LLMSettings(BaseSettings):
     llm_provider: Literal["mock", "azure_openai", "ollama"] = "mock"
     azure_openai_endpoint: str | None = None
     azure_openai_deployment: str | None = None
+    # azure_openai_model_name (PBI-03-05): the underlying model (e.g. "gpt-5-mini"), distinct
+    # from azure_openai_deployment (an arbitrary alias, e.g. "chat"). AzureOpenAIProvider needs
+    # this separately to detect reasoning-family model capability differences. None falls back
+    # to azure_openai_deployment (see apps/api/src/api/dependencies.py) so a caller/environment
+    # that never sets it behaves exactly as before this PBI.
+    azure_openai_model_name: str | None = None
     azure_openai_api_version: str = "2024-10-21"
     azure_openai_use_api_key: bool = False
     azure_openai_api_key_secret_name: str = "azure-openai-api-key"

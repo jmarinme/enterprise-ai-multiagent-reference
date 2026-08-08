@@ -34,11 +34,11 @@ param skuName string = 'S0'
 @description('Model deployment name — this is the value AZURE_OPENAI_DEPLOYMENT/LLMSettings.azure_openai_deployment must reference.')
 param deploymentName string = 'chat'
 
-@description('Underlying OpenAI model name to deploy.')
-param modelName string = 'gpt-4o-mini'
+@description('Underlying OpenAI model name to deploy. gpt-5-mini (PBI-03-05): gpt-4o-mini is lifecycle status "Deprecating" in the live Azure OpenAI model catalog and rejected for new deployments — see docs/sprint_03/decisions.md.')
+param modelName string = 'gpt-5-mini'
 
 @description('Underlying OpenAI model version to deploy.')
-param modelVersion string = '2024-07-18'
+param modelVersion string = '2025-08-07'
 
 @description('Deployment capacity in units of 1,000 tokens-per-minute (TPM). Conservative default sized for dev/academic use — increase per environment via the parameter files.')
 @minValue(1)
@@ -69,8 +69,13 @@ resource account 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
 resource deployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = {
   parent: account
   name: deploymentName
+  // GlobalStandard, not Standard: confirmed via a real deployment failure in PBI-03-05 that
+  // Azure deprecated the regional 'Standard' SKU for gpt-4o-mini:2024-07-18 on 2026-03-31
+  // (Microsoft.CognitiveServices model catalog, /locations/eastus2/models). GlobalStandard is
+  // the same model/version, Microsoft's current default routing tier, and remains valid per the
+  // same catalog until 2027-04-14.
   sku: {
-    name: 'Standard'
+    name: 'GlobalStandard'
     capacity: modelCapacity
   }
   properties: {
@@ -96,3 +101,8 @@ output id string = account.id
 output name string = account.name
 output endpoint string = account.properties.endpoint
 output deploymentName string = deployment.name
+// modelName (PBI-03-05): the underlying model (e.g. "gpt-5-mini"), distinct from deploymentName
+// (an arbitrary alias, e.g. "chat"). AzureOpenAIProvider needs this separately from the
+// deployment alias to detect reasoning-family model capability differences — see
+// src/llm/azure_openai_provider.py and docs/sprint_03/decisions.md.
+output modelName string = modelName

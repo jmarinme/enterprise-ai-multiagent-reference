@@ -3,7 +3,7 @@ using '../main.bicep'
 // Staging: modest headroom for pre-production validation; purge protection on.
 
 param environmentName = 'staging'
-param projectName = 'tmxai'
+param projectName = 'tmxap'
 param purpose = 'academic-reference-platform'
 param dataClassification = 'synthetic'
 
@@ -12,7 +12,7 @@ param logAnalyticsRetentionInDays = 30
 param logAnalyticsDailyQuotaGb = -1
 param keyVaultEnablePurgeProtection = true
 
-param cosmosDatabaseName = 'tmxai-conversation-db'
+param cosmosDatabaseName = 'tmxap-conversation-db'
 param cosmosContainerName = 'conversations'
 param cosmosConsistencyLevel = 'Session'
 param cosmosCapacityMode = 'Serverless'
@@ -21,12 +21,14 @@ param cosmosConversationTtlSeconds = -1
 // Basic (not Free): staging is not the single free-tier slot a subscription gets, and an SLA
 // is appropriate for pre-production validation.
 param aiSearchSkuName = 'basic'
-param aiSearchIndexName = 'tmxai-knowledge-index'
+param aiSearchIndexName = 'tmxap-knowledge-index'
 
 param azureOpenAiSkuName = 'S0'
 param azureOpenAiDeploymentName = 'chat'
-param azureOpenAiModelName = 'gpt-4o-mini'
-param azureOpenAiModelVersion = '2024-07-18'
+// gpt-5-mini replaces gpt-4o-mini as of PBI-03-05 — see dev.bicepparam and
+// docs/sprint_03/decisions.md for the full rationale.
+param azureOpenAiModelName = 'gpt-5-mini'
+param azureOpenAiModelVersion = '2025-08-07'
 param azureOpenAiModelCapacity = 30
 param azureOpenAiApiVersion = '2024-10-21'
 

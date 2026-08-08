@@ -14,7 +14,7 @@ def test_build_index_definition_uses_the_supplied_index_name_not_a_literal() -> 
 
 
 def test_build_index_definition_declares_chunk_id_as_the_key_field() -> None:
-    index = build_index_definition("tmxai-knowledge-index")
+    index = build_index_definition("tmxap-knowledge-index")
 
     key_fields = [field for field in index.fields if field.key]
     assert len(key_fields) == 1
@@ -22,7 +22,7 @@ def test_build_index_definition_declares_chunk_id_as_the_key_field() -> None:
 
 
 def test_build_index_definition_declares_every_grounding_required_field() -> None:
-    index = build_index_definition("tmxai-knowledge-index")
+    index = build_index_definition("tmxap-knowledge-index")
 
     field_names = {field.name for field in index.fields}
     assert field_names == {

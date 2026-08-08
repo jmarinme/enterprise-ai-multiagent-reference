@@ -28,7 +28,7 @@ async def test_create_and_retrieve_conversation_against_live_cosmos() -> None:
     assert COSMOS_DB_ENDPOINT is not None
     repo = CosmosConversationRepository(
         endpoint=COSMOS_DB_ENDPOINT,
-        database_name=os.environ.get("COSMOS_DB_DATABASE", "tmxai-conversation-db"),
+        database_name=os.environ.get("COSMOS_DB_DATABASE", "tmxap-conversation-db"),
         container_name=os.environ.get("COSMOS_DB_CONTAINER", "conversations"),
     )
     try:

@@ -19,9 +19,13 @@
 #
 # aiohttp is installed unconditionally (PBI-03-01) so OllamaLLMProvider (LLM_PROVIDER=ollama)
 # works inside this image without a rebuild — it is lazily imported and unused at runtime for
-# every other provider. Azure-only extras (openai, azure-identity, azure-search-documents,
-# azure-cosmos) remain intentionally NOT installed here — selecting azure_openai/azure_ai_search
-# /cosmos inside this image is a pre-existing gap predating this PBI, out of scope to fix here.
+# every other provider. Azure OpenAI (openai, azure-identity) and Cosmos DB (azure-cosmos,
+# azure-identity) extras are installed unconditionally as of PBI-03-05, whose dev deployment
+# selects llmProvider=azure_openai and conversationStoreProvider=cosmos — without these packages,
+# AzureOpenAIProvider/CosmosConversationRepository fail to import at container startup.
+# azure-search-documents and azure-keyvault-secrets remain NOT installed: knowledgeProvider stays
+# 'local' (PBI-03-02's decision) and no SECRET_PROVIDER=key_vault env var is set on this
+# Container App, so neither is exercised at runtime yet — see docs/sprint_03/decisions.md.
 
 FROM python:3.12-slim
 
@@ -34,7 +38,10 @@ RUN pip install --no-cache-dir \
     "pydantic>=2.7,<3" \
     "pydantic-settings>=2.3,<3" \
     "pyyaml>=6.0,<7" \
-    "aiohttp>=3.9,<4"
+    "aiohttp>=3.9,<4" \
+    "openai>=1.40,<2" \
+    "azure-identity>=1.17,<2" \
+    "azure-cosmos>=4.7,<5"
 
 COPY apps/api/src ./app_src
 COPY src ./src

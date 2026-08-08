@@ -31,6 +31,11 @@ def get_llm_provider(
             api_version=settings.azure_openai_api_version,
             secret_provider=secret_provider if use_api_key else None,
             api_key_secret_name=settings.azure_openai_api_key_secret_name if use_api_key else None,
+            # model_name (PBI-03-05): the real underlying model, distinct from
+            # azure_openai_deployment's arbitrary alias — see AzureOpenAIProvider.__init__ and
+            # docs/sprint_03/decisions.md. None (unset) falls back to the deployment alias
+            # itself, matching this factory's pre-PBI-03-05 behavior exactly.
+            model_name=settings.azure_openai_model_name,
         )
 
     if settings.llm_provider == "ollama":
