@@ -263,6 +263,10 @@ module containerRegistry 'modules/container-registry.bicep' = {
     tags: tags
     skuName: acrSkuName
     pullPrincipalId: managedIdentity.outputs.principalId
+    // pushPrincipalId (PBI-04-01): the CI/CD pipeline authenticates as this same Managed
+    // Identity via Workload Identity Federation (no new identity, no stored credential) — see
+    // docs/sprint_04/decisions.md.
+    pushPrincipalId: managedIdentity.outputs.principalId
   }
 }
 
@@ -466,6 +470,10 @@ module apiContainerApp 'modules/container-app.bicep' = {
     memory: apiMemory
     minReplicas: apiMinReplicas
     maxReplicas: apiMaxReplicas
+    // cicdPrincipalId (PBI-04-01): grants the same Managed Identity the CI/CD pipeline
+    // authenticates as (via Workload Identity Federation) permission to update this specific
+    // Container App's image/revision — see docs/sprint_04/decisions.md.
+    cicdPrincipalId: managedIdentity.outputs.principalId
     env: [
       { name: 'ENVIRONMENT', value: environmentName }
       { name: 'PROJECT_NAME', value: projectName }
@@ -535,6 +543,8 @@ module webContainerApp 'modules/container-app.bicep' = {
     memory: webMemory
     minReplicas: webMinReplicas
     maxReplicas: webMaxReplicas
+    // cicdPrincipalId (PBI-04-01): same rationale as apiContainerApp above.
+    cicdPrincipalId: managedIdentity.outputs.principalId
     env: [
       { name: 'ENVIRONMENT', value: environmentName }
     ]

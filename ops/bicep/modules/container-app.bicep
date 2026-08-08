@@ -57,6 +57,11 @@ param secrets array = []
 @description('Maps environment variable names to a secret defined in secrets, as { envName, secretName } objects. Kept separate from secrets because env var naming conventions (UPPER_SNAKE_CASE) differ from Container Apps secret-name constraints (lowercase-hyphen).')
 param secretEnvMappings array = []
 
+@description('Principal ID of the identity granted the built-in "Container Apps Contributor" role on this specific Container App — needed by the CI/CD pipeline to update the deployed image/revision (PBI-04-01). Empty string skips the role assignment. Scoped to this one Container App only, not the resource group, so the pipeline identity cannot touch Cosmos DB/Key Vault/Azure OpenAI/AI Search/the registry\'s own management plane or the other Container App via this role.')
+param cicdPrincipalId string = ''
+
+var containerAppsContributorRoleId = '358470bc-b998-42bd-ab17-a7e34c199c0f'
+
 var secretDefinitions = [
   for s in secrets: {
     name: s.name
@@ -117,6 +122,19 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
         maxReplicas: maxReplicas
       }
     }
+  }
+}
+
+resource cicdRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(cicdPrincipalId)) {
+  name: guid(containerApp.id, cicdPrincipalId, containerAppsContributorRoleId)
+  scope: containerApp
+  properties: {
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      containerAppsContributorRoleId
+    )
+    principalId: cicdPrincipalId
+    principalType: 'ServicePrincipal'
   }
 }
 

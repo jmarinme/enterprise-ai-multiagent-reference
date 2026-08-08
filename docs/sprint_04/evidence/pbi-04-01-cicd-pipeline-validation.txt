@@ -1,0 +1,220 @@
+PBI-04-01: Azure DevOps CI/CD Pipeline for the TMX Agent Platform DEV Environment
+Condensed evidence log
+Date: 2026-08-08
+
+=====================================================================
+1. PRE-WORK
+=====================================================================
+
+Read: CLAUDE.md, docs/sprint_03/{README,validation,decisions}.md, docs/Architecture/adr/*,
+ops/bicep/* (all modules + main.bicep + all 3 parameter files), the existing azure-pipelines.yml
+and azure-pipelines/templates/steps/*.yml (PBI-00-07), docs/sprint_00/security-baseline.md §6.
+
+az resource list --resource-group rg-tmx-agent-platform-dev
+  -> All 12 resources from PBI-03-05/06 confirmed still present, Succeeded.
+
+az containerapp show --name ca-tmxap-dev-api --resource-group rg-tmx-agent-platform-dev
+  --query "{name:name, fqdn:properties.configuration.ingress.fqdn, latestRevision:properties.latestRevisionName}"
+  -> {"fqdn":"ca-tmxap-dev-api.bluemushroom-e2f74836.eastus2.azurecontainerapps.io",
+      "latestRevision":"ca-tmxap-dev-api--v5","name":"ca-tmxap-dev-api"}
+
+ls ops/bicep/modules/*.bicep
+  -> 14 files: ai-search, app-insights, azure-openai, container-app,
+     container-apps-environment, container-registry, cosmos-db, key-vault,
+     key-vault-secret, log-analytics, managed-identity, private-dns-zone,
+     private-endpoint, virtual-network.
+
+Cross-checked against the existing pipeline's bicepModuleFiles parameter default: only 10
+of these 14 were listed (missing ai-search, azure-openai, private-dns-zone, private-endpoint,
+virtual-network — all added by PBI-02-02/03-02/03-04, never added to CI validation). Fixed.
+
+Read apps/api/Dockerfile's own header comment: build context MUST be repo root (COPY src ./src
+from outside apps/api), required since PBI-03-02. Compared against the existing pipeline's
+ContainerBuildValidation stage: `docker build -t "$(apiImageName):$(imageTag)" ./apps/api` —
+wrong context, would fail at the COPY src ./src instruction. Fixed.
+
+=====================================================================
+2. BICEP RBAC ADDITIONS (static validation only — NOT applied to real Azure this PBI)
+=====================================================================
+
+az role definition list --name "AcrPush" -o json
+  -> id ".../roleDefinitions/8311e382-0749-4cb8-b61a-304f252e45ec", roleName "AcrPush",
+     actions: ["Microsoft.ContainerRegistry/registries/pull/read",
+                "Microsoft.ContainerRegistry/registries/push/write"]
+
+az role definition list --name "Container Apps Contributor" -o json
+  -> id ".../roleDefinitions/358470bc-b998-42bd-ab17-a7e34c199c0f",
+     roleName "Container Apps Contributor",
+     actions: ["Microsoft.App/containerApps/*/read", ".../write", ".../delete", ".../action",
+                "Microsoft.App/managedEnvironments/*/read", ".../join/action", ...]
+     (all Microsoft.App/* scoped — confirms per-Container-App assignment is genuinely
+      least-privilege, this role cannot touch Cosmos/KeyVault/OpenAI/AISearch regardless of
+      assignment scope)
+
+Changes made:
+  - ops/bicep/modules/container-registry.bicep: new `pushPrincipalId` param (mirrors existing
+    `pullPrincipalId`), new `acrPushRoleAssignment` resource scoped to the registry.
+  - ops/bicep/modules/container-app.bicep: new `cicdPrincipalId` param, new
+    `cicdRoleAssignment` resource scoped to the individual Container App (not the resource
+    group).
+  - ops/bicep/main.bicep: containerRegistry module call gains
+    `pushPrincipalId: managedIdentity.outputs.principalId`; both apiContainerApp and
+    webContainerApp module calls gain `cicdPrincipalId: managedIdentity.outputs.principalId`
+    — the SAME existing Managed Identity already used for every other role assignment in this
+    template, reused via Workload Identity Federation, not a new identity.
+
+az bicep build --file ops/bicep/main.bicep --stdout > /dev/null
+  -> EXIT:0, no stderr output (0 warnings)
+az bicep build --file ops/bicep/modules/container-registry.bicep --stdout > /dev/null
+  -> EXIT:0, no stderr output
+az bicep build --file ops/bicep/modules/container-app.bicep --stdout > /dev/null
+  -> EXIT:0, no stderr output
+az bicep build-params --file ops/bicep/parameters/dev.bicepparam --stdout > /dev/null
+  -> EXIT:0
+az bicep build-params --file ops/bicep/parameters/staging.bicepparam --stdout > /dev/null
+  -> EXIT:0
+az bicep build-params --file ops/bicep/parameters/prod.bicepparam --stdout > /dev/null
+  -> EXIT:0
+
+NOT executed: `az deployment group create` to apply these role assignments to the real
+rg-tmx-agent-platform-dev. Deliberately deferred pending explicit user approval — this PBI's
+own "Validation" section lists only pytest/ruff/mypy/YAML validation/local dry-run, not a live
+Azure deployment (unlike PBI-03-05/06's explicit live-validation requirement). See
+docs/sprint_04/decisions.md.
+
+=====================================================================
+3. PIPELINE YAML — REWRITE AND VALIDATION
+=====================================================================
+
+Rewrote azure-pipelines.yml in place (not a new file):
+  - Preserved Stage 1 (BackendQuality) and Stage 2 (FrontendQuality) structurally, adding
+    Cache@2 tasks (pip keyed on both pyproject.toml files; npm keyed on package-lock.json) to
+    satisfy the "cache packages" requirement explicitly.
+  - Preserved Stage 3 (InfrastructureValidation), fixed the stale bicepModuleFiles list (see
+    above).
+  - Replaced Stage 4 (ContainerBuildValidation, build-only, buggy context) with
+    ContainerBuildAndPush (build + push combined into one stage — see decisions.md for why;
+    fixed build context; resolves the existing API Container App's real FQDN to correctly bake
+    VITE_API_URL into the Web image build).
+  - Replaced the disabled (condition: false) Deploy_Dev stage with an ENABLED DeployDev stage:
+    targeted `az containerapp update --image` only, resolved dynamically, unique
+    dev-$(Build.BuildId) tag, never `az deployment group create`.
+  - Added new SmokeTests stage: GET /health, POST /chat, fails the pipeline on any failure.
+  - Added new DeploymentSummary stage: image tags, deployed apps/revisions, execution time,
+    test summary (parsed from the backend/frontend JUnit artifacts), published as a pipeline
+    artifact and via ##vso[task.uploadsummary].
+  - Kept ArtifactPublication (IaC + validation summary, every run — not deploy-gated).
+  - New pipeline parameters: azureServiceConnection (default
+    'tmx-agent-platform-dev-oidc'), resourceGroupName (the only hardcoded resource name —
+    'rg-tmx-agent-platform-dev', stable/non-generated), deployBranch (default 'main').
+  - New variable isDeployRun gates Stages 4-8 to pushes on deployBranch only.
+
+python -c "import yaml; data = yaml.safe_load(open('azure-pipelines.yml')); ..."
+  -> YAML syntax: OK
+     Number of stages: 8
+     BackendQuality | FrontendQuality | InfrastructureValidation | ContainerBuildAndPush |
+     DeployDev | SmokeTests | DeploymentSummary | ArtifactPublication
+
+az extension list -o table
+  -> (empty — no extensions installed)
+az devops configure -l
+  -> Requires the azure-devops extension; prompted for interactive install (Y/n), which this
+     non-interactive session cannot answer -> EOFError. No Azure DevOps organization is
+     configured in this environment. Confirms: a true server-side Azure Pipelines schema
+     validation (az pipelines run --validate-only or equivalent) could not be performed this
+     PBI — documented as a scope boundary, not silently skipped.
+
+=====================================================================
+4. LOCAL DRY-RUN (real, read-only az CLI calls against the live DEV environment)
+=====================================================================
+
+RESOURCE_GROUP="rg-tmx-agent-platform-dev"
+
+az acr list --resource-group "$RESOURCE_GROUP" --query "[0].name" -o tsv
+  -> acrtmxapdevl3fgxt
+az acr list --resource-group "$RESOURCE_GROUP" --query "[0].loginServer" -o tsv
+  -> acrtmxapdevl3fgxt.azurecr.io
+
+az containerapp list --resource-group "$RESOURCE_GROUP" \
+  --query "[?ends_with(name, '-api')].name | [0]" -o tsv
+  -> ca-tmxap-dev-api
+az containerapp list --resource-group "$RESOURCE_GROUP" \
+  --query "[?ends_with(name, '-web')].name | [0]" -o tsv
+  -> ca-tmxap-dev-web
+
+az containerapp show --resource-group "$RESOURCE_GROUP" --name ca-tmxap-dev-api \
+  --query "properties.configuration.ingress.fqdn" -o tsv
+  -> ca-tmxap-dev-api.bluemushroom-e2f74836.eastus2.azurecontainerapps.io
+
+az containerapp show --name ca-tmxap-dev-api ... --query "properties.latestRevisionName" -o tsv
+  -> ca-tmxap-dev-api--v5
+az containerapp show --name ca-tmxap-dev-web ... --query "properties.latestRevisionName" -o tsv
+  -> ca-tmxap-dev-web--phnq58i
+
+--- Smoke test 1/2 (exact command from the SmokeTests stage) ---
+curl -sf --max-time 30 "https://ca-tmxap-dev-api.bluemushroom-e2f74836.eastus2.azurecontainerapps.io/health"
+  -> 200 {"status":"ok"}
+
+--- Smoke test 2/2 (exact command from the SmokeTests stage) ---
+curl -sf --max-time 60 -X POST "https://ca-tmxap-dev-api.../chat" \
+  -H "Content-Type: application/json" \
+  -d '{"userId":"cicd-smoke-test","message":"Hello, this is an automated CI/CD smoke test."}'
+  -> 200
+  {"conversationId":"e4b124d9-4740-406d-b377-1980638f4e8d","agent":"FallbackAgent",
+   "intent":"UNKNOWN","response":"I could not determine how to help with that. A human may
+   need to assist you.","metadata":{},"citations":[],"groundingMetadata":null,"toolCalls":[]}
+  (A generic smoke-test message correctly gets FallbackAgent/UNKNOWN — expected business
+   behavior, not a defect; the smoke test only asserts HTTP 200 + non-empty response/agent
+   fields, never a specific agent/intent, so this is exactly the kind of message a real smoke
+   test should safely use.)
+
+Exact Python assertion snippet from the SmokeTests stage, run against the real body above:
+  python3 -c "
+  import json, sys
+  body = json.load(sys.stdin)
+  assert body.get('response'), 'POST /chat returned no response text'
+  assert body.get('agent'), 'POST /chat returned no agent'
+  print(f\"POST /chat: OK (agent={body['agent']}, intent={body.get('intent')})\")
+  "
+  -> POST /chat: OK (agent=FallbackAgent, intent=UNKNOWN)
+  (run via the local .venv python.exe, since `python3` is not the correct binary alias in this
+   Windows dev shell — Azure DevOps's ubuntu-latest hosted agents have python3 natively.)
+
+Exact JUnit-parsing Python snippet from the DeploymentSummary stage, run against a real
+pytest --junitxml=... output (tests/unit/llm, 62 tests):
+  python -m pytest tests/unit/llm -q --junitxml=test_junit.xml -> "62 passed"
+  head -c 400 test_junit.xml -> confirms root element is <testsuites><testsuite ...>,
+    NOT a bare <testsuite> root
+  python -c "
+  import xml.etree.ElementTree as ET
+  root = ET.parse('test_junit.xml').getroot()
+  suite = root if root.tag == 'testsuite' else root.find('testsuite')
+  print(f\"{suite.get('tests')} tests, {suite.get('failures', 0)} failures, ...\")
+  "
+  -> 62 tests, 0 failures, 0 errors, 0 skipped
+  (confirms the parsing logic correctly handles the real <testsuites> wrapper this repo's own
+   pytest --junitxml actually produces)
+
+=====================================================================
+5. FULL REGRESSION SUITE (no Python source touched this PBI)
+=====================================================================
+
+pytest tests/ -q -> 455 passed, 2 skipped
+ruff check apps/api/src src tests ops/scripts -> All checks passed!
+mypy apps/api/src -> Success: no issues found in 13 source files
+mypy src -> Success: no issues found in 102 source files
+
+=====================================================================
+6. FINAL STATE
+=====================================================================
+
+Files changed: azure-pipelines.yml (rewritten in place), ops/bicep/main.bicep,
+ops/bicep/modules/container-registry.bicep, ops/bicep/modules/container-app.bicep,
+docs/sprint_04/{README,implementation-plan,validation,decisions}.md,
+docs/sprint_04/evidence/pbi-04-01-cicd-pipeline-validation.txt.
+
+No Python source file changed. No Agent/Supervisor/PromptManager/Tool Calling/RAG code
+touched. No new top-level Azure resource — only 2 new role-assignment resources, scoped to
+existing resources, not yet applied to real Azure. No QA/Prod environment created. No commit,
+no push, no live Azure deployment, no real Azure DevOps pipeline run — all pending explicit
+user review and approval.
