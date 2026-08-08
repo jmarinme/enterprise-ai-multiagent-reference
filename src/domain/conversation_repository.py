@@ -30,11 +30,21 @@ class ConversationRepository(Protocol):
         conversation_id: str,
         message: Message,
         metadata: dict[str, str] | None = None,
+        current_agent: str | None = None,
     ) -> Conversation:
         """Append a message to an existing conversation and return the updated conversation.
 
         When metadata is provided, it replaces the conversation's stored metadata (the
         Agent's latest working-state snapshot) — never merged, since the Agent always sends
         its complete current state, not a partial patch.
+
+        When current_agent is provided (PBI-05-01), it replaces the conversation's stored
+        current_agent — without this, a conversation's current_agent would be frozen at
+        whichever Agent handled its very first turn forever, since it was previously only ever
+        set at creation time. src.supervisor.orchestrator.SupervisorOrchestrator's own
+        "stay with the current agent on an ambiguous follow-up" fallback (PBI-01-05) reads this
+        field, so a stale value would misroute a follow-up back to the *original* agent even
+        after a legitimate cross-domain handoff (e.g. Claims -> Broker) — exactly the failure
+        mode PBI-05-01 requirement 5 explicitly calls out.
         """
         ...

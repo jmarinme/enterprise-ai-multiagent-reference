@@ -7,6 +7,17 @@ PaymentStatusTool, ClaimRegistrationTool, AdjusterAssignmentTool) can return typ
 end-to-end. The SYN-POL-000x records additionally cover the four claims-intake scenarios
 PBI-01-05 requires: active+paid, active+payment-issue, inactive, and not-found (any
 unrecognized number).
+
+ID namespace note (PBI-05-01, CLAUDE.md §7 "smallest viable change"): several ID prefixes
+coexist here for historical reasons (`POL-SYN-*`/`BRK-SYN-*` from the earliest Tool-framework
+proof-of-concept, `SYN-POL-000x` from the claims-intake PBI, `SYN-BRK-*` from the broker-
+services PBI). None were renamed or removed — many existing tests assert their exact IDs/field
+values, and renaming would violate "do not break existing regression tests unnecessarily."
+Instead, every **new** demo record added by PBI-05-01 uses one consistent canonical shape
+(`CUS-SYN-000x` customers, `SYN-POL-1xxx` policies, `SYN-BRK-000x` brokers — already established
+by PBI-04-04's customer-discovery work), and natural-language discovery (`customer_lookup`,
+`broker_lookup`) searches every record regardless of which prefix it happens to use — so a
+caller never needs to know or type an internal ID, old or new. See docs/sprint_05/decisions.md.
 """
 
 from __future__ import annotations
@@ -25,6 +36,10 @@ class SyntheticPolicyRecord(BaseModel):
     # to let a caller disambiguate between a customer's own multiple policies in natural
     # language (e.g. "la Hilux", "la de auto") — never a source of a business fact by itself.
     vehicle_description: str | None = None
+    # Optional, additive (PBI-05-01): the property-policy equivalent of vehicle_description —
+    # a short human description used only for natural disambiguation ("la de hogar") and to
+    # let ClaimsAgent's Property profile name the affected property in its own responses.
+    property_description: str | None = None
 
 
 class SyntheticClaimRecord(BaseModel):
@@ -216,12 +231,15 @@ class SyntheticCustomerRecord(BaseModel):
     policy_numbers: list[str]
 
 
-# Customer-discovery scenarios (PBI-04-04), additive, new SYN-POL-1xxx policy-number namespace
-# so the pre-existing SYN-POL-000x direct-policy-number-first tests/scenarios are left
-# byte-for-byte unchanged:
-#   Juan Pérez  -> two active auto policies (disambiguation demo: "la primera"/"la segunda"/
-#                  "la Hilux"/the Sentra)
-#   Ana Torres  -> a single active property policy (single-match auto-select demo)
+# Customer-discovery scenarios (PBI-04-04, expanded by PBI-05-01), additive, new SYN-POL-1xxx
+# policy-number namespace so the pre-existing SYN-POL-000x direct-policy-number-first tests/
+# scenarios are left byte-for-byte unchanged:
+#   Juan Pérez     -> two active, payment-current auto policies (multi-policy disambiguation
+#                     demo: "la primera"/"la segunda"/"la Hilux"/"el Sentra"/"la de auto")
+#   Ana Torres     -> a single active property policy, payment NOT current (single-match
+#                     auto-select demo; "active but payment-not-current" scenario)
+#   Carlos Mendoza -> a single LAPSED auto policy (single-match demo; "lapsed policy, reachable
+#                     through natural customer discovery, not just a direct policy number")
 # Any other name has no match -> "customer not found".
 SYNTHETIC_CUSTOMERS: dict[str, SyntheticCustomerRecord] = {
     "CUS-SYN-0001": SyntheticCustomerRecord(
@@ -233,6 +251,11 @@ SYNTHETIC_CUSTOMERS: dict[str, SyntheticCustomerRecord] = {
         customer_id="CUS-SYN-0002",
         full_name="Ana Torres",
         policy_numbers=["SYN-POL-1003"],
+    ),
+    "CUS-SYN-0003": SyntheticCustomerRecord(
+        customer_id="CUS-SYN-0003",
+        full_name="Carlos Mendoza",
+        policy_numbers=["SYN-POL-1004"],
     ),
 }
 
@@ -255,6 +278,14 @@ SYNTHETIC_POLICIES["SYN-POL-1003"] = SyntheticPolicyRecord(
     status="active",
     holder_name="Ana Torres",
     line_of_business="property",
+    property_description="Casa habitación, Colonia Del Valle, Ciudad de México",
+)
+SYNTHETIC_POLICIES["SYN-POL-1004"] = SyntheticPolicyRecord(
+    policy_number="SYN-POL-1004",
+    status="lapsed",
+    holder_name="Carlos Mendoza",
+    line_of_business="auto",
+    vehicle_description="Honda CR-V 2019",
 )
 
 SYNTHETIC_PAYMENT_STATUSES["SYN-POL-1001"] = SyntheticPaymentStatusRecord(
@@ -265,6 +296,9 @@ SYNTHETIC_PAYMENT_STATUSES["SYN-POL-1002"] = SyntheticPaymentStatusRecord(
 )
 SYNTHETIC_PAYMENT_STATUSES["SYN-POL-1003"] = SyntheticPaymentStatusRecord(
     policy_number="SYN-POL-1003", payment_current=False, last_payment_date="2026-03-01"
+)
+SYNTHETIC_PAYMENT_STATUSES["SYN-POL-1004"] = SyntheticPaymentStatusRecord(
+    policy_number="SYN-POL-1004", payment_current=False, last_payment_date="2025-11-01"
 )
 
 
@@ -316,5 +350,13 @@ SYNTHETIC_COVERAGES: dict[str, SyntheticCoverageRecord] = {
         coverage_type="Cobertura básica de daños",
         limit_amount=150000.00,
         deductible=10000.00,
+    ),
+    # Lapsed policies still have a last-known coverage on file — reported as a fact (the
+    # policy's lapsed status is what's surfaced as the caveat, not an absent coverage record).
+    "SYN-POL-1004": SyntheticCoverageRecord(
+        policy_number="SYN-POL-1004",
+        coverage_type="Cobertura amplia",
+        limit_amount=220000.00,
+        deductible=7500.00,
     ),
 }

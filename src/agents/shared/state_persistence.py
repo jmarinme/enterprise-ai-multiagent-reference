@@ -16,6 +16,17 @@ from pydantic import BaseModel, ValidationError
 
 StateT = TypeVar("StateT", bound=BaseModel)
 
+# Every per-agent working-state metadata key currently in use (PBI-05-01) — used only by
+# carry_forward_other_agent_state below, so a cross-domain handoff (Claims -> Broker ->
+# Commercial) does not silently destroy an in-progress conversation the caller might return to.
+# Adding a new multi-turn Agent's state key here is the only change needed for it to also
+# survive a handoff to/from any other Agent.
+KNOWN_AGENT_STATE_KEYS: tuple[str, ...] = (
+    "claimsIntakeState",
+    "brokerInquiryState",
+    "commercialIntakeState",
+)
+
 
 def load_agent_state(  # noqa: UP047
     metadata: dict[str, str], key: str, state_type: type[StateT]
@@ -35,3 +46,21 @@ def load_agent_state(  # noqa: UP047
         return state_type.model_validate_json(raw)
     except ValidationError:
         return state_type()
+
+
+def carry_forward_other_agent_state(metadata: dict[str, str], own_key: str) -> dict[str, str]:
+    """Every other Agent's own working-state entry already present in metadata, unchanged and
+    un-parsed — never own_key itself. src.supervisor.orchestrator.SupervisorOrchestrator persists
+    each turn's AgentResponse.metadata as a full replacement of the conversation's stored
+    metadata (see ConversationRepository.append_message's own docstring), so without this, a
+    domain handoff (PBI-05-01 requirement 5 — "Ahora quiero consultar mis comisiones.") would
+    silently discard whichever other Agent's in-progress intake was under way, purely because
+    that Agent didn't happen to be the one that answered this particular turn. Each Agent still
+    only ever loads and acts on its own key (via load_agent_state above), so a carried-forward
+    entry can never drive another Agent's behavior — it is inert baggage until that Agent is
+    addressed again."""
+    return {
+        key: value
+        for key, value in metadata.items()
+        if key in KNOWN_AGENT_STATE_KEYS and key != own_key
+    }

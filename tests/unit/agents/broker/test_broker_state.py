@@ -43,9 +43,9 @@ def test_missing_required_fields_shrinks_as_fields_are_filled() -> None:
 
 
 def test_prompt_for_missing_combines_both_commission_fields_in_one_message() -> None:
-    prompt = prompt_for_missing(["broker_id", "commission_period"], "en")
+    prompt = prompt_for_missing(["broker_name", "commission_period"], "en")
 
-    assert "broker ID" in prompt
+    assert "brokerage" in prompt
     assert "period" in prompt
 
 

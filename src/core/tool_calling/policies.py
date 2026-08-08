@@ -25,10 +25,12 @@ CLAIMS_ALLOWED_TOOLS: tuple[str, ...] = (
 # Tool ClaimsAgent uses (PolicyLookupTool's result carries a `status` field) — there is no
 # separate "policy_status" Tool in the registry.
 BROKER_ALLOWED_TOOLS: tuple[str, ...] = (
+    "broker_lookup",
     "broker_account_lookup",
     "policy_lookup",
     "transaction_status",
     "commission_lookup",
+    "commission_periods_lookup",
     "commission_payment_request",
 )
 

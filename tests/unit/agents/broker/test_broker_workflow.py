@@ -5,11 +5,13 @@ the not-found retry path, and duplicate payment-request prevention.
 
 import re
 
-from src.agents.broker.state import BrokerInquiryState, BrokerInquiryStatus
+from src.agents.broker.state import BrokerInquiryState, BrokerInquiryStatus, BrokerInquiryType
 from src.agents.broker.workflow import advance_broker_inquiry
 from src.services.tools.broker_account_lookup_tool import BrokerAccountLookupTool
+from src.services.tools.broker_lookup_tool import BrokerLookupTool
 from src.services.tools.commission_lookup_tool import CommissionLookupTool
 from src.services.tools.commission_payment_request_tool import CommissionPaymentRequestTool
+from src.services.tools.commission_periods_lookup_tool import CommissionPeriodsLookupTool
 from src.services.tools.payment_status_tool import PaymentStatusTool
 from src.services.tools.policy_lookup_tool import PolicyLookupTool
 from src.services.tools.transaction_status_tool import TransactionStatusTool
@@ -24,6 +26,8 @@ def _build_executor() -> ToolExecutor:
     registry.register(PolicyLookupTool())
     registry.register(PaymentStatusTool())
     registry.register(BrokerAccountLookupTool())
+    registry.register(BrokerLookupTool())
+    registry.register(CommissionPeriodsLookupTool())
     registry.register(TransactionStatusTool())
     registry.register(CommissionLookupTool())
     registry.register(CommissionPaymentRequestTool())
@@ -223,3 +227,112 @@ async def test_ambiguous_first_message_asks_which_kind_of_help_is_needed() -> No
 
     assert state.inquiry_type is None
     assert "what would you like help with" in " ".join(notices).lower()
+
+
+# ---------------------------------------------------------------------------
+# PBI-05-01: natural broker discovery and natural commission-period resolution.
+# ---------------------------------------------------------------------------
+
+
+async def test_broker_name_and_period_resolved_from_a_single_natural_message() -> None:
+    """The exact SCENARIO C shape from PBI-05-01: "Soy Synthetic Brokerage One y quiero
+    conocer mis comisiones del primer trimestre de 2026." must resolve the broker by name and
+    the period in one turn, with no internal ID ever requested or shown."""
+    executor = _build_executor()
+    state, notices = await advance_broker_inquiry(
+        BrokerInquiryState(),
+        "Soy Synthetic Brokerage One y quiero conocer mis comisiones del primer "
+        "trimestre de 2026.",
+        executor,
+        language="es-MX",
+    )
+
+    assert state.broker_id == "SYN-BRK-0001"
+    assert state.commission_period == "2026-Q1"
+    assert state.status == BrokerInquiryStatus.READY_TO_RESPOND
+    response = " ".join(notices)
+    assert "SYN-BRK" not in response
+    assert "1250" in response or "1,250" in response
+
+
+async def test_broker_name_alone_is_captured_but_not_yet_resolved() -> None:
+    """Resolution (the broker_lookup Tool call) only happens once every commission field is
+    known — mirroring the pre-existing "ask both fields together" combined-prompt design —
+    not eagerly the moment a name is captured, since (unlike Claims' multi-policy
+    disambiguation) there is no benefit to resolving early here."""
+    executor = _build_executor()
+    state, _ = await advance_broker_inquiry(
+        BrokerInquiryState(), "Quiero conocer mis comisiones.", executor, language="es-MX"
+    )
+    state, notices = await advance_broker_inquiry(
+        state, "somos Synthetic Brokerage Two", executor, language="es-MX"
+    )
+
+    assert state.broker_name == "Synthetic Brokerage Two"
+    assert state.broker_id is None
+    assert state.status == BrokerInquiryStatus.COLLECTING_INFORMATION
+    assert "period" in " ".join(notices).lower() or "período" in " ".join(notices).lower()
+
+    state, notices = await advance_broker_inquiry(state, "2026-Q1", executor, language="es-MX")
+
+    assert state.broker_id == "SYN-BRK-0002"
+    assert "SYN-BRK" not in " ".join(notices)
+
+
+async def test_unrecognized_broker_name_asks_to_double_check() -> None:
+    executor = _build_executor()
+    state, _ = await advance_broker_inquiry(
+        BrokerInquiryState(), "Quiero conocer mis comisiones.", executor, language="es-MX"
+    )
+    state, notices = await advance_broker_inquiry(
+        state, "soy Correduría Inexistente y el período es Q1 2026", executor, language="es-MX"
+    )
+
+    assert state.broker_id is None
+    assert state.broker_name is None
+    assert "no encontré" in " ".join(notices).lower()
+
+    state, notices = await advance_broker_inquiry(state, "Synthetic Brokerage One", executor, language="es-MX")
+    assert state.broker_id == "SYN-BRK-0001"
+
+    state, notices = await advance_broker_inquiry(state, "Synthetic Brokerage One", executor, language="es-MX")
+    assert state.broker_id == "SYN-BRK-0001"
+
+
+async def test_natural_period_expressions_all_resolve_to_the_same_canonical_period() -> None:
+    executor = _build_executor()
+    for phrase in ("Q1 2026", "primer trimestre de 2026", "2026-Q1"):
+        state = BrokerInquiryState(broker_id="SYN-BRK-0001")
+        state, _ = await advance_broker_inquiry(state, phrase, executor, language="es-MX")
+        assert state.commission_period == "2026-Q1", phrase
+
+
+async def test_month_name_resolves_to_its_calendar_quarter() -> None:
+    executor = _build_executor()
+    state = BrokerInquiryState(broker_id="SYN-BRK-0001")
+    state, _ = await advance_broker_inquiry(state, "agosto 2026", executor, language="es-MX")
+
+    assert state.commission_period == "2026-Q3"
+
+
+async def test_unavailable_period_lists_the_periods_that_do_have_data() -> None:
+    """PBI-05-01 requirement 7: explain a missing period naturally and name the periods that
+    do have data, using a real Tool call (commission_periods_lookup) — never invented."""
+    executor = _build_executor()
+    state = BrokerInquiryState(
+        status=BrokerInquiryStatus.COLLECTING_INFORMATION,
+        inquiry_type=BrokerInquiryType.COMMISSION,
+        broker_id="SYN-BRK-0001",
+    )
+
+    state, notices = await advance_broker_inquiry(state, "2026-Q4", executor, language="es-MX")
+
+    combined = " ".join(notices).lower()
+    assert "2026-q1" in combined
+    assert "2026-q2" in combined
+    assert state.commission_period is None  # reset so a corrected period can be captured next
+    assert state.status == BrokerInquiryStatus.COLLECTING_INFORMATION
+
+    state, notices = await advance_broker_inquiry(state, "2026-Q1", executor, language="es-MX")
+    assert state.commission_period == "2026-Q1"
+    assert state.status == BrokerInquiryStatus.READY_TO_RESPOND

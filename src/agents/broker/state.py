@@ -1,11 +1,17 @@
 """Typed working state for a single conversation's broker-services flow (PBI-01-06, bilingual
-messages added by PBI-04-04).
+messages added by PBI-04-04, natural broker discovery added by PBI-05-01).
 
 Structurally mirrors src.agents.claims.state (same reasoning: this is in-progress session
 notes, not core business truth — CLAUDE.md §4.3 — serialized into
 Conversation.metadata["brokerInquiryState"]). Not extracted into a shared base with the Claims
 state model: only two data points exist so far, and the PBI explicitly warns against
 over-generalizing after seeing only two agents — see docs/sprint_01/decisions.md.
+
+PBI-05-01: a broker no longer needs to know or type an internal broker_id — `broker_name` is
+collected instead (natural: "soy Synthetic Brokerage One") and resolved to the authoritative
+`broker_id` via the broker_lookup Tool (see workflow._handle_looking_up_broker). Typing a
+recognizable ID directly still works and skips this resolution entirely, exactly like a direct
+policy number short-circuits Claims' customer discovery.
 """
 
 from __future__ import annotations
@@ -29,11 +35,12 @@ class BrokerInquiryType(str, Enum):
 class BrokerInquiryStatus(str, Enum):
     """The broker-services state machine (suggested by PBI-01-06, with the commission-payment
     sub-flow folded into the same single state machine rather than a parallel one — see
-    docs/sprint_01/decisions.md)."""
+    docs/sprint_01/decisions.md; LOOKING_UP_BROKER added by PBI-05-01 for natural discovery)."""
 
     NEW = "new"
     IDENTIFYING_REQUEST = "identifying_request"
     COLLECTING_INFORMATION = "collecting_information"
+    LOOKING_UP_BROKER = "looking_up_broker"
     LOOKING_UP_DATA = "looking_up_data"
     READY_TO_RESPOND = "ready_to_respond"
     READY_TO_REQUEST_PAYMENT = "ready_to_request_payment"
@@ -47,6 +54,7 @@ class BrokerInquiryState(BaseModel):
     status: BrokerInquiryStatus = BrokerInquiryStatus.NEW
     inquiry_type: BrokerInquiryType | None = None
 
+    broker_name: str | None = None
     broker_id: str | None = None
     policy_number: str | None = None
     transaction_reference: str | None = None
@@ -71,7 +79,7 @@ class BrokerInquiryState(BaseModel):
 REQUIRED_FIELDS_BY_INQUIRY: dict[BrokerInquiryType, tuple[str, ...]] = {
     BrokerInquiryType.POLICY_STATUS: ("policy_number",),
     BrokerInquiryType.TRANSACTION_STATUS: ("transaction_reference",),
-    BrokerInquiryType.COMMISSION: ("broker_id", "commission_period"),
+    BrokerInquiryType.COMMISSION: ("broker_name", "commission_period"),
 }
 
 FIELD_PROMPTS: dict[str, dict[Language, str]] = {
@@ -83,13 +91,13 @@ FIELD_PROMPTS: dict[str, dict[Language, str]] = {
         "es-MX": "Por favor indica la referencia de transacción sintética.",
         "en": "Please provide the synthetic transaction reference.",
     },
-    "broker_id": {
-        "es-MX": "Por favor indica tu ID de corredor sintético.",
-        "en": "Please provide your synthetic broker ID.",
+    "broker_name": {
+        "es-MX": "¿Cuál es el nombre de tu correduría?",
+        "en": "What is the name of your brokerage?",
     },
     "commission_period": {
-        "es-MX": "¿Qué período de comisión te gustaría revisar (por ejemplo, 2026-Q1)?",
-        "en": "Which commission period would you like to review (e.g., 2026-Q1)?",
+        "es-MX": "¿Qué período de comisión te gustaría revisar (por ejemplo, primer trimestre de 2026)?",
+        "en": "Which commission period would you like to review (e.g., Q1 2026)?",
     },
 }
 
@@ -97,21 +105,26 @@ FIELD_PROMPTS: dict[str, dict[Language, str]] = {
 # once, rather than asking for them one at a time as ClaimsAgent does — this Agent's examples
 # explicitly show both fields requested together.
 _COMBINED_COMMISSION_PROMPT: dict[Language, str] = {
-    "es-MX": "Por favor indica tu ID de corredor y el período que deseas revisar.",
-    "en": "Please provide your broker ID and the period you want to review.",
+    "es-MX": "¿Cuál es el nombre de tu correduría, y qué período te gustaría revisar?",
+    "en": "What is the name of your brokerage, and which period would you like to review?",
 }
 
 
 def missing_required_fields(state: BrokerInquiryState) -> list[str]:
-    """Required fields still unanswered for the current inquiry_type, in prompt order."""
+    """Required fields still unanswered for the current inquiry_type, in prompt order.
+    broker_name is skipped once broker_id is already known directly (a typed ID, like
+    "SYN-BRK-0001", short-circuits natural discovery entirely — see
+    src.agents.broker.extraction)."""
     if state.inquiry_type is None:
         return []
     required = REQUIRED_FIELDS_BY_INQUIRY[state.inquiry_type]
+    if state.inquiry_type == BrokerInquiryType.COMMISSION and state.broker_id is not None:
+        required = tuple(field for field in required if field != "broker_name")
     return [field for field in required if getattr(state, field) is None]
 
 
 def prompt_for_missing(missing: list[str], language: Language) -> str:
     """One combined, professional prompt for every currently-missing field."""
-    if set(missing) == {"broker_id", "commission_period"}:
+    if set(missing) == {"broker_name", "commission_period"}:
         return _COMBINED_COMMISSION_PROMPT.get(language) or _COMBINED_COMMISSION_PROMPT["es-MX"]
     return " ".join(t(FIELD_PROMPTS, field, language) for field in missing)

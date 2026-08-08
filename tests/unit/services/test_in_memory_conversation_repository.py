@@ -103,6 +103,39 @@ async def test_append_message_leaves_metadata_untouched_when_not_provided() -> N
     assert updated.metadata == {"claimsIntakeState": "v1"}
 
 
+async def test_append_message_updates_current_agent_when_provided() -> None:
+    """PBI-05-01: current_agent must reflect whichever Agent most recently handled a turn, not
+    stay frozen at whichever Agent handled conversation creation — otherwise a legitimate
+    cross-domain handoff (Claims -> Broker) would be invisible to the Supervisor's own
+    "stay with the current agent on an ambiguous follow-up" fallback."""
+    repo = InMemoryConversationRepository()
+    conversation = await repo.create_conversation(
+        Conversation(user_id="user-1", current_agent="ClaimsAgent")
+    )
+
+    updated = await repo.append_message(
+        "user-1",
+        conversation.id,
+        Message(role=MessageRole.ASSISTANT, content="reply"),
+        current_agent="BrokerAgent",
+    )
+
+    assert updated.current_agent == "BrokerAgent"
+
+
+async def test_append_message_leaves_current_agent_untouched_when_not_provided() -> None:
+    repo = InMemoryConversationRepository()
+    conversation = await repo.create_conversation(
+        Conversation(user_id="user-1", current_agent="ClaimsAgent")
+    )
+
+    updated = await repo.append_message(
+        "user-1", conversation.id, Message(role=MessageRole.USER, content="hi")
+    )
+
+    assert updated.current_agent == "ClaimsAgent"
+
+
 async def test_append_message_raises_for_unknown_conversation() -> None:
     repo = InMemoryConversationRepository()
     message = Message(role=MessageRole.USER, content="hello")

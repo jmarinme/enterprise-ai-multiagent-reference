@@ -82,7 +82,8 @@ async def test_full_claim_report_flow_from_first_contact_to_adjuster_assignment(
             "555-123-4567",
             "no",
             "yes",
-            "yes",
+            "yes",  # vehicle_drivable (PBI-05-01: auto profile asks this)
+            "yes",  # explicit confirmation before registration (PBI-04-04)
         ],
     )
 
@@ -140,7 +141,8 @@ async def test_re_sending_a_message_after_the_claim_is_fully_processed_does_not_
             "555-123-4567",
             "no",
             "yes",
-            "yes",
+            "yes",  # vehicle_drivable (PBI-05-01: auto profile asks this)
+            "yes",  # explicit confirmation before registration (PBI-04-04)
         ],
     )
     first_reference = _CLAIM_REFERENCE_PATTERN.search(responses[-1])
@@ -159,6 +161,7 @@ async def test_re_sending_a_message_after_the_claim_is_fully_processed_does_not_
         "Another car hit me while parked",
         "555-123-4567",
         "no",
+        "yes",
         "yes",
         "yes",
         "thank you!",

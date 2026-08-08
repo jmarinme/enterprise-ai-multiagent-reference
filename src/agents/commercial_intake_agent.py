@@ -27,7 +27,7 @@ from src.agents.commercial.state import CommercialIntakeState
 from src.agents.commercial.workflow import advance_commercial_intake
 from src.agents.shared.annotation import annotate_with_prompt_and_llm
 from src.agents.shared.language import LANGUAGE_METADATA_KEY, resolve_language
-from src.agents.shared.state_persistence import load_agent_state
+from src.agents.shared.state_persistence import carry_forward_other_agent_state, load_agent_state
 from src.llm.provider import LLMProvider
 from src.prompts.manager import PromptManager
 from src.prompts.models import PromptRenderContext
@@ -63,6 +63,8 @@ class CommercialIntakeAgent:
     async def handle(self, request: AgentRequest, context: ConversationContext) -> AgentResponse:
         state = load_agent_state(context.metadata, _STATE_METADATA_KEY, CommercialIntakeState)
         language = resolve_language(context.metadata, request.message)
+        # PBI-05-01: preserve any other Agent's in-progress state across a cross-domain handoff.
+        other_agent_state = carry_forward_other_agent_state(context.metadata, _STATE_METADATA_KEY)
 
         try:
             state, notices = await advance_commercial_intake(
@@ -84,6 +86,7 @@ class CommercialIntakeAgent:
                 intent=IntentCategory.COMMERCIAL,
                 response=_SAFE_FALLBACK_MESSAGE[language],
                 metadata={
+                    **other_agent_state,
                     _STATE_METADATA_KEY: state.model_dump_json(),
                     LANGUAGE_METADATA_KEY: language,
                 },
@@ -115,6 +118,7 @@ class CommercialIntakeAgent:
             intent=IntentCategory.COMMERCIAL,
             response=response_text,
             metadata={
+                **other_agent_state,
                 _STATE_METADATA_KEY: state.model_dump_json(),
                 LANGUAGE_METADATA_KEY: language,
                 "diagnostics": diagnostics,

@@ -1,5 +1,5 @@
 """Deterministic field extraction for commercial intake (PBI-01-07, bilingual keyword coverage
-added by PBI-04-04).
+added by PBI-04-04, natural name-prefix stripping added by PBI-05-01).
 
 MockLLMProvider is intentionally content-agnostic and cannot perform real NLU, so every
 business fact must come from regex/keyword rules here — same rationale as
@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 
 from src.agents.commercial.state import CommercialIntakeState
+from src.agents.shared.nlu import strip_natural_prefix
 
 _EMAIL_PATTERN = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
 # 3-3-4 digit grouping (optionally with a country code), same shape as
@@ -57,6 +58,11 @@ _INSURANCE_NEED_KEYWORDS: dict[str, str] = {
 # re-prompts, rather than silently accepting bad data.
 _FREE_TEXT_FALLBACK_FIELDS = {"company_name", "contact_name", "risk_description", "insurance_need"}
 
+# "mi empresa es Acme Corp" -> "Acme Corp"; "mi nombre es Jane Doe" -> "Jane Doe" (PBI-05-01
+# requirement 3, generalized from Claims' customer_name/Broker's broker_name handling).
+_COMPANY_NAME_PREFIXES: tuple[str, ...] = ("mi empresa es", "nuestra empresa es", "somos")
+_CONTACT_NAME_PREFIXES: tuple[str, ...] = ("mi nombre es", "me llamo", "soy")
+
 
 def extract_fields(message: str, state: CommercialIntakeState) -> CommercialIntakeState:
     """Return a copy of state with any recognizable fields from message filled in."""
@@ -97,6 +103,11 @@ def extract_fields(message: str, state: CommercialIntakeState) -> CommercialInta
         and getattr(updated, state.last_asked_field) is None
         and normalized
     ):
-        setattr(updated, state.last_asked_field, normalized)
+        value = normalized
+        if state.last_asked_field == "company_name":
+            value = strip_natural_prefix(normalized, _COMPANY_NAME_PREFIXES)
+        elif state.last_asked_field == "contact_name":
+            value = strip_natural_prefix(normalized, _CONTACT_NAME_PREFIXES)
+        setattr(updated, state.last_asked_field, value)
 
     return updated

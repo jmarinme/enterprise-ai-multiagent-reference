@@ -172,3 +172,106 @@ def test_resolve_selection_returns_none_for_an_unrecognizable_reply() -> None:
     ]
 
     assert resolve_selection("no estoy seguro", candidates) is None
+
+
+def test_resolve_selection_tolerates_trailing_punctuation_on_the_selected_word() -> None:
+    """Regression guard: "La Hilux." (capitalized, trailing period) must still resolve —
+    found via live DEV validation when a punctuation-attached word broke the exact word-set
+    match against the stored vehicle_description."""
+    candidates = [
+        PolicyCandidate(
+            policy_number="SYN-POL-1001", customer_name="Juan Pérez", line_of_business="auto",
+            vehicle_description="Nissan Sentra 2022",
+        ),
+        PolicyCandidate(
+            policy_number="SYN-POL-1002", customer_name="Juan Pérez", line_of_business="auto",
+            vehicle_description="Toyota Hilux 2021",
+        ),
+    ]
+
+    assert resolve_selection("La Hilux.", candidates).policy_number == "SYN-POL-1002"
+
+
+def test_resolve_selection_ordinal_tolerates_trailing_punctuation() -> None:
+    candidates = [
+        PolicyCandidate(
+            policy_number="SYN-POL-1001", customer_name="Juan Pérez", line_of_business="auto",
+            vehicle_description="Nissan Sentra 2022",
+        ),
+        PolicyCandidate(
+            policy_number="SYN-POL-1002", customer_name="Juan Pérez", line_of_business="auto",
+            vehicle_description="Toyota Hilux 2021",
+        ),
+    ]
+
+    assert resolve_selection("la segunda,", candidates).policy_number == "SYN-POL-1002"
+
+
+def test_grouped_question_extracts_a_clean_location_from_a_rich_multi_clause_message() -> None:
+    """Regression guard found via live DEV validation: a rich message combining a relative
+    date, a loss-type keyword embedded in a conjugated verb ("chocaron"), a location, and
+    separate injuries/third-parties/vehicle-drivable clauses must not let the location capture
+    spill into the following sentence."""
+    state = ClaimsIntakeState(
+        last_asked_field="event_date",
+        last_asked_group=["event_date", "event_location", "loss_type"],
+    )
+
+    updated = extract_fields(
+        "Ayer me chocaron por atrás en Reforma. Yo manejaba, no hubo lesionados ni "
+        "terceros y el vehículo todavía puede circular.",
+        state,
+    )
+
+    assert updated.event_location == "Reforma"
+    assert updated.loss_type == "collision"
+    assert updated.injuries_reported is False
+    assert updated.third_parties_involved is False
+    assert updated.vehicle_drivable is True
+
+
+def test_direct_answer_to_event_location_is_not_dropped_by_an_unrelated_fact_in_the_same_message() -> (
+    None
+):
+    """Regression guard found via live DEV validation: when directly asked "¿Dónde ocurrió el
+    incidente?" (last_asked_field == "event_location", a single-field ask, not the grouped
+    fallback path), a reply that also happens to mention an unrelated fact (injuries) in the
+    same message must still have its own direct answer captured — not silently dropped just
+    because injuries_reported was also extracted from that message."""
+    state = ClaimsIntakeState(last_asked_field="event_location")
+
+    updated = extract_fields(
+        "En mi casa en Colonia Roma. Se dañaron los muebles de la sala, no hubo lesionados y "
+        "todavía podemos permanecer en la casa.",
+        state,
+    )
+
+    assert updated.event_location is not None
+    assert updated.injuries_reported is False
+    assert updated.property_habitable is True
+
+
+def test_direct_location_ask_extracts_a_clean_place_from_a_rich_multi_clause_reply() -> None:
+    """Regression guard found via live DEV validation: a direct "¿Dónde ocurrió el incidente?"
+    ask (last_asked_field == "event_location" exactly, not the grouped-question path) that
+    receives a rich, multi-clause reply must still extract a clean place name, not the entire
+    raw message verbatim."""
+    state = ClaimsIntakeState(last_asked_field="event_location")
+
+    updated = extract_fields(
+        "En mi casa en Colonia Roma. Se dañaron los muebles de la sala, no hubo lesionados y "
+        "todavía podemos permanecer en la casa.",
+        state,
+    )
+
+    assert updated.event_location == "mi casa en Colonia Roma"
+    assert "Se dañaron los muebles" not in updated.event_location
+    assert "lesionados" not in updated.event_location
+
+
+def test_direct_location_ask_falls_back_to_the_whole_message_with_no_connector_word() -> None:
+    state = ClaimsIntakeState(last_asked_field="event_location")
+
+    updated = extract_fields("In my driveway", state)
+
+    assert updated.event_location == "In my driveway"

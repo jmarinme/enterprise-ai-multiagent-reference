@@ -54,7 +54,7 @@ from src.agents.claims.state import ClaimsIntakeState
 from src.agents.claims.workflow import advance_claims_intake
 from src.agents.shared.annotation import annotate_with_prompt_and_llm
 from src.agents.shared.language import LANGUAGE_METADATA_KEY, resolve_language
-from src.agents.shared.state_persistence import load_agent_state
+from src.agents.shared.state_persistence import carry_forward_other_agent_state, load_agent_state
 from src.core.tool_calling.exceptions import ToolCallingError
 from src.core.tool_calling.models import (
     DEFAULT_MAX_TOOL_CALL_ITERATIONS,
@@ -117,6 +117,10 @@ class ClaimsAgent:
     async def handle(self, request: AgentRequest, context: ConversationContext) -> AgentResponse:
         state = load_agent_state(context.metadata, _STATE_METADATA_KEY, ClaimsIntakeState)
         language = resolve_language(context.metadata, request.message)
+        # PBI-05-01: preserve any other Agent's in-progress state across a cross-domain
+        # handoff (e.g. Claims -> Broker) — AgentResponse.metadata replaces, not merges, the
+        # conversation's stored metadata (see state_persistence.carry_forward_other_agent_state).
+        other_agent_state = carry_forward_other_agent_state(context.metadata, _STATE_METADATA_KEY)
 
         try:
             state, notices = await advance_claims_intake(
@@ -142,6 +146,7 @@ class ClaimsAgent:
                 intent=IntentCategory.CLAIMS,
                 response=_SAFE_FALLBACK_MESSAGE[language],
                 metadata={
+                    **other_agent_state,
                     _STATE_METADATA_KEY: state.model_dump_json(),
                     LANGUAGE_METADATA_KEY: language,
                 },
@@ -183,6 +188,7 @@ class ClaimsAgent:
             intent=IntentCategory.CLAIMS,
             response=grounded_response.text,
             metadata={
+                **other_agent_state,
                 _STATE_METADATA_KEY: state.model_dump_json(),
                 LANGUAGE_METADATA_KEY: language,
                 "diagnostics": diagnostics,

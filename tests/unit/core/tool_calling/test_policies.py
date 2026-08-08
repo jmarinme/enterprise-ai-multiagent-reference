@@ -11,10 +11,12 @@ from src.core.tool_calling.policies import (
 )
 from src.services.tools.adjuster_assignment_tool import AdjusterAssignmentTool
 from src.services.tools.broker_account_lookup_tool import BrokerAccountLookupTool
+from src.services.tools.broker_lookup_tool import BrokerLookupTool
 from src.services.tools.claim_registration_tool import ClaimRegistrationTool
 from src.services.tools.claims_status_tool import ClaimsStatusTool
 from src.services.tools.commission_lookup_tool import CommissionLookupTool
 from src.services.tools.commission_payment_request_tool import CommissionPaymentRequestTool
+from src.services.tools.commission_periods_lookup_tool import CommissionPeriodsLookupTool
 from src.services.tools.coverage_lookup_tool import CoverageLookupTool
 from src.services.tools.customer_lookup_tool import CustomerLookupTool
 from src.services.tools.lead_registration_tool import LeadRegistrationTool
@@ -41,6 +43,8 @@ def _full_registry() -> InMemoryToolRegistry:
     registry.register(LeadRegistrationTool())
     registry.register(CustomerLookupTool())
     registry.register(CoverageLookupTool())
+    registry.register(BrokerLookupTool())
+    registry.register(CommissionPeriodsLookupTool())
     return registry
 
 

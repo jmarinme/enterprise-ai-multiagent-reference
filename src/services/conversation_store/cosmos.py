@@ -66,6 +66,7 @@ class CosmosConversationRepository:
         conversation_id: str,
         message: Message,
         metadata: dict[str, str] | None = None,
+        current_agent: str | None = None,
     ) -> Conversation:
         conversation = await self.get_conversation(user_id, conversation_id)
         if conversation is None:
@@ -73,6 +74,8 @@ class CosmosConversationRepository:
         conversation.messages.append(message)
         if metadata is not None:
             conversation.metadata = metadata
+        if current_agent is not None:
+            conversation.current_agent = current_agent
         conversation.updated_at = datetime.now(UTC)
         container = await self._container()
         updated = await container.upsert_item(

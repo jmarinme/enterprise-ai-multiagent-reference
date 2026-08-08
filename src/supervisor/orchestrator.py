@@ -141,5 +141,9 @@ class SupervisorOrchestrator:
             context.user_id, context.conversation_id, user_message
         )
         await self._conversation_repository.append_message(
-            context.user_id, context.conversation_id, agent_message, metadata=response.metadata
+            context.user_id,
+            context.conversation_id,
+            agent_message,
+            metadata=response.metadata,
+            current_agent=response.agent,
         )
