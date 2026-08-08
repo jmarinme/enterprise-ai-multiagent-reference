@@ -31,10 +31,12 @@ from src.services.conversation_store.factory import get_conversation_repository
 from src.services.secret_store.factory import get_secret_provider as build_secret_provider
 from src.services.tools.adjuster_assignment_tool import AdjusterAssignmentTool
 from src.services.tools.broker_account_lookup_tool import BrokerAccountLookupTool
+from src.services.tools.broker_lookup_tool import BrokerLookupTool
 from src.services.tools.claim_registration_tool import ClaimRegistrationTool
 from src.services.tools.claims_status_tool import ClaimsStatusTool
 from src.services.tools.commission_lookup_tool import CommissionLookupTool
 from src.services.tools.commission_payment_request_tool import CommissionPaymentRequestTool
+from src.services.tools.commission_periods_lookup_tool import CommissionPeriodsLookupTool
 from src.services.tools.coverage_lookup_tool import CoverageLookupTool
 from src.services.tools.customer_lookup_tool import CustomerLookupTool
 from src.services.tools.lead_registration_tool import LeadRegistrationTool
@@ -84,6 +86,8 @@ def get_tool_registry() -> ToolRegistry:
     tool_registry.register(LeadRegistrationTool())
     tool_registry.register(CustomerLookupTool())
     tool_registry.register(CoverageLookupTool())
+    tool_registry.register(BrokerLookupTool())
+    tool_registry.register(CommissionPeriodsLookupTool())
     return tool_registry
 
 

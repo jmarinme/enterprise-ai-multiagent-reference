@@ -75,7 +75,8 @@ async def test_full_multi_turn_conversation_registers_and_assigns_an_adjuster() 
         "555-123-4567",
         "no",
         "yes",
-        "yes",
+        "yes",  # vehicle_drivable (PBI-05-01: auto profile asks this)
+        "yes",  # explicit confirmation before registration (PBI-04-04)
     ]
 
     all_notices: list[str] = []
@@ -179,3 +180,123 @@ async def test_a_message_after_adjuster_assignment_does_not_register_a_second_cl
     assert final_state.claim_reference == original_reference
     assert final_state.status == ClaimsIntakeStatus.ADJUSTER_ASSIGNED
     assert "already registered" in " ".join(notices).lower()
+
+
+# ---------------------------------------------------------------------------
+# PBI-05-01: natural Spanish multi-fact extraction, line-of-business-aware
+# profiles, and the shared Conversational Policy's opening acknowledgment.
+# ---------------------------------------------------------------------------
+
+
+async def test_opening_message_with_loss_type_triggers_empathetic_acknowledgment() -> None:
+    state, notices = await advance_claims_intake(
+        ClaimsIntakeState(), "Se inundó mi casa.", _build_executor(), language="es-MX"
+    )
+
+    response = " ".join(notices)
+    assert "Lamento lo ocurrido" in response
+    assert "inundación" in response
+    assert "¿A nombre de quién está la póliza?" in response
+    assert state.opening_acknowledged is True
+    # loss_type was already extracted from the opening message — never asked again later.
+    assert state.loss_type == "water damage"
+
+
+async def test_opening_message_without_loss_type_uses_a_bare_lead_in() -> None:
+    state, notices = await advance_claims_intake(
+        ClaimsIntakeState(), "Quiero reportar un siniestro.", _build_executor(), language="es-MX"
+    )
+
+    response = " ".join(notices)
+    assert response.startswith("Claro.")
+    assert "Lamento lo ocurrido" not in response
+    assert state.opening_acknowledged is True
+
+
+async def test_acknowledgment_is_never_repeated_on_a_later_turn() -> None:
+    executor = _build_executor()
+    state, _ = await advance_claims_intake(
+        ClaimsIntakeState(), "Se inundó mi casa.", executor, language="es-MX"
+    )
+    assert state.status == ClaimsIntakeStatus.COLLECTING_INFORMATION
+    assert state.customer_name is None
+
+    _, second_notices = await advance_claims_intake(state, "Ana Torres", executor, language="es-MX")
+
+    assert "Lamento lo ocurrido" not in " ".join(second_notices)
+
+
+async def test_auto_claim_via_customer_discovery_never_asks_property_questions() -> None:
+    """The exact SCENARIO A shape from PBI-05-01: name -> disambiguate by vehicle -> one rich
+    message carrying date/location/loss_type/injuries/third_parties/vehicle_drivable all at
+    once (relative date "ayer" included) -> only a phone number is still missing."""
+    executor = _build_executor()
+    state, _ = await advance_claims_intake(
+        ClaimsIntakeState(), "Quiero reportar un siniestro.", executor, language="es-MX"
+    )
+    state, _ = await advance_claims_intake(state, "Juan Pérez", executor, language="es-MX")
+    state, _ = await advance_claims_intake(state, "la Hilux", executor, language="es-MX")
+    assert state.policy_number == "SYN-POL-1002"
+    assert state.line_of_business == "auto"
+
+    state, notices = await advance_claims_intake(
+        state,
+        "Ayer me chocaron por atrás en Reforma. No hubo lesionados ni terceros y el "
+        "vehículo todavía puede circular.",
+        executor,
+        language="es-MX",
+    )
+
+    assert state.event_date is not None  # "ayer" resolved to a real date
+    assert state.event_location and "reforma" in state.event_location.lower()
+    assert state.loss_type == "collision"
+    assert state.injuries_reported is False
+    assert state.third_parties_involved is False
+    assert state.vehicle_drivable is True
+    # Only loss_description and contact_phone remain — never a property question.
+    response = " ".join(notices).lower()
+    assert "propiedad" not in response
+    assert "habitable" not in response
+
+
+async def test_property_claim_via_customer_discovery_never_asks_vehicle_questions() -> None:
+    """The exact SCENARIO B shape from PBI-05-01."""
+    executor = _build_executor()
+    state, _ = await advance_claims_intake(
+        ClaimsIntakeState(),
+        "Ayer llovió muy fuerte y se inundó mi casa.",
+        executor,
+        language="es-MX",
+    )
+    assert state.loss_type == "water damage"
+
+    state, _ = await advance_claims_intake(state, "Ana Torres", executor, language="es-MX")
+    assert state.policy_number == "SYN-POL-1003"
+    assert state.line_of_business == "property"
+
+    state, notices = await advance_claims_intake(
+        state,
+        "Se dañaron los muebles de la sala, no hubo lesionados y todavía podemos "
+        "permanecer en la casa.",
+        executor,
+        language="es-MX",
+    )
+
+    assert state.injuries_reported is False
+    assert state.property_habitable is True
+    response = " ".join(notices).lower()
+    assert "vehículo" not in response
+    assert "circular" not in response
+
+
+async def test_lapsed_policy_reachable_through_natural_customer_discovery() -> None:
+    """Carlos Mendoza's lapsed policy (PBI-05-01 synthetic-data expansion) — reachable by name,
+    not just a direct policy number, and lapsed status surfaces as a fact, never blocks."""
+    executor = _build_executor()
+    state, _ = await advance_claims_intake(
+        ClaimsIntakeState(), "Quiero reportar un siniestro.", executor, language="es-MX"
+    )
+    state, notices = await advance_claims_intake(state, "Carlos Mendoza", executor, language="es-MX")
+
+    assert state.policy_number == "SYN-POL-1004"
+    assert "honda cr-v" in " ".join(notices).lower()

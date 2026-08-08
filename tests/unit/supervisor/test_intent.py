@@ -17,6 +17,12 @@ from src.supervisor.models import IntentCategory
         # literal substring "policy status", so the bare "policy" keyword is required.
         ("I want to know the status of a policy.", IntentCategory.BROKER),
         ("What is the status of my transaction?", IntentCategory.BROKER),
+        # PBI-05-01 regression guard: found via live DEV validation — the PBI's own canonical
+        # Property-claim example never says "siniestro"/"accidente" at all.
+        ("Ayer llovió muy fuerte y se inundó mi casa.", IntentCategory.CLAIMS),
+        ("Se inundó mi casa.", IntentCategory.CLAIMS),
+        ("Me robaron el auto anoche.", IntentCategory.CLAIMS),
+        ("Hubo un incendio en mi negocio.", IntentCategory.CLAIMS),
     ],
 )
 async def test_resolve_returns_expected_category(

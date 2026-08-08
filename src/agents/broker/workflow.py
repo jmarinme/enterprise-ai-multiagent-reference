@@ -97,14 +97,36 @@ _MESSAGES: dict[str, dict[Language, str]] = {
             "and provide it again?"
         ),
     },
-    "commission_not_found": {
+    "broker_name_not_found": {
         "es-MX": (
-            "No encontramos comisiones para el corredor '{broker_id}' en el período "
-            "'{commission_period}'. ¿Puedes verificar el período y proporcionarlo de nuevo?"
+            "No encontré ninguna correduría con el nombre '{name}'. ¿Podrías verificar el "
+            "nombre, o darme directamente tu ID de corredor?"
         ),
         "en": (
-            "We could not find commission data for broker '{broker_id}' in period "
-            "'{commission_period}'. Could you double-check the period and provide it again?"
+            "I could not find a brokerage named '{name}'. Could you double-check the name, or "
+            "provide your broker ID directly?"
+        ),
+    },
+    "commission_not_found_no_periods": {
+        "es-MX": (
+            "No encontramos comisiones para tu correduría en el período '{commission_period}', "
+            "y no tenemos ningún período de demostración registrado para ti todavía."
+        ),
+        "en": (
+            "We could not find commission data for your brokerage in period "
+            "'{commission_period}', and there are no demo periods on file for you yet."
+        ),
+    },
+    "commission_not_found_with_periods": {
+        "es-MX": (
+            "No encontramos comisiones para tu correduría en el período '{commission_period}'. "
+            "Los períodos disponibles en esta demostración son: {periods}. ¿Te gustaría "
+            "consultar alguno de estos?"
+        ),
+        "en": (
+            "We could not find commission data for your brokerage in period "
+            "'{commission_period}'. The periods available in this demo are: {periods}. Would "
+            "you like to check one of these instead?"
         ),
     },
     "commission_summary": {
@@ -212,8 +234,40 @@ async def _handle_collecting_information(
         new_state = state.model_copy(update={"next_required_fields": missing})
         return new_state, [prompt_for_missing(missing, language)], False
 
+    # PBI-05-01: a commission inquiry whose broker was identified by name (not a typed ID)
+    # still needs that name resolved to an authoritative broker_id before any lookup — a typed
+    # ID (broker_id already set) skips this entirely, mirroring Claims' direct-policy-number
+    # short-circuit.
+    next_status = BrokerInquiryStatus.LOOKING_UP_DATA
+    if state.inquiry_type == BrokerInquiryType.COMMISSION and state.broker_id is None:
+        next_status = BrokerInquiryStatus.LOOKING_UP_BROKER
+
+    new_state = state.model_copy(update={"status": next_status, "next_required_fields": []})
+    return new_state, [], True
+
+
+async def _handle_looking_up_broker(
+    state: BrokerInquiryState, tool_executor: ToolExecutor, ctx: _ToolContext, language: Language
+) -> _HandlerResult:
+    result = await tool_executor.execute(
+        ToolRequest(tool_name="broker_lookup", tool_input={"full_name": state.broker_name}, **ctx)
+    )
+    if not result.success or result.data is None or not result.data.matches:
+        notice = t(_MESSAGES, "broker_name_not_found", language, name=state.broker_name)
+        new_state = state.model_copy(
+            update={
+                "broker_name": None,
+                "status": BrokerInquiryStatus.COLLECTING_INFORMATION,
+                "last_asked_field": "broker_name",
+            }
+        )
+        return new_state, [notice], False
+
+    # Broker names in this synthetic demo are unique, so the first match is always correct;
+    # a real multi-match disambiguation UI (like Claims' policy selection) is not needed here —
+    # never a hallucination either way, since the id still comes straight from the Tool result.
     new_state = state.model_copy(
-        update={"status": BrokerInquiryStatus.LOOKING_UP_DATA, "next_required_fields": []}
+        update={"broker_id": result.data.matches[0].broker_id, "status": BrokerInquiryStatus.LOOKING_UP_DATA}
     )
     return new_state, [], True
 
@@ -317,14 +371,44 @@ async def _lookup_commission(
         )
     )
     if not commission_result.success or commission_result.data is None:
-        notice = t(
-            _MESSAGES,
-            "commission_not_found",
-            language,
-            broker_id=state.broker_id,
-            commission_period=state.commission_period,
+        # PBI-05-01 requirement 7: explain naturally and name the available demo periods,
+        # rather than a bare "not found" — a real Tool call, never an invented list.
+        periods_result = await tool_executor.execute(
+            ToolRequest(tool_name="commission_periods_lookup", tool_input={"broker_id": state.broker_id}, **ctx)
         )
-        return state, [notice], False
+        available = (
+            periods_result.data.periods
+            if periods_result.success and periods_result.data is not None
+            else []
+        )
+        if available:
+            notice = t(
+                _MESSAGES,
+                "commission_not_found_with_periods",
+                language,
+                commission_period=state.commission_period,
+                periods=", ".join(available),
+            )
+        else:
+            notice = t(
+                _MESSAGES,
+                "commission_not_found_no_periods",
+                language,
+                commission_period=state.commission_period,
+            )
+        # Reset commission_period (not broker_id/broker_name, already correctly resolved) and
+        # return to COLLECTING_INFORMATION so the next message's period is actually captured —
+        # commission_period extraction only fills a None value, so leaving the stale one in
+        # place (as LOOKING_UP_DATA would, if revisited directly) would silently ignore a
+        # correction.
+        new_state = state.model_copy(
+            update={
+                "commission_period": None,
+                "status": BrokerInquiryStatus.COLLECTING_INFORMATION,
+                "last_asked_field": "commission_period",
+            }
+        )
+        return new_state, [notice], False
 
     notice = t(
         _MESSAGES,
@@ -443,6 +527,7 @@ _HANDLERS: dict[BrokerInquiryStatus, _Handler] = {
     BrokerInquiryStatus.NEW: _handle_new,
     BrokerInquiryStatus.IDENTIFYING_REQUEST: _handle_identifying_request,
     BrokerInquiryStatus.COLLECTING_INFORMATION: _handle_collecting_information,
+    BrokerInquiryStatus.LOOKING_UP_BROKER: _handle_looking_up_broker,
     BrokerInquiryStatus.LOOKING_UP_DATA: _handle_looking_up_data,
     BrokerInquiryStatus.READY_TO_RESPOND: _handle_ready_to_respond,
     BrokerInquiryStatus.READY_TO_REQUEST_PAYMENT: _handle_ready_to_request_payment,

@@ -207,6 +207,44 @@ async def test_handle_keeps_an_ambiguous_follow_up_with_the_conversations_curren
     assert not agents[IntentCategory.UNKNOWN].received_requests
 
 
+async def test_handle_updates_current_agent_on_every_turn_not_just_creation() -> None:
+    """PBI-05-01 requirement 5 regression guard: without persisting current_agent on every
+    turn (not just at conversation creation), an ambiguous follow-up after a legitimate
+    cross-domain handoff (Claims -> Broker) would incorrectly stick to the *original* agent
+    forever, since context.current_agent would never reflect the handoff."""
+    supervisor, repository, agents = _build_supervisor()
+
+    first = await supervisor.handle(
+        AgentRequest(message="I need to file a claim", user_id="user-1")
+    )
+    assert first.agent == "ClaimsStub"
+
+    second = await supervisor.handle(
+        AgentRequest(
+            message="broker commission question",
+            user_id="user-1",
+            conversation_id=first.conversation_id,
+        )
+    )
+    assert second.agent == "BrokerStub"
+
+    stored = await repository.get_conversation("user-1", first.conversation_id)
+    assert stored is not None
+    assert stored.current_agent == "BrokerStub"
+
+    # A bare follow-up with no recognizable keyword must now stay with BrokerStub, the agent
+    # that actually answered last turn — not ClaimsStub, the agent from turn 1.
+    third = await supervisor.handle(
+        AgentRequest(
+            message="a plain follow-up with no keywords",
+            user_id="user-1",
+            conversation_id=first.conversation_id,
+        )
+    )
+    assert third.agent == "BrokerStub"
+    assert not agents[IntentCategory.UNKNOWN].received_requests
+
+
 async def test_handle_still_switches_agents_when_a_follow_up_clearly_matches_a_new_intent() -> (
     None
 ):

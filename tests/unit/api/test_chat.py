@@ -2,6 +2,9 @@
 Agent -> Repository -> JSON pipeline through the real FastAPI app.
 """
 
+import asyncio
+
+from api.dependencies import get_conversation_repository_dep
 from fastapi.testclient import TestClient
 from main import app
 
@@ -69,7 +72,8 @@ def test_chat_drives_a_full_claim_report_end_to_end_through_the_real_api() -> No
         "555-123-4567",
         "no",
         "yes",
-        "yes",
+        "yes",  # vehicle_drivable (PBI-05-01: auto profile asks this)
+        "yes",  # explicit confirmation before registration (PBI-04-04)
     ]:
         payload = {"message": message, "userId": user_id}
         if conversation_id:
@@ -214,3 +218,63 @@ def test_chat_rejects_a_request_missing_required_fields() -> None:
     response = client.post("/chat", json={"message": "hi"})
 
     assert response.status_code == 422
+
+
+def test_chat_hands_off_from_claims_to_broker_and_preserves_claims_state() -> None:
+    """PBI-05-01 requirement 5 (SCENARIO C shape): a mid-Claims conversation that switches
+    domain ("Ahora quiero consultar mis comisiones.") must hand off to BrokerAgent, and the
+    in-progress Claims state must not be silently destroyed — it survives in the conversation's
+    stored metadata even though BrokerAgent answered the intervening turns, so a caller could
+    still return to it later (src.agents.shared.state_persistence.carry_forward_other_agent_state)."""
+    user_id = "user-handoff-e2e"
+
+    first = client.post(
+        "/chat",
+        json={"message": "Quiero reportar un accidente, tuve un choque.", "userId": user_id},
+    )
+    assert first.status_code == 200
+    conversation_id = first.json()["conversationId"]
+    assert first.json()["agent"] == "ClaimsAgent"
+
+    second = client.post(
+        "/chat",
+        json={
+            "message": "Ahora quiero consultar mis comisiones. Soy Synthetic Brokerage One.",
+            "userId": user_id,
+            "conversationId": conversation_id,
+        },
+    )
+    assert second.status_code == 200
+    assert second.json()["agent"] == "BrokerAgent"
+
+    # The Claims state from turn 1 must survive BrokerAgent answering turn 2 — even though
+    # AgentResponse.metadata replaces (not merges) the conversation's stored metadata each turn.
+    stored = asyncio.run(get_conversation_repository_dep().get_conversation(user_id, conversation_id))
+    assert stored is not None
+    assert "claimsIntakeState" in stored.metadata
+    assert "brokerInquiryState" in stored.metadata
+
+    third = client.post(
+        "/chat",
+        json={
+            "message": "las del primer trimestre de 2026",
+            "userId": user_id,
+            "conversationId": conversation_id,
+        },
+    )
+    assert third.status_code == 200
+    # A bare period expression with no Claims/Commercial keyword must stay with Broker, not be
+    # misrouted back to Claims by naive keyword matching.
+    assert third.json()["agent"] == "BrokerAgent"
+    assert "SYN-BRK" not in third.json()["response"]  # no raw internal broker ID leaked
+
+    fourth = client.post(
+        "/chat",
+        json={
+            "message": "Ahora necesito una cotización para mi empresa.",
+            "userId": user_id,
+            "conversationId": conversation_id,
+        },
+    )
+    assert fourth.status_code == 200
+    assert fourth.json()["agent"] == "CommercialIntakeAgent"

@@ -40,6 +40,7 @@ class InMemoryConversationRepository:
         conversation_id: str,
         message: Message,
         metadata: dict[str, str] | None = None,
+        current_agent: str | None = None,
     ) -> Conversation:
         key = (user_id, conversation_id)
         stored = self._conversations.get(key)
@@ -48,5 +49,7 @@ class InMemoryConversationRepository:
         stored.messages.append(message)
         if metadata is not None:
             stored.metadata = metadata
+        if current_agent is not None:
+            stored.current_agent = current_agent
         stored.updated_at = datetime.now(UTC)
         return stored.model_copy(deep=True)

@@ -81,7 +81,7 @@ async def test_full_commission_conversation_with_a_successful_payment_request() 
         ],
     )
 
-    assert "broker id" in responses[0].lower() and "period" in responses[0].lower()
+    assert "brokerage" in responses[0].lower() and "period" in responses[0].lower()
     assert "available" in responses[1].lower()
     assert _PAYMENT_REQUEST_REFERENCE_PATTERN.search(responses[-1])
 

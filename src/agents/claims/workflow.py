@@ -29,9 +29,9 @@ from src.agents.claims.state import (
     ClaimsIntakeState,
     ClaimsIntakeStatus,
     PolicyCandidate,
-    missing_required_fields,
     next_question_group,
 )
+from src.agents.shared.conversational_policy import opening_acknowledgment
 from src.agents.shared.language import Language
 from src.agents.shared.messages import t
 from src.tools.executor import ToolExecutor
@@ -122,14 +122,30 @@ _MESSAGES: dict[str, dict[Language, str]] = {
     "confirmation_summary": {
         "es-MX": (
             "Antes de registrar tu siniestro, confirmemos los datos: póliza {policy_number}, "
-            "incidente del {event_date} en {event_location}, tipo '{loss_type}'. ¿Confirmas "
-            "que deseamos registrar tu siniestro con esta información? (sí/no)"
+            "incidente del {event_date} en {event_location}, tipo '{loss_type}'.{lob_detail} "
+            "¿Confirmas que deseamos registrar tu siniestro con esta información? (sí/no)"
         ),
         "en": (
             "Before registering your claim, let's confirm the details: policy {policy_number}, "
-            "incident on {event_date} at {event_location}, type '{loss_type}'. Shall I go "
-            "ahead and register your claim with this information? (yes/no)"
+            "incident on {event_date} at {event_location}, type '{loss_type}'.{lob_detail} "
+            "Shall I go ahead and register your claim with this information? (yes/no)"
         ),
+    },
+    "confirmation_detail_vehicle_drivable": {
+        "es-MX": " El vehículo puede circular.",
+        "en": " The vehicle is drivable.",
+    },
+    "confirmation_detail_vehicle_not_drivable": {
+        "es-MX": " El vehículo no puede circular.",
+        "en": " The vehicle is not drivable.",
+    },
+    "confirmation_detail_habitable": {
+        "es-MX": " La propiedad sigue siendo habitable.",
+        "en": " The property remains habitable.",
+    },
+    "confirmation_detail_not_habitable": {
+        "es-MX": " La propiedad no es habitable por ahora.",
+        "en": " The property is not currently habitable.",
     },
     "confirmation_declined": {
         "es-MX": "De acuerdo, no lo registraré todavía. ¿Qué dato te gustaría corregir?",
@@ -215,6 +231,7 @@ async def advance_claims_intake(
             state = state.model_copy(
                 update={
                     "policy_number": selection.policy_number,
+                    "line_of_business": selection.line_of_business,
                     "candidates": [],
                     "status": ClaimsIntakeStatus.COLLECTING_INFORMATION,
                 }
@@ -246,7 +263,7 @@ async def _handle_new(
 
 
 async def _handle_collecting_information(
-    state: ClaimsIntakeState, _tool_executor: ToolExecutor, _ctx: _ToolContext, language: Language
+    state: ClaimsIntakeState, tool_executor: ToolExecutor, ctx: _ToolContext, language: Language
 ) -> _HandlerResult:
     # Customer discovery is a priority step, not just another required field: the caller's
     # name is asked for first, and looked up immediately once given — before any incident
@@ -254,8 +271,17 @@ async def _handle_collecting_information(
     # narrating the whole incident. A direct policy number (regex-detected anywhere, any turn)
     # always short-circuits this entirely.
     if state.policy_number is None and state.customer_name is None:
-        new_state = state.model_copy(update={"last_asked_field": "customer_name"})
-        return new_state, [t(FIELD_PROMPTS, "customer_name", language)], False
+        prompt = t(FIELD_PROMPTS, "customer_name", language)
+        if not state.opening_acknowledged:
+            # Conversational Policy (PBI-05-01): acknowledge what the caller already said
+            # before asking anything — with empathy and the loss type if it was already
+            # volunteered ("Se inundó mi casa." -> loss_type already known), or a short "Claro."
+            # lead-in otherwise. Said exactly once per conversation.
+            prompt = f"{opening_acknowledgment(loss_type=state.loss_type, language=language)} {prompt}"
+        new_state = state.model_copy(
+            update={"last_asked_field": "customer_name", "opening_acknowledged": True}
+        )
+        return new_state, [prompt], False
 
     if state.policy_number is None and state.customer_name is not None:
         new_state = state.model_copy(
@@ -263,8 +289,27 @@ async def _handle_collecting_information(
         )
         return new_state, [], True
 
-    missing = missing_required_fields(state)
-    group = next_question_group(missing)
+    # PBI-05-01 requirement 9: once a policy is known (via customer discovery or a direct
+    # policy number), resolve its authoritative line_of_business — silently, from the Tool
+    # result, never guessed from conversation text — before asking any further incident
+    # details, so the very next question is already profile-aware (Auto vs Property).
+    # Customer-discovery paths already set this from the selected PolicyCandidate; only a
+    # direct policy number needs this extra (cheap, synthetic, in-memory) lookup.
+    if state.line_of_business is None:
+        policy_result = await tool_executor.execute(
+            ToolRequest(
+                tool_name="policy_lookup", tool_input={"policy_number": state.policy_number}, **ctx
+            )
+        )
+        if policy_result.success and policy_result.data is not None:
+            state = state.model_copy(
+                update={"line_of_business": policy_result.data.line_of_business}
+            )
+        # A failed lookup here is not reported — VALIDATING_POLICY's own policy_lookup call
+        # will surface "policy not found" properly once the required fields are collected;
+        # this step degrades to the LOB-agnostic common field set only, never blocks.
+
+    group = next_question_group(state)
     if group:
         new_state = state.model_copy(
             update={"last_asked_field": group[0], "last_asked_group": group}
@@ -322,7 +367,8 @@ async def _handle_looking_up_customer(
 
     if len(candidates) == 1:
         only = candidates[0]
-        vehicle = f", {only.vehicle_description}" if only.vehicle_description else ""
+        detail = only.vehicle_description or only.property_description
+        vehicle = f", {detail}" if detail else ""
         notice = t(
             _MESSAGES,
             "customer_single_match",
@@ -333,6 +379,7 @@ async def _handle_looking_up_customer(
         new_state = state.model_copy(
             update={
                 "policy_number": only.policy_number,
+                "line_of_business": only.line_of_business,
                 "candidates": [],
                 "status": ClaimsIntakeStatus.COLLECTING_INFORMATION,
             }
@@ -356,7 +403,11 @@ def _format_candidates(candidates: list[PolicyCandidate]) -> str:
     parts = []
     for index, candidate in enumerate(candidates):
         label = ordinals_es[index] if index < len(ordinals_es) else f"la #{index + 1}"
-        detail = candidate.vehicle_description or candidate.line_of_business
+        detail = (
+            candidate.vehicle_description
+            or candidate.property_description
+            or candidate.line_of_business
+        )
         parts.append(f"{label} ({detail})")
     return "; ".join(parts) + "."
 
@@ -436,6 +487,7 @@ async def _handle_validating_policy(
             "policy_active": policy_active,
             "payment_current": payment_current,
             "holder_name": policy_result.data.holder_name,
+            "line_of_business": policy_result.data.line_of_business,
             "coverage_type": coverage_data.coverage_type if coverage_data else None,
             "coverage_limit": coverage_data.limit_amount if coverage_data else None,
             "coverage_deductible": coverage_data.deductible if coverage_data else None,
@@ -443,6 +495,24 @@ async def _handle_validating_policy(
         }
     )
     return new_state, notices, True
+
+
+def _confirmation_lob_detail(state: ClaimsIntakeState, language: Language) -> str:
+    if state.line_of_business == "auto" and state.vehicle_drivable is not None:
+        key = (
+            "confirmation_detail_vehicle_drivable"
+            if state.vehicle_drivable
+            else "confirmation_detail_vehicle_not_drivable"
+        )
+        return t(_MESSAGES, key, language)
+    if state.line_of_business == "property" and state.property_habitable is not None:
+        key = (
+            "confirmation_detail_habitable"
+            if state.property_habitable
+            else "confirmation_detail_not_habitable"
+        )
+        return t(_MESSAGES, key, language)
+    return ""
 
 
 async def _handle_confirming(
@@ -457,6 +527,7 @@ async def _handle_confirming(
             event_date=state.event_date,
             event_location=state.event_location,
             loss_type=state.loss_type,
+            lob_detail=_confirmation_lob_detail(state, language),
         )
         new_state = state.model_copy(update={"last_asked_field": "confirmed"})
         return new_state, [notice], False
@@ -483,6 +554,8 @@ async def _handle_confirming(
             "contact_phone": None,
             "injuries_reported": None,
             "third_parties_involved": None,
+            "vehicle_drivable": None,
+            "property_habitable": None,
             "status": ClaimsIntakeStatus.COLLECTING_INFORMATION,
             "last_asked_field": None,
         }

@@ -70,3 +70,20 @@ def test_free_text_fallback_is_skipped_when_a_structured_field_matched_instead()
 
     assert updated.risk_description is None
     assert updated.contact_email == "jane@example.com"
+
+
+def test_natural_prefix_stripped_from_company_name() -> None:
+    state = extract_fields(
+        "mi empresa es Acme Consulting",
+        CommercialIntakeState(last_asked_field="company_name"),
+    )
+
+    assert state.company_name == "Acme Consulting"
+
+
+def test_natural_prefix_stripped_from_contact_name() -> None:
+    state = extract_fields(
+        "mi nombre es Jane Doe", CommercialIntakeState(last_asked_field="contact_name")
+    )
+
+    assert state.contact_name == "Jane Doe"
