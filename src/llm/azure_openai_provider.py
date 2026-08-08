@@ -30,6 +30,8 @@ from openai import (
     RateLimitError,
 )
 from openai.types.chat import (
+    ChatCompletionAssistantMessageParam,
+    ChatCompletionMessageFunctionToolCallParam,
     ChatCompletionMessageParam,
     ChatCompletionToolMessageParam,
     ChatCompletionToolParam,
@@ -246,7 +248,8 @@ class AzureOpenAIProvider:
 
 def _to_openai_messages(messages: list[LLMMessage]) -> list[ChatCompletionMessageParam]:
     """Maps typed LLMMessages to the OpenAI SDK's per-role TypedDict shape, including the
-    role="tool" shape a ToolCallRequest's result is fed back as (PBI-02-04)."""
+    role="tool" shape a ToolCallRequest's result is fed back as (PBI-02-04), and the
+    role="assistant" + tool_calls shape that same result must be a response *to* (PBI-04-03)."""
     result: list[ChatCompletionMessageParam] = []
     for message in messages:
         if message.role == LLMMessageRole.TOOL:
@@ -259,6 +262,18 @@ def _to_openai_messages(messages: list[LLMMessage]) -> list[ChatCompletionMessag
                 "tool_call_id": message.tool_call_id or "",
             }
             result.append(tool_message)
+        elif message.role == LLMMessageRole.ASSISTANT and message.tool_calls:
+            # PBI-04-03: replays the model's own prior tool-calling request as history — the
+            # OpenAI/Azure OpenAI protocol requires this to immediately precede the TOOL
+            # message(s) answering it. content is empty for essentially every real tool-calling
+            # turn (the model requests a call instead of writing text) — None, not "", matches
+            # the SDK's own documented "omitted when tool_calls is set" convention.
+            assistant_message: ChatCompletionAssistantMessageParam = {
+                "role": "assistant",
+                "content": message.content or None,
+                "tool_calls": _to_openai_tool_calls(message.tool_calls),
+            }
+            result.append(assistant_message)
         else:
             # cast: mypy cannot structurally narrow this dict to the specific TypedDict variant
             # openai's SDK expects per role from a plain literal string. The values are always
@@ -271,6 +286,27 @@ def _to_openai_messages(messages: list[LLMMessage]) -> list[ChatCompletionMessag
                 )
             )
     return result
+
+
+def _to_openai_tool_calls(
+    tool_calls: list[ToolCallRequest],
+) -> list[ChatCompletionMessageFunctionToolCallParam]:
+    """Maps typed ToolCallRequests back to OpenAI's assistant-message tool_calls shape — the
+    exact inverse of _from_openai_tool_calls, used to replay the model's own prior tool-call
+    request as conversation history (PBI-04-03)."""
+    return [
+        {
+            "id": call.call_id,
+            "type": "function",
+            "function": {
+                "name": call.tool_name,
+                "arguments": json.dumps(
+                    {argument.name: argument.value for argument in call.arguments}
+                ),
+            },
+        }
+        for call in tool_calls
+    ]
 
 
 def _to_openai_tools(tools: list[LLMToolDefinition]) -> list[ChatCompletionToolParam]:

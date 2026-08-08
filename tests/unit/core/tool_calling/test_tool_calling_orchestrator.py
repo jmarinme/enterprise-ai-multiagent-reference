@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from src.core.tool_calling.exceptions import ToolCallingError
 from src.core.tool_calling.models import ToolCallingContext
 from src.core.tool_calling.orchestrator import ToolCallingOrchestrator
+from src.llm.mock_provider import MockLLMProvider
 from src.llm.models import (
     LLMMessage,
     LLMMessageRole,
@@ -198,6 +199,77 @@ async def test_run_executes_an_allowed_tool_call_and_returns_the_final_response(
     assert len(tool_messages) == 1
     assert tool_messages[0].tool_call_id == "call-1"
 
+    # PBI-04-03: the assistant's own tool-calling request must be persisted immediately
+    # before the tool result it answers — the exact protocol requirement Azure OpenAI
+    # enforces and MockLLMProvider/the scripted test double never did.
+    assert second_request.messages[-2].role == LLMMessageRole.ASSISTANT
+    assert second_request.messages[-2].tool_calls == [
+        ToolCallRequest(
+            call_id="call-1",
+            tool_name="policy_lookup",
+            arguments=[ToolCallArgument(name="policy_number", value="SYN-POL-0001")],
+        )
+    ]
+    assert second_request.messages[-1] is tool_messages[0]
+    assert second_request.messages[-1].role == LLMMessageRole.TOOL
+
+
+async def test_run_persists_the_assistant_tool_calls_message_before_the_tool_result() -> None:
+    """Dedicated regression test for the PBI-04-03 fix itself: the final conversation history
+    must be user -> assistant(tool_calls) -> tool(tool_call_id) -> in that exact order, with
+    the tool_call_id on the tool message matching the call_id inside the assistant's own
+    tool_calls — the precise shape Azure OpenAI's real API validates and previously rejected."""
+    registry = _build_registry(PolicyLookupTool())
+    llm = _ScriptedLLMProvider(
+        [
+            LLMResponse(
+                text="",
+                model="stub",
+                tool_calls=[
+                    ToolCallRequest(
+                        call_id="call-1",
+                        tool_name="policy_lookup",
+                        arguments=[ToolCallArgument(name="policy_number", value="SYN-POL-0001")],
+                    )
+                ],
+            ),
+            LLMResponse(text="Here is the policy status.", model="stub"),
+        ]
+    )
+    orchestrator = _build_orchestrator(registry, llm)
+    context = ToolCallingContext(agent_name="ClaimsAgent", allowed_tools=["policy_lookup"])
+
+    await orchestrator.run(messages=_user_message(), context=context)
+
+    second_request = llm.requests[1]
+    roles = [m.role for m in second_request.messages]
+    assert roles == [
+        LLMMessageRole.USER,
+        LLMMessageRole.ASSISTANT,
+        LLMMessageRole.TOOL,
+    ]
+    assistant_message, tool_message = second_request.messages[1], second_request.messages[2]
+    assert assistant_message.tool_calls is not None
+    assert assistant_message.tool_calls[0].call_id == "call-1"
+    assert tool_message.tool_call_id == assistant_message.tool_calls[0].call_id
+
+
+async def test_run_omits_the_assistant_tool_calls_field_when_no_tool_call_was_requested() -> None:
+    """A plain-text turn (no tool_calls) must never gain a spurious assistant tool_calls
+    message — the fix is additive only for genuine tool-calling turns."""
+    registry = _build_registry(PolicyLookupTool())
+    llm = _ScriptedLLMProvider([LLMResponse(text="a plain answer", model="stub")])
+    orchestrator = _build_orchestrator(registry, llm)
+    context = ToolCallingContext(agent_name="ClaimsAgent", allowed_tools=["policy_lookup"])
+
+    await orchestrator.run(messages=_user_message(), context=context)
+
+    # Only one LLM call happened (no tool call requested), so there is no "second request" to
+    # inspect for a spurious assistant/tool pair — the absence of a second call at all is
+    # itself the proof nothing extra was appended.
+    assert len(llm.requests) == 1
+    assert llm.requests[0].messages == _user_message()
+
 
 # --- unauthorized tool call ----------------------------------------------------------------
 
@@ -232,6 +304,13 @@ async def test_run_rejects_an_unauthorized_tool_call_without_executing_it() -> N
     assert response.tool_calls[0].error_type == "unauthorized"
     assert response.tool_calls[0].data is None
 
+    # PBI-04-03: even a rejected (unauthorized) call still produces a TOOL-role error message
+    # back to the LLM — the assistant message must precede it just the same, regardless of
+    # whether the call was actually allowed to execute.
+    second_request = llm.requests[1]
+    assert second_request.messages[-2].role == LLMMessageRole.ASSISTANT
+    assert second_request.messages[-1].role == LLMMessageRole.TOOL
+
 
 # --- unknown tool call -----------------------------------------------------------------------
 
@@ -261,6 +340,11 @@ async def test_run_rejects_an_unknown_tool_call_without_executing_it() -> None:
     assert response.tool_calls[0].success is False
     assert response.tool_calls[0].error_type == "unknown_tool"
 
+    # PBI-04-03: same sequencing requirement as the unauthorized case above.
+    second_request = llm.requests[1]
+    assert second_request.messages[-2].role == LLMMessageRole.ASSISTANT
+    assert second_request.messages[-1].role == LLMMessageRole.TOOL
+
 
 # --- malformed arguments / Tool validation failure ------------------------------------------
 
@@ -289,6 +373,11 @@ async def test_run_reports_a_tool_failure_for_malformed_arguments_missing_a_requ
     assert response.tool_calls[0].success is False
     assert response.tool_calls[0].error_type == "tool_failed"
     assert "Invalid input for tool" in (response.tool_calls[0].error or "")
+
+    # PBI-04-03: malformed-argument failures still require the assistant message first.
+    second_request = llm.requests[1]
+    assert second_request.messages[-2].role == LLMMessageRole.ASSISTANT
+    assert second_request.messages[-1].role == LLMMessageRole.TOOL
 
 
 async def test_run_reports_a_tool_validation_failure_for_a_wrong_shaped_argument() -> None:
@@ -387,6 +476,28 @@ async def test_run_executes_multiple_tool_calls_within_a_single_llm_turn() -> No
     assert {call.tool_name for call in response.tool_calls} == {"policy_lookup", "payment_status"}
     assert response.iterations == 2
 
+    # PBI-04-03: exactly ONE assistant message carries BOTH tool_calls (matching how the LLM
+    # actually requested them, within a single turn), immediately followed by the two TOOL
+    # result messages in the same order the LLM requested them — "if multiple tool calls
+    # exist, preserve the complete ordered sequence."
+    second_request = llm.requests[1]
+    roles = [m.role for m in second_request.messages]
+    assert roles == [
+        LLMMessageRole.USER,
+        LLMMessageRole.ASSISTANT,
+        LLMMessageRole.TOOL,
+        LLMMessageRole.TOOL,
+    ]
+    assistant_message = second_request.messages[1]
+    assert assistant_message.tool_calls is not None
+    assert [c.call_id for c in assistant_message.tool_calls] == ["call-1", "call-2"]
+    assert [c.tool_name for c in assistant_message.tool_calls] == [
+        "policy_lookup",
+        "payment_status",
+    ]
+    assert second_request.messages[2].tool_call_id == "call-1"
+    assert second_request.messages[3].tool_call_id == "call-2"
+
 
 async def test_run_executes_tool_calls_across_multiple_iterations() -> None:
     registry = _build_registry(PolicyLookupTool(), PaymentStatusTool())
@@ -431,6 +542,22 @@ async def test_run_executes_tool_calls_across_multiple_iterations() -> None:
     assert response.text == "Sequential checks complete."
     assert response.stopped_due_to_max_iterations is False
 
+    # PBI-04-03: each iteration gets its own correctly-ordered assistant(tool_calls)/tool
+    # pair, and both pairs must be present, in order, by the third (final) LLM call.
+    third_request = llm.requests[2]
+    roles = [m.role for m in third_request.messages]
+    assert roles == [
+        LLMMessageRole.USER,
+        LLMMessageRole.ASSISTANT,
+        LLMMessageRole.TOOL,
+        LLMMessageRole.ASSISTANT,
+        LLMMessageRole.TOOL,
+    ]
+    assert third_request.messages[1].tool_calls[0].call_id == "call-1"  # type: ignore[index]
+    assert third_request.messages[2].tool_call_id == "call-1"
+    assert third_request.messages[3].tool_calls[0].call_id == "call-2"  # type: ignore[index]
+    assert third_request.messages[4].tool_call_id == "call-2"
+
 
 # --- maximum iteration protection ------------------------------------------------------------
 
@@ -447,6 +574,11 @@ async def test_run_stops_at_max_iterations_against_a_never_terminating_llm() -> 
     assert response.stopped_due_to_max_iterations is True
     assert response.iterations == 2
     assert len(response.tool_calls) == 2
+
+    # PBI-04-03: max_iterations protection is unaffected by the fix — the loop still stops at
+    # exactly the configured cap, and each iteration's assistant/tool pair is still correctly
+    # sequenced even though the LLM never cooperates and terminates on its own.
+    assert response.iterations == context.max_iterations
 
 
 # --- context propagation -----------------------------------------------------------------------
@@ -495,3 +627,33 @@ async def test_run_propagates_correlation_conversation_and_user_ids_to_the_llm_a
     assert tool_context.correlation_id == "corr-1"
     assert tool_context.conversation_id == "conv-1"
     assert tool_context.user_id == "user-1"
+
+
+# --- MockLLMProvider regression (PBI-04-03) --------------------------------------------------
+# The one test in this file that uses the real MockLLMProvider (every other test above uses a
+# scripted double, per this file's own module docstring) — proves the orchestrator fix produces
+# a correctly-sequenced conversation with the actual provider every other test/local dev run
+# uses, not just a hand-rolled stub.
+
+
+async def test_run_with_the_real_mock_llm_provider_sequences_messages_correctly() -> None:
+    registry = _build_registry(PolicyLookupTool())
+    llm = MockLLMProvider(
+        tool_call_plan=[
+            ToolCallRequest(
+                call_id="call-1",
+                tool_name="policy_lookup",
+                arguments=[ToolCallArgument(name="policy_number", value="SYN-POL-0001")],
+            )
+        ]
+    )
+    orchestrator = _build_orchestrator(registry, llm)
+    context = ToolCallingContext(agent_name="ClaimsAgent", allowed_tools=["policy_lookup"])
+
+    response = await orchestrator.run(messages=_user_message(), context=context)
+
+    # MockLLMProvider stops requesting once a TOOL-role message exists in history (see its own
+    # docstring) — the fix does not change when it stops, only what precedes the TOOL message.
+    assert len(response.tool_calls) == 1
+    assert response.tool_calls[0].success is True
+    assert response.stopped_due_to_max_iterations is False

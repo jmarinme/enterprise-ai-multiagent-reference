@@ -110,6 +110,25 @@ class ToolCallingOrchestrator:
                     stopped_due_to_max_iterations=False,
                 )
 
+            # PBI-04-03: the model's own tool-calling request must be persisted as an
+            # ASSISTANT message *before* the TOOL result message(s) that answer it — per the
+            # OpenAI/Azure OpenAI chat-completions protocol, a role="tool" message is only
+            # valid immediately following the assistant message whose own tool_calls named
+            # it. Appending only the TOOL message(s) (as before this fix) produced a
+            # malformed history that Azure OpenAI rejects outright; MockLLMProvider never
+            # validates this, which is why the defect was invisible until live validation
+            # against the real API — see docs/sprint_04/decisions.md. One ASSISTANT message
+            # carries the complete, ordered set of this turn's tool_calls, immediately
+            # followed by one TOOL message per call, in the same order — provider-agnostic,
+            # no special-casing.
+            conversation.append(
+                LLMMessage(
+                    role=LLMMessageRole.ASSISTANT,
+                    content=llm_response_text,
+                    tool_calls=llm_response.tool_calls,
+                )
+            )
+
             for call in llm_response.tool_calls:
                 result = await self._execute_tool_call(call, context)
                 all_results.append(result)

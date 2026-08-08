@@ -29,32 +29,6 @@ class LLMMessageRole(str, Enum):
     TOOL = "tool"
 
 
-class LLMMessage(BaseModel):
-    """A single message in an LLM conversation turn."""
-
-    role: LLMMessageRole
-    content: str
-    # Set only on a TOOL-role message: correlates this result back to the ToolCallRequest.
-    # call_id that produced it. None for every other role — additive, existing SYSTEM/USER/
-    # ASSISTANT messages are unaffected.
-    tool_call_id: str | None = None
-
-
-class LLMToolDefinition(BaseModel):
-    """One Tool exposed to the LLM as callable, built from a registered Tool's own metadata
-    and input_model (src.core.tool_calling.orchestrator.ToolCallingOrchestrator.
-    build_tool_definitions) — never hand-authored, so the LLM is never offered a tool name
-    that ToolRegistry does not actually recognize."""
-
-    name: str
-    description: str
-    # JSON schema (from Tool.input_model.model_json_schema()) describing valid arguments.
-    # dict[str, Any] is the correct, standard shape for a JSON schema document — the same
-    # deliberate, documented exception src.tools.models.ToolRequest.tool_input already makes
-    # at the equivalent runtime boundary.
-    parameters_schema: dict[str, Any] = Field(default_factory=dict)
-
-
 class ToolCallArgument(BaseModel):
     """One named argument exactly as the LLM supplied it, before any validation against the
     resolved Tool's own input_model (which remains ToolExecutor's job, never this framework's,
@@ -73,6 +47,43 @@ class ToolCallRequest(BaseModel):
     call_id: str
     tool_name: str
     arguments: list[ToolCallArgument] = Field(default_factory=list)
+
+
+class LLMMessage(BaseModel):
+    """A single message in an LLM conversation turn."""
+
+    role: LLMMessageRole
+    content: str
+    # Set only on a TOOL-role message: correlates this result back to the ToolCallRequest.
+    # call_id that produced it. None for every other role — additive, existing SYSTEM/USER/
+    # ASSISTANT messages are unaffected.
+    tool_call_id: str | None = None
+    # Set only on an ASSISTANT-role message that represents the model's own prior request to
+    # invoke one or more Tools (PBI-04-03) — mirrors OpenAI/Azure OpenAI's
+    # `message.tool_calls` on an assistant turn. None for every other role and for a plain-text
+    # assistant response. Required so a provider can correctly replay this turn as history: per
+    # the OpenAI/Azure OpenAI chat-completions protocol, a TOOL-role message is only valid
+    # immediately following the ASSISTANT message whose own tool_calls it answers — omitting
+    # this field entirely (as before PBI-04-03) made that protocol-compliant message
+    # unconstructable, which is the root cause this field fixes. See
+    # src.core.tool_calling.orchestrator.ToolCallingOrchestrator.run and
+    # docs/sprint_04/decisions.md.
+    tool_calls: list[ToolCallRequest] | None = None
+
+
+class LLMToolDefinition(BaseModel):
+    """One Tool exposed to the LLM as callable, built from a registered Tool's own metadata
+    and input_model (src.core.tool_calling.orchestrator.ToolCallingOrchestrator.
+    build_tool_definitions) — never hand-authored, so the LLM is never offered a tool name
+    that ToolRegistry does not actually recognize."""
+
+    name: str
+    description: str
+    # JSON schema (from Tool.input_model.model_json_schema()) describing valid arguments.
+    # dict[str, Any] is the correct, standard shape for a JSON schema document — the same
+    # deliberate, documented exception src.tools.models.ToolRequest.tool_input already makes
+    # at the equivalent runtime boundary.
+    parameters_schema: dict[str, Any] = Field(default_factory=dict)
 
 
 class LLMGenerationSettings(BaseModel):
