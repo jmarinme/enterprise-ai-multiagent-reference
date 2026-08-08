@@ -1,12 +1,38 @@
-# TMX Enterprise AI Reference Platform — Sprint 0 CI foundation (PBI-00-07).
+# TMX Enterprise AI Reference Platform — CI/CD pipeline.
 #
-# This pipeline validates the repository (backend, frontend, infrastructure-as-code, and
-# container images) on every push/PR to develop/main. It deploys nothing: there is no Azure
-# login, no `az deployment create`/`what-if`, and no image is pushed to a registry.
+# Sprint 0 (PBI-00-07) built the CI foundation: Stages 1-3 below (BackendQuality,
+# FrontendQuality, InfrastructureValidation) validate the repository on every push/PR to
+# develop/main and deploy nothing. Sprint 04 (PBI-04-01) adds real, automatic Continuous
+# Deployment to the already-existing, already-operational DEV environment
+# (rg-tmx-agent-platform-dev) — Stages 4-8 below. No new Azure environment (QA/Prod) is
+# created; no existing Azure resource is redesigned or recreated. See
+# docs/sprint_04/decisions.md for the full design rationale.
 #
-# A disabled `Deploy_Dev` stage at the bottom documents — but does not execute — the future
-# CD flow. See that stage's comments for the exact sequencing this pipeline is intentionally
-# NOT performing yet.
+# ============================================================================================
+# PREREQUISITE — must exist before ContainerBuildAndPush/DeployDev/SmokeTests/DeploymentSummary
+# can run (this pipeline cannot create Azure DevOps org-level objects; this is a one-time
+# manual/administrator step, documented in full in docs/sprint_04/decisions.md):
+#
+#   1. An Azure Resource Manager service connection in this Azure DevOps project, named
+#      "${{ parameters.azureServiceConnection }}" (default: tmx-agent-platform-dev-oidc),
+#      configured for Workload Identity Federation (OIDC) against the EXISTING user-assigned
+#      Managed Identity "id-tmxap-dev" in resource group "rg-tmx-agent-platform-dev",
+#      subscription 4112e852-665c-44c4-ad9d-67432600fc65. No client secret, no publish
+#      profile, no service principal password — per docs/sprint_00/security-baseline.md §6's
+#      already-documented recommendation. Azure DevOps's own "Workload identity federation
+#      (automatic)" service connection type creates the federated credential on the target
+#      identity for you, given sufficient RBAC (Owner/User Access Administrator) on it.
+#   2. That same Managed Identity must hold the two new, narrowly-scoped roles this PBI added
+#      to ops/bicep/main.bicep (AcrPush on the registry; Container Apps Contributor on each of
+#      the two Container Apps individually — never resource-group-wide) — applied via a
+#      one-time `az deployment group create` against the existing resource group, requiring
+#      explicit human approval before being run (this pipeline never runs
+#      `az deployment group create` itself; see Stage 6 below).
+#
+# Until both exist, BackendQuality/FrontendQuality/InfrastructureValidation still run and
+# validate every push/PR exactly as they did before this PBI — only the deploy-affecting
+# stages require the prerequisite above.
+# ============================================================================================
 
 trigger:
   branches:
@@ -24,16 +50,14 @@ pr:
       - develop
       - main
 
-# Pipeline-level parameters used only to drive the `${{ each }}` loops in
-# InfrastructureValidation below (see azure-pipelines/templates/steps/bicep-build*.yml).
-# Adding a new Bicep module or parameter file means adding one line here — no new pipeline
-# stage/job/step boilerplate required.
 parameters:
   - name: bicepModuleFiles
     type: object
     default:
       - ops/bicep/main.bicep
       - ops/bicep/modules/app-insights.bicep
+      - ops/bicep/modules/ai-search.bicep
+      - ops/bicep/modules/azure-openai.bicep
       - ops/bicep/modules/container-app.bicep
       - ops/bicep/modules/container-apps-environment.bicep
       - ops/bicep/modules/container-registry.bicep
@@ -42,41 +66,64 @@ parameters:
       - ops/bicep/modules/key-vault-secret.bicep
       - ops/bicep/modules/log-analytics.bicep
       - ops/bicep/modules/managed-identity.bicep
+      - ops/bicep/modules/private-dns-zone.bicep
+      - ops/bicep/modules/private-endpoint.bicep
+      - ops/bicep/modules/virtual-network.bicep
   - name: bicepParameterFiles
     type: object
     default:
       - ops/bicep/parameters/dev.bicepparam
       - ops/bicep/parameters/staging.bicepparam
       - ops/bicep/parameters/prod.bicepparam
+  # Name of the Azure DevOps service connection created per the PREREQUISITE above. A
+  # parameter, not a hardcoded literal inline in every deploy step, so renaming it means
+  # changing one line, not hunting through the file.
+  - name: azureServiceConnection
+    type: string
+    default: 'tmx-agent-platform-dev-oidc'
+  # The only Azure resource NAME hardcoded anywhere in this file: the resource group itself.
+  # It has no generated suffix, was deliberately chosen, and is the unavoidable entry point
+  # for every dynamic lookup below (ACR name, Container App names, FQDNs — all resolved via
+  # `az ... list/show` queries scoped to this resource group, never hardcoded).
+  - name: resourceGroupName
+    type: string
+    default: 'rg-tmx-agent-platform-dev'
+  # Only pushes to this branch trigger Stages 4-8 (build+push+deploy+smoke test+summary).
+  # develop-branch pushes and PR validation builds still run Stages 1-3 (quality gates) but
+  # never deploy — this is deliberate: DEV should track integrated, reviewed changes, not
+  # every feature branch.
+  - name: deployBranch
+    type: string
+    default: 'main'
 
 variables:
   pythonVersion: '3.12'
   nodeVersion: '20.x'
   apiImageName: 'tmx-api'
   webImageName: 'tmx-web'
-  # Build.BuildId is always unique and always available with no configuration — a source-SHA
-  # tag is equally valid; BuildId was chosen so this pipeline never needs a service connection
-  # or extra setup just to compute a tag.
-  imageTag: '$(Build.BuildId)'
-  # Future extension point: once real deployment secrets exist (service connection names,
-  # ACR name, per-environment endpoints), add a `variables: - group: tmx-<env>-secrets` entry
-  # here. No variable group is declared or required for this pipeline to run today — every
-  # stage below works on a brand-new Azure DevOps project with zero prior configuration.
+  # Image versioning (PBI-04-01 requirement — never "latest"): Build.BuildId is unique and
+  # monotonically increasing per Azure DevOps project with zero extra setup. Prefixed with
+  # "dev-" purely for readability when browsing tags in the registry.
+  imageTag: 'dev-$(Build.BuildId)'
+  isDeployRun: $[eq(variables['Build.SourceBranch'], 'refs/heads/${{ parameters.deployBranch }}')]
 
 stages:
   # ============================================================================================
-  # STAGE 1 — Backend Quality
+  # STAGE 1 (of this pipeline's 8 conceptual stages: Source checkout + Python environment +
+  # Quality Gates) — Backend Quality
   # Validates both Python projects in this repo (apps/api's transport layer and the root
-  # src/ domain library) in one shared environment, since CI has no need for the isolation
-  # local dev uses two separate venvs for.
+  # src/ domain library) in one shared environment. Fails immediately on any pytest/ruff/mypy
+  # failure — each is its own step; a failing step stops the job before the next one runs.
   # ============================================================================================
   - stage: BackendQuality
-    displayName: '1 - Backend Quality'
+    displayName: '1 - Backend Quality (checkout, Python env, quality gates)'
     jobs:
       - job: BackendQualityJob
         displayName: Backend quality gate
         pool:
           vmImage: ubuntu-latest
+        variables:
+          PIP_CACHE_DIR: $(Pipeline.Workspace)/.pip-cache
         steps:
           - checkout: self
 
@@ -85,57 +132,69 @@ stages:
               versionSpec: '$(pythonVersion)'
             displayName: 'Use Python $(pythonVersion)'
 
-          - script: python -m pip install --upgrade pip
+          # Package caching (PBI-04-01 requirement): keyed on both pyproject.toml files, so a
+          # dependency change invalidates the cache automatically; restoreKeys falls back to
+          # the most recent cache for this OS otherwise, keeping installs fast without ever
+          # serving stale packages for an unchanged dependency set.
+          - task: Cache@2
+            inputs:
+              key: 'pip | "$(Agent.OS)" | apps/api/pyproject.toml | pyproject.toml'
+              restoreKeys: |
+                pip | "$(Agent.OS)"
+              path: $(PIP_CACHE_DIR)
+            displayName: 'Cache pip packages'
+
+          - script: python -m pip install --cache-dir $(PIP_CACHE_DIR) --upgrade pip
             displayName: 'Upgrade pip'
 
           - script: |
               set -e
               # apps/api/pyproject.toml dependencies + dev extras
-              pip install \
+              pip install --cache-dir $(PIP_CACHE_DIR) \
                 "fastapi>=0.115,<1" "uvicorn[standard]>=0.30,<1" \
                 "pydantic>=2.7,<3" "pydantic-settings>=2.3,<3" \
                 "pytest>=8.2,<9" "httpx>=0.27,<1" "ruff>=0.5,<1" "mypy>=1.10,<2"
-              # root pyproject.toml dependencies + dev/cosmos/keyvault extras
-              pip install \
+              # root pyproject.toml dependencies + dev/cosmos/keyvault/azureopenai extras
+              pip install --cache-dir $(PIP_CACHE_DIR) \
                 "pytest-asyncio>=0.23,<1" \
                 "azure-cosmos>=4.7,<5" "azure-identity>=1.17,<2" \
-                "azure-keyvault-secrets>=4.8,<5" "aiohttp>=3.9,<4"
+                "azure-keyvault-secrets>=4.8,<5" "openai>=1.40,<2" "aiohttp>=3.9,<4"
               # coverage publication (Stage 1 requirement: "publish coverage if available")
-              pip install "pytest-cov>=5,<7"
+              pip install --cache-dir $(PIP_CACHE_DIR) "pytest-cov>=5,<7"
             displayName: 'Install backend and root project dependencies'
 
           - script: |
               set -e
               mkdir -p "$(Build.ArtifactStagingDirectory)/backend-reports"
               python -m pytest \
-                tests/unit/api tests/unit/domain tests/unit/services tests/integration \
+                tests/ \
                 -v \
                 --junitxml="$(Build.ArtifactStagingDirectory)/backend-reports/junit.xml" \
                 --cov=src --cov=apps/api/src \
                 --cov-report=xml:"$(Build.ArtifactStagingDirectory)/backend-reports/coverage.xml" \
                 --cov-report=term
-            displayName: 'Run API, domain/service, and integration tests (integration tests skip without Azure config)'
+            displayName: 'Run full pytest suite (quality gate 1/3 — fails the job immediately on any test failure)'
 
           - script: |
               set -e
               # ruff resolves [tool.ruff] from the nearest ancestor pyproject.toml per file, so
               # apps/api/src correctly picks up its own FastAPI Depends() lint exception while
               # src/ and tests/ use the root config — one command covers both trees correctly.
-              python -m ruff check apps/api/src src tests
-            displayName: 'Run ruff'
+              python -m ruff check apps/api/src src tests ops/scripts
+            displayName: 'Run ruff (quality gate 2/3)'
 
           - script: |
               set -e
               python -m mypy apps/api/src
               python -m mypy src
-            displayName: 'Run mypy'
+            displayName: 'Run mypy (quality gate 3/3)'
 
           - task: PublishTestResults@2
             condition: succeededOrFailed()
             inputs:
               testResultsFormat: JUnit
               testResultsFiles: '$(Build.ArtifactStagingDirectory)/backend-reports/junit.xml'
-              testRunTitle: 'Backend (API + domain/services + integration scaffolds)'
+              testRunTitle: 'Backend (full pytest suite)'
             displayName: 'Publish backend test results'
 
           - task: PublishCodeCoverageResults@2
@@ -152,7 +211,7 @@ stages:
             displayName: 'Publish backend-reports artifact'
 
   # ============================================================================================
-  # STAGE 2 — Frontend Quality
+  # STAGE 2 — Frontend Quality (parallel with Stage 1; both feed Stage 4)
   # ============================================================================================
   - stage: FrontendQuality
     displayName: '2 - Frontend Quality'
@@ -168,6 +227,15 @@ stages:
             inputs:
               versionSpec: '$(nodeVersion)'
             displayName: 'Use Node $(nodeVersion)'
+
+          # Package caching (PBI-04-01 requirement), keyed on package-lock.json.
+          - task: Cache@2
+            inputs:
+              key: 'npm | "$(Agent.OS)" | apps/web/package-lock.json'
+              restoreKeys: |
+                npm | "$(Agent.OS)"
+              path: apps/web/node_modules
+            displayName: 'Cache npm packages'
 
           - script: npm ci
             workingDirectory: apps/web
@@ -207,11 +275,6 @@ stages:
               artifactName: 'frontend-reports'
             displayName: 'Publish frontend-reports artifact'
 
-          # Published here, not under the "ArtifactPublication" stage below, because the dist/
-          # output only exists on this job's agent right after `npm run build` runs — stages run
-          # on isolated agents, so this is the only place this artifact can be produced without
-          # rebuilding it a second time. See azure-pipelines.yml header comment / PBI-00-07
-          # evidence for the full artifact-placement rationale.
           - task: PublishPipelineArtifact@1
             condition: succeeded()
             inputs:
@@ -222,7 +285,8 @@ stages:
   # ============================================================================================
   # STAGE 3 — Infrastructure Validation
   # Compiles every Bicep module, main.bicep, and all environment parameter files. No Azure
-  # login, no `az deployment create`, no `az deployment what-if`.
+  # login, no `az deployment create`, no `az deployment what-if`. Runs in parallel with
+  # Stages 1-2 (no dependsOn) since it validates a disjoint file set.
   # ============================================================================================
   - stage: InfrastructureValidation
     displayName: '3 - Infrastructure Validation'
@@ -248,54 +312,307 @@ stages:
                   filePath: ${{ paramFile }}
 
   # ============================================================================================
-  # STAGE 4 — Container Build Validation
-  # Proves both Dockerfiles build successfully. Depends on the two quality gates so CI minutes
-  # aren't spent building images from code already known to fail lint/type/tests. No image is
-  # pushed anywhere and no Azure service connection is used or required.
+  # STAGE 4 — Container Build (build) + STAGE 5 — Push Images (push), combined into one YAML
+  # stage/job deliberately: Azure Pipelines stages do not share a filesystem/Docker image
+  # cache across stage boundaries (each stage may run on a different agent instance), so
+  # "build in one stage, push in a separate stage" would require save/publish/download-ing a
+  # multi-hundred-MB tarball purely to satisfy a stage-per-numbered-item mapping — pure
+  # overhead with no benefit for a DEV-only, non-approval-gated flow. Build and Push remain
+  # two clearly separated, independently-named step groups below.
+  #
+  # Runs only for the deploy branch (isDeployRun) — PR validation and develop-branch builds
+  # stop after Stage 3, exactly as they did before this PBI.
+  #
+  # Fixes a pre-existing bug in this pipeline: the Sprint-0 version of this stage built the
+  # API image with `./apps/api` as the Docker build context. apps/api/Dockerfile has required
+  # the REPO ROOT as its build context since PBI-03-02 (main.py depends on the shared,
+  # reusable src/ packages) — the old context could never have produced a working image. See
+  # docs/sprint_04/decisions.md.
   # ============================================================================================
-  - stage: ContainerBuildValidation
-    displayName: '4 - Container Build Validation'
+  - stage: ContainerBuildAndPush
+    displayName: '4+5 - Container Build and Push Images'
     dependsOn:
       - BackendQuality
       - FrontendQuality
+    condition: and(succeeded(), eq(variables.isDeployRun, true))
     jobs:
-      - job: ContainerBuildValidationJob
-        displayName: Build API and Web images
+      - job: ContainerBuildAndPushJob
+        displayName: Build and push API and Web images
         pool:
           vmImage: ubuntu-latest
         steps:
           - checkout: self
 
-          - script: |
-              set -e
-              docker build -t "$(apiImageName):$(imageTag)" ./apps/api
-            displayName: 'Build API image'
+          - task: AzureCLI@2
+            displayName: 'Resolve existing ACR + API Container App FQDN, build, and push both images'
+            inputs:
+              azureSubscription: '${{ parameters.azureServiceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -e
 
-          - script: |
-              set -e
-              # VITE_API_URL here is a build-validation placeholder only (matches the Dockerfile's
-              # own local-dev default). The real per-environment API URL is resolved by the future,
-              # currently-disabled Deploy_Dev stage — see its comments below.
-              docker build \
-                --build-arg VITE_API_URL=http://localhost:8000 \
-                -t "$(webImageName):$(imageTag)" \
-                ./apps/web
-            displayName: 'Build Web image'
+                # Dynamic resolution (no hardcoded generated resource names): the resource
+                # group name is the only fixed input; the ACR and the API Container App's
+                # current FQDN are looked up by resource type/name-suffix within it, so a
+                # future re-deploy that changes the generated uniqueString() suffix never
+                # requires a pipeline edit.
+                ACR_NAME=$(az acr list --resource-group "${{ parameters.resourceGroupName }}" --query "[0].name" -o tsv)
+                ACR_LOGIN_SERVER=$(az acr list --resource-group "${{ parameters.resourceGroupName }}" --query "[0].loginServer" -o tsv)
+                API_FQDN=$(az containerapp show --resource-group "${{ parameters.resourceGroupName }}" \
+                  --name "$(az containerapp list --resource-group "${{ parameters.resourceGroupName }}" --query "[?ends_with(name, '-api')].name | [0]" -o tsv)" \
+                  --query "properties.configuration.ingress.fqdn" -o tsv)
+
+                echo "Resolved ACR: $ACR_NAME ($ACR_LOGIN_SERVER)"
+                echo "Resolved existing API Container App FQDN: $API_FQDN"
+                echo "##vso[task.setvariable variable=acrLoginServer;isOutput=true]$ACR_LOGIN_SERVER"
+
+                az acr login --name "$ACR_NAME"
+
+                echo "=== Building API image (repo-root build context — see apps/api/Dockerfile) ==="
+                docker build \
+                  --file apps/api/Dockerfile \
+                  -t "$ACR_LOGIN_SERVER/$(apiImageName):$(imageTag)" \
+                  .
+
+                echo "=== Pushing API image ==="
+                docker push "$ACR_LOGIN_SERVER/$(apiImageName):$(imageTag)"
+
+                # VITE_API_URL is baked into the Web image at build time (Vite inlines VITE_*
+                # vars at build, not container runtime — docs/sprint_00/decisions.md,
+                # PBI-00-03). The DEV API Container App already exists and is already running
+                # (this PBI's explicit context), so its FQDN is resolved directly above rather
+                # than waiting on a fresh deployment's output, unlike the original disabled
+                # Deploy_Dev stage's documented (from-scratch) assumption.
+                echo "=== Building Web image (context apps/web, VITE_API_URL=https://$API_FQDN) ==="
+                docker build \
+                  --build-arg VITE_API_URL="https://$API_FQDN" \
+                  -t "$ACR_LOGIN_SERVER/$(webImageName):$(imageTag)" \
+                  apps/web
+
+                echo "=== Pushing Web image ==="
+                docker push "$ACR_LOGIN_SERVER/$(webImageName):$(imageTag)"
+            name: buildAndPush
 
   # ============================================================================================
-  # STAGE 5 — Artifact Publication
-  # Publishes the Bicep/IaC source tree and a short validation summary. The backend/frontend
-  # test-and-coverage reports and the Web production build are published directly in the stages
-  # that produce them (Stage 1 / Stage 2) rather than re-collected here, because Azure Pipelines
-  # stages run on isolated agents — re-downloading and re-publishing them here would add nothing
-  # but indirection. All artifacts from every stage are still visible together on the pipeline
-  # run's "Artifacts" tab regardless of which stage published them.
+  # STAGE 6 — Deployment
+  # Updates ONLY the two existing Container Apps' image reference — never
+  # `az deployment group create`/`what-if`, never touches Cosmos DB, Key Vault, Azure OpenAI,
+  # AI Search, the Managed Identity, or the registry's own management plane. The image tag is
+  # unique per pipeline run (Build.BuildId-derived), so Azure Container Apps always creates a
+  # genuine new revision — no `--revision-suffix` workaround needed (that was only required in
+  # PBI-03-05/06's manual validation, which reused a fixed "pending-first-build" tag).
+  # ============================================================================================
+  - stage: DeployDev
+    displayName: '6 - Deployment (existing DEV Container Apps only)'
+    dependsOn:
+      - ContainerBuildAndPush
+      - InfrastructureValidation
+    condition: and(succeeded(), eq(variables.isDeployRun, true))
+    jobs:
+      - job: DeployDevJob
+        displayName: Update DEV Container App revisions
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - task: AzureCLI@2
+            displayName: 'az containerapp update — API and Web (image only, no infra recreation)'
+            inputs:
+              azureSubscription: '${{ parameters.azureServiceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -e
+
+                ACR_LOGIN_SERVER=$(az acr list --resource-group "${{ parameters.resourceGroupName }}" --query "[0].loginServer" -o tsv)
+                API_APP_NAME=$(az containerapp list --resource-group "${{ parameters.resourceGroupName }}" --query "[?ends_with(name, '-api')].name | [0]" -o tsv)
+                WEB_APP_NAME=$(az containerapp list --resource-group "${{ parameters.resourceGroupName }}" --query "[?ends_with(name, '-web')].name | [0]" -o tsv)
+
+                echo "Updating $API_APP_NAME -> $ACR_LOGIN_SERVER/$(apiImageName):$(imageTag)"
+                az containerapp update \
+                  --name "$API_APP_NAME" \
+                  --resource-group "${{ parameters.resourceGroupName }}" \
+                  --image "$ACR_LOGIN_SERVER/$(apiImageName):$(imageTag)"
+
+                echo "Updating $WEB_APP_NAME -> $ACR_LOGIN_SERVER/$(webImageName):$(imageTag)"
+                az containerapp update \
+                  --name "$WEB_APP_NAME" \
+                  --resource-group "${{ parameters.resourceGroupName }}" \
+                  --image "$ACR_LOGIN_SERVER/$(webImageName):$(imageTag)"
+
+                API_REVISION=$(az containerapp show --name "$API_APP_NAME" --resource-group "${{ parameters.resourceGroupName }}" --query "properties.latestRevisionName" -o tsv)
+                WEB_REVISION=$(az containerapp show --name "$WEB_APP_NAME" --resource-group "${{ parameters.resourceGroupName }}" --query "properties.latestRevisionName" -o tsv)
+                API_FQDN=$(az containerapp show --name "$API_APP_NAME" --resource-group "${{ parameters.resourceGroupName }}" --query "properties.configuration.ingress.fqdn" -o tsv)
+
+                echo "API revision: $API_REVISION"
+                echo "Web revision: $WEB_REVISION"
+                echo "##vso[task.setvariable variable=apiAppName;isOutput=true]$API_APP_NAME"
+                echo "##vso[task.setvariable variable=webAppName;isOutput=true]$WEB_APP_NAME"
+                echo "##vso[task.setvariable variable=apiRevision;isOutput=true]$API_REVISION"
+                echo "##vso[task.setvariable variable=webRevision;isOutput=true]$WEB_REVISION"
+                echo "##vso[task.setvariable variable=apiFqdn;isOutput=true]$API_FQDN"
+            name: deploy
+
+  # ============================================================================================
+  # STAGE 7 — Smoke Tests
+  # GET /health and POST /chat against the just-updated, real DEV API Container App. `curl -f`
+  # fails (non-zero exit) on any non-2xx response, which fails this step, which fails this
+  # stage, which blocks Stage 8 — satisfying "pipeline must fail if smoke tests fail" with no
+  # extra error-handling code needed.
+  # ============================================================================================
+  - stage: SmokeTests
+    displayName: '7 - Smoke Tests (GET /health, POST /chat)'
+    dependsOn:
+      - DeployDev
+    condition: and(succeeded(), eq(variables.isDeployRun, true))
+    variables:
+      apiFqdn: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.apiFqdn'] ]
+    jobs:
+      - job: SmokeTestsJob
+        displayName: Run smoke tests against the deployed DEV API
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - script: |
+              set -e
+              echo "Smoke test 1/2: GET https://$(apiFqdn)/health"
+              curl -sf --max-time 30 "https://$(apiFqdn)/health"
+              echo ""
+              echo "GET /health: OK"
+            displayName: 'Smoke test: GET /health'
+
+          - script: |
+              set -e
+              echo "Smoke test 2/2: POST https://$(apiFqdn)/chat"
+              HTTP_BODY=$(curl -sf --max-time 60 -X POST "https://$(apiFqdn)/chat" \
+                -H "Content-Type: application/json" \
+                -d '{"userId":"cicd-smoke-test","message":"Hello, this is an automated CI/CD smoke test."}')
+              echo "$HTTP_BODY"
+              # Fail the step (and therefore the stage/pipeline) if the response is not
+              # well-formed JSON with a non-empty "response" field — curl -f already covers
+              # non-2xx HTTP status; this additionally guards against a 200 with an empty or
+              # malformed body.
+              echo "$HTTP_BODY" | python3 -c "
+              import json, sys
+              body = json.load(sys.stdin)
+              assert body.get('response'), 'POST /chat returned no response text'
+              assert body.get('agent'), 'POST /chat returned no agent'
+              print(f\"POST /chat: OK (agent={body['agent']}, intent={body.get('intent')})\")
+              "
+            displayName: 'Smoke test: POST /chat'
+
+  # ============================================================================================
+  # STAGE 8 — Deployment Summary
+  # Publishes image tags, deployed Container App names/revisions, execution time, and a test
+  # summary (parsed from the backend/frontend JUnit artifacts already published in Stages 1-2)
+  # as a single pipeline artifact and build-summary markdown.
+  # ============================================================================================
+  - stage: DeploymentSummary
+    displayName: '8 - Deployment Summary'
+    dependsOn:
+      - SmokeTests
+      - DeployDev
+    condition: and(succeeded(), eq(variables.isDeployRun, true))
+    variables:
+      apiAppName: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.apiAppName'] ]
+      webAppName: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.webAppName'] ]
+      apiRevision: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.apiRevision'] ]
+      webRevision: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.webRevision'] ]
+      apiFqdn: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.apiFqdn'] ]
+    jobs:
+      - job: DeploymentSummaryJob
+        displayName: Publish deployment summary
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - task: DownloadPipelineArtifact@2
+            inputs:
+              artifact: backend-reports
+              path: '$(Pipeline.Workspace)/backend-reports'
+            displayName: 'Download backend test results'
+
+          - task: DownloadPipelineArtifact@2
+            inputs:
+              artifact: frontend-reports
+              path: '$(Pipeline.Workspace)/frontend-reports'
+            displayName: 'Download frontend test results'
+
+          - script: |
+              set -e
+              mkdir -p "$(Build.ArtifactStagingDirectory)/deployment-summary"
+
+              BACKEND_SUMMARY=$(python3 -c "
+              import xml.etree.ElementTree as ET
+              try:
+                  root = ET.parse('$(Pipeline.Workspace)/backend-reports/junit.xml').getroot()
+                  suite = root if root.tag == 'testsuite' else root.find('testsuite')
+                  print(f\"{suite.get('tests')} tests, {suite.get('failures', 0)} failures, {suite.get('errors', 0)} errors, {suite.get('skipped', 0)} skipped\")
+              except Exception as exc:
+                  print(f'unavailable ({exc})')
+              ")
+              FRONTEND_SUMMARY=$(python3 -c "
+              import xml.etree.ElementTree as ET
+              try:
+                  root = ET.parse('$(Pipeline.Workspace)/frontend-reports/junit.xml').getroot()
+                  suite = root if root.tag == 'testsuite' else root.find('testsuite')
+                  print(f\"{suite.get('tests')} tests, {suite.get('failures', 0)} failures, {suite.get('errors', 0)} errors, {suite.get('skipped', 0)} skipped\")
+              except Exception as exc:
+                  print(f'unavailable ({exc})')
+              ")
+
+              # Build.QueueTime is a standard Azure Pipelines predefined variable (ISO 8601).
+              QUEUE_EPOCH=$(date -d "$(Build.QueueTime)" +%s 2>/dev/null || echo 0)
+              NOW_EPOCH=$(date +%s)
+              if [ "$QUEUE_EPOCH" != "0" ]; then
+                ELAPSED=$((NOW_EPOCH - QUEUE_EPOCH))
+                EXEC_TIME="${ELAPSED}s (from pipeline queue time to this summary step; exact per-stage timings are in the Azure DevOps run's own Timeline view)"
+              else
+                EXEC_TIME="see the Azure DevOps run's own Timeline view"
+              fi
+
+              {
+                echo "# PBI-04-01 Deployment Summary"
+                echo ""
+                echo "- **Build:** $(Build.BuildId)  **Commit:** $(Build.SourceVersion)  **Branch:** $(Build.SourceBranchName)"
+                echo "- **Execution time:** $EXEC_TIME"
+                echo ""
+                echo "## Image tags"
+                echo "- API: \`$(apiImageName):$(imageTag)\`"
+                echo "- Web: \`$(webImageName):$(imageTag)\`"
+                echo ""
+                echo "## Deployed Container Apps"
+                echo "- API: \`$(apiAppName)\` — revision \`$(apiRevision)\` — https://$(apiFqdn)"
+                echo "- Web: \`$(webAppName)\` — revision \`$(webRevision)\`"
+                echo ""
+                echo "## Smoke tests"
+                echo "- GET /health: passed (pipeline would have failed otherwise)"
+                echo "- POST /chat: passed (pipeline would have failed otherwise)"
+                echo ""
+                echo "## Test summary"
+                echo "- Backend (pytest): $BACKEND_SUMMARY"
+                echo "- Frontend (Vitest): $FRONTEND_SUMMARY"
+              } | tee "$(Build.ArtifactStagingDirectory)/deployment-summary/DEPLOYMENT-SUMMARY.md"
+
+              # Also surface it directly on the Azure DevOps run summary page.
+              echo "##vso[task.uploadsummary]$(Build.ArtifactStagingDirectory)/deployment-summary/DEPLOYMENT-SUMMARY.md"
+            displayName: 'Generate deployment summary'
+
+          - task: PublishPipelineArtifact@1
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)/deployment-summary'
+              artifactName: 'deployment-summary'
+            displayName: 'Publish deployment-summary artifact'
+
+  # ============================================================================================
+  # ArtifactPublication — validation-only summary (Bicep/IaC content), unchanged in purpose
+  # from Sprint 0. Runs on every pipeline execution (PR/develop/main), not gated by
+  # isDeployRun, since it documents what was VALIDATED, not what was deployed — DeploymentSummary
+  # above is the deploy-specific counterpart, only meaningful on an actual deploy run.
   # ============================================================================================
   - stage: ArtifactPublication
-    displayName: '5 - Artifact Publication'
+    displayName: 'Artifact Publication (validation summary, every run)'
     dependsOn:
       - InfrastructureValidation
-      - ContainerBuildValidation
     jobs:
       - job: ArtifactPublicationJob
         displayName: Publish IaC and summary artifacts
@@ -315,14 +632,14 @@ stages:
               mkdir -p "$(Build.ArtifactStagingDirectory)/summary"
               {
                 echo "# Pipeline validation summary"
-                echo "Build: $(Build.BuildId)  Commit: $(Build.SourceVersion)"
+                echo "Build: $(Build.BuildId)  Commit: $(Build.SourceVersion)  Branch: $(Build.SourceBranchName)"
                 echo ""
                 echo "- Backend quality: tests, ruff, mypy — see the backend-reports artifact"
                 echo "- Frontend quality: lint, typecheck, tests, build — see frontend-reports / web-build artifacts"
                 echo "- Infrastructure: all Bicep modules, main.bicep, and dev/staging/prod parameter files compiled"
-                echo "- Container images: $(apiImageName):$(imageTag) and $(webImageName):$(imageTag) built locally, not pushed"
                 echo ""
-                echo "No Azure resource was deployed by this pipeline run."
+                echo "Deployment to DEV runs only for pushes to '${{ parameters.deployBranch }}' — see the"
+                echo "deployment-summary artifact (DeploymentSummary stage) on those runs."
               } > "$(Build.ArtifactStagingDirectory)/summary/PIPELINE-SUMMARY.md"
             displayName: 'Generate validation summary'
 
@@ -331,46 +648,3 @@ stages:
               targetPath: '$(Build.ArtifactStagingDirectory)/summary'
               artifactName: 'pipeline-summary'
             displayName: 'Publish validation summary'
-
-  # ============================================================================================
-  # FUTURE — Deploy_Dev (prepared, NOT enabled)
-  #
-  # condition: false permanently skips this stage regardless of branch/trigger. It exists so the
-  # intended CD shape is visible in the pipeline graph and reviewable in code, without being
-  # executable. Enabling it is a deliberate, separate, future change — not a side effect of
-  # anything in this PBI — and requires infrastructure this Sprint 0 pipeline does not set up
-  # (an Azure DevOps service connection using Workload Identity Federation, per
-  # docs/sprint_00/security-baseline.md §6).
-  #
-  # Intended future flow, once explicitly authorized and enabled:
-  #   1. Authenticate via Azure DevOps Workload Identity Federation (OIDC) against the platform's
-  #      existing user-assigned Managed Identity — no stored client secret, ever.
-  #   2. Deploy/update infrastructure: `az deployment group create` using ops/bicep/main.bicep and
-  #      the appropriate environment's ops/bicep/parameters/<env>.bicepparam file.
-  #   3. Resolve the API Container App FQDN from that deployment's `apiContainerAppFqdn` output.
-  #   4. Build the Web image with `--build-arg VITE_API_URL=https://<apiContainerAppFqdn>` — Vite
-  #      inlines VITE_* variables at build time, not container runtime (see
-  #      docs/sprint_00/decisions.md, PBI-00-03/PBI-00-04), so this must happen after step 3, not
-  #      in Stage 4 above.
-  #   5. Push both images to the Azure Container Registry created by
-  #      ops/bicep/modules/container-registry.bicep.
-  #   6. Deploy/update the API and Web Container Apps to reference the newly pushed image tags.
-  # ============================================================================================
-  - stage: Deploy_Dev
-    displayName: '(Future) Deploy to Dev — disabled'
-    condition: false
-    dependsOn:
-      - BackendQuality
-      - FrontendQuality
-      - InfrastructureValidation
-      - ContainerBuildValidation
-    jobs:
-      - job: FutureDeployJob
-        displayName: 'Not executed — documentation only'
-        pool:
-          vmImage: ubuntu-latest
-        steps:
-          - script: |
-              echo "This stage is intentionally disabled (condition: false) and will not run."
-              echo "See the Deploy_Dev stage comments in azure-pipelines.yml for the documented future flow."
-            displayName: 'Documented future CD flow (not executed)'
