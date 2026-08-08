@@ -19,6 +19,7 @@ src.core.tool_calling.orchestrator.ToolCallingOrchestrator's job.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, cast
 
 from openai import (
@@ -59,17 +60,19 @@ from src.llm.models import (
     ToolCallRequest,
 )
 
+logger = logging.getLogger(__name__)
+
 _PROVIDER_NAME = "azure_openai"
 _ENTRA_ID_SCOPE = "https://cognitiveservices.azure.com/.default"
 
-# Reasoning-family models (PBI-03-05): confirmed via a real Azure OpenAI deployment failure
-# against gpt-5-mini ("Unsupported value: 'temperature' does not support 0.0 with this model.
-# Only the default (1) value is supported.") that this model family accepts no explicit
-# temperature at all — only the API's own built-in default. This is documented, industry-wide
-# reasoning-model behavior (OpenAI's o-series and gpt-5 family), not specific to this one model
-# version. Traditional chat-completions models (gpt-4o*, gpt-4.1*, gpt-3.5*, ...) are unaffected
-# and keep receiving an explicit temperature exactly as before. See
-# docs/sprint_03/decisions.md (PBI-03-05) for the full capability-gap writeup.
+# Reasoning-family models (PBI-03-05/PBI-03-06): confirmed via real Azure OpenAI deployment
+# failures against gpt-5-mini ("Unsupported value: 'temperature' does not support 0.0 with
+# this model. Only the default (1) value is supported.") that this model family accepts no
+# explicit temperature at all — only the API's own built-in default. This is documented,
+# industry-wide reasoning-model behavior (OpenAI's o-series and gpt-5 family), not specific to
+# this one model version. Traditional chat-completions models (gpt-4o*, gpt-4.1*, gpt-3.5*, ...)
+# are unaffected and keep receiving an explicit temperature exactly as before. See
+# docs/sprint_03/decisions.md (PBI-03-05, PBI-03-06) for the full capability-gap writeup.
 _REASONING_MODEL_PREFIXES = ("gpt-5", "o1", "o3", "o4")
 _REASONING_MODEL_FIXED_TEMPERATURE = 1.0
 
@@ -153,25 +156,33 @@ class AzureOpenAIProvider:
         # level, PBI-03-05) is the real model name (e.g. "gpt-5-mini") used only for capability
         # detection below — the two are deliberately kept distinct; see __init__'s docstring.
         model = request.settings.model or self._deployment
-
-        if _is_reasoning_model(self._model_name) and request.settings.temperature != (
+        is_reasoning = _is_reasoning_model(self._model_name)
+        temperature_not_honored = is_reasoning and request.settings.temperature != (
             _REASONING_MODEL_FIXED_TEMPERATURE
-        ):
-            # A real capability gap, not a bug to paper over: this reasoning-family model
-            # cannot honor a non-default temperature, and LLMGenerationSettings' own
-            # temperature=0.0 default (src/llm/models.py) encodes a deliberate, deterministic-
-            # response design choice made by callers (agents) — silently dropping or
-            # renegotiating it here would silently change their response-determinism guarantee,
-            # which is out of this provider's scope. Fail loudly and typed instead. See
-            # docs/sprint_03/decisions.md (PBI-03-05).
-            raise LLMConfigurationError(
-                f"Model '{self._model_name}' (deployment '{model}') is a reasoning-family "
-                f"model and only supports the API's fixed default temperature "
-                f"({_REASONING_MODEL_FIXED_TEMPERATURE}); the requested "
-                f"temperature={request.settings.temperature} cannot be honored. Configure a "
-                "non-reasoning-family deployment, or explicitly pass "
-                f"temperature={_REASONING_MODEL_FIXED_TEMPERATURE} via LLMGenerationSettings "
-                "if deterministic (temperature=0) behavior is not required for this call."
+        )
+
+        if temperature_not_honored:
+            # A real, permanent capability gap, not a bug to paper over: this reasoning-family
+            # model rejects any explicit temperature outright, including one that matches its
+            # own fixed default, and LLMGenerationSettings' own temperature=0.0 default
+            # (src/llm/models.py) encodes a deliberate, deterministic-response design choice
+            # made by callers (agents) that this provider must never silently pretend to
+            # preserve. PBI-03-05 made this fail loudly (a typed LLMConfigurationError,
+            # blocking every call); PBI-03-06 changes this to the minimum provider-level
+            # compatible behavior that still executes the model, per explicit instruction —
+            # the call proceeds using the API's own fixed temperature, and this is surfaced
+            # loudly via a WARNING log (never silent), not via a return-value change, since
+            # LLMResponse's contract is deliberately left untouched (no LLM-abstraction
+            # redesign). See docs/sprint_03/decisions.md (PBI-03-05, PBI-03-06).
+            logger.warning(
+                "azure_openai reasoning-family model capability gap: model=%r "
+                "(deployment=%r) does not support the requested temperature=%r; executing "
+                "with the API's fixed default (%r) instead. Deterministic response behavior "
+                "is NOT preserved for this call.",
+                self._model_name,
+                model,
+                request.settings.temperature,
+                _REASONING_MODEL_FIXED_TEMPERATURE,
             )
 
         try:
@@ -187,12 +198,11 @@ class AzureOpenAIProvider:
                 "max_completion_tokens": request.settings.max_output_tokens,
                 "timeout": request.settings.timeout_seconds,
             }
-            if not _is_reasoning_model(self._model_name):
+            if not is_reasoning:
                 # Reasoning-family models reject an explicit temperature outright, even when it
-                # equals their own fixed default — the key above already guarantees temperature
-                # equals _REASONING_MODEL_FIXED_TEMPERATURE for that branch, so omitting it here
-                # is safe and required, not a silent drop of a value that differs from what was
-                # requested.
+                # equals their own fixed default — omitting the key here is required for every
+                # reasoning-family call, not just the ones where the requested value differs
+                # (see temperature_not_honored above for the audit-log path covering that case).
                 create_kwargs["temperature"] = request.settings.temperature
             if request.tools:
                 create_kwargs["tools"] = _to_openai_tools(request.tools)

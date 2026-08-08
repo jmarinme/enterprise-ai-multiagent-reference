@@ -1,0 +1,196 @@
+PBI-03-06: Fix Azure OpenAI GPT-5 Mini compatibility and obtain a successful real POST /chat
+Condensed evidence log
+Date: 2026-08-08
+Resource Group: rg-tmx-agent-platform-dev (eastus2/eastus) — reused unchanged from PBI-03-05
+
+=====================================================================
+1. PRE-WORK: RE-READ REQUIRED FILES, CONFIRM WHAT WAS ALREADY DONE
+=====================================================================
+
+Fresh read of: CLAUDE.md, docs/sprint_03/{README,validation,decisions}.md,
+src/llm/azure_openai_provider.py, src/llm/models.py, src/config/settings.py,
+src/llm/factory.py, apps/api/src/api/dependencies.py.
+
+Confirmed already correct from PBI-03-05 (zero changes needed):
+  - Requirement 1 (deployment name vs model name separated): LLMSettings.azure_openai_deployment
+    / azure_openai_model_name already exist; main.bicep already sets AZURE_OPENAI_DEPLOYMENT
+    and AZURE_OPENAI_MODEL_NAME as distinct env vars.
+  - Requirement 2 (capability-aware provider): _is_reasoning_model() already keys off the real
+    model name (self._model_name), not the deployment alias.
+  - Requirement 4 (Mock/Ollama/traditional preserved): MockLLMProvider/OllamaLLMProvider
+    untouched by PBI-03-05; traditional models still receive explicit temperature.
+  - Requirement 5 (adaptation confined to provider layer): factory.py/dependencies.py already
+    wire model_name through with zero Agent/Supervisor changes.
+
+The ONE real gap: generate() raised a typed LLMConfigurationError BEFORE any network call for
+a reasoning-family model requested at a non-default temperature. Correct per PBI-03-05's own
+scope ("stop before changing business behavior"), but structurally incompatible with THIS PBI's
+explicit stop condition (POST /chat must return 200 using gpt-5-mini).
+
+az resource list --resource-group rg-tmx-agent-platform-dev
+  -> All 12 resources still present, Succeeded. Confirmed before reuse, per PBI-03-05's own
+     decisions.md "how to apply" instruction.
+az containerapp revision list --name ca-tmxap-dev-api --resource-group rg-tmx-agent-platform-dev
+  -> Active revision v4, Healthy.
+
+=====================================================================
+2. CODE CHANGE (the only source file changed besides tests)
+=====================================================================
+
+src/llm/azure_openai_provider.py:
+  - Added `import logging` and `logger = logging.getLogger(__name__)`.
+  - generate(): the reasoning-family + non-default-temperature branch no longer raises
+    LLMConfigurationError. It now logs a WARNING and proceeds:
+
+    logger.warning(
+        "azure_openai reasoning-family model capability gap: model=%r (deployment=%r) does "
+        "not support the requested temperature=%r; executing with the API's fixed default "
+        "(%r) instead. Deterministic response behavior is NOT preserved for this call.",
+        self._model_name, model, request.settings.temperature,
+        _REASONING_MODEL_FIXED_TEMPERATURE,
+    )
+
+  - create_kwargs still omits "temperature" entirely for every reasoning-family call (same
+    omission PBI-03-05 already used for the one case where the requested value equalled 1.0;
+    now applied unconditionally).
+  - max_completion_tokens usage (PBI-03-05) unchanged.
+  - LLMConfigurationError remains raised, unchanged, for missing AZURE_OPENAI_ENDPOINT /
+    AZURE_OPENAI_DEPLOYMENT (genuinely unrecoverable configuration, not a capability gap).
+  - No change to LLMResponse, LLMGenerationSettings, or any file under src/agents/,
+    src/supervisor/, configs/prompts/, src/tools/.
+
+=====================================================================
+3. STATIC VALIDATION
+=====================================================================
+
+pytest tests/unit/llm/test_azure_openai_provider.py -v -> 17 passed
+  Rewrote test_reasoning_model_with_default_temperature_raises_configuration_error_without_
+  calling_the_api into test_reasoning_model_with_default_temperature_executes_and_logs_a_
+  warning: asserts the call succeeds, mock_client.chat.completions.create IS called, the
+  create_kwargs shape (model=deployment alias "chat", max_completion_tokens present,
+  max_tokens absent, temperature absent), and (via caplog.at_level("WARNING", logger=
+  "src.llm.azure_openai_provider")) that a WARNING containing "does not support the requested
+  temperature" and "NOT preserved" was actually logged.
+  All other tests (deployment-alias-vs-model-name regression guard, traditional-model mapping,
+  fixed-temperature success, configuration validation, tool calling, auth paths) unchanged and
+  still passing.
+
+pytest tests/ -q (full suite) -> 455 passed, 2 skipped
+  Same total as PBI-03-05's final count — a 1-for-1 test replacement, not a net addition,
+  confirming zero regression elsewhere.
+
+ruff check apps/api/src src tests ops/scripts -> All checks passed!
+mypy apps/api/src -> Success: no issues found in 13 source files
+mypy src -> Success: no issues found in 102 source files
+
+Bicep/build-params: NOT re-run — no Bicep or .bicepparam file was touched this PBI (confirmed
+via git status: only src/llm/azure_openai_provider.py and
+tests/unit/llm/test_azure_openai_provider.py changed).
+
+=====================================================================
+4. REBUILD + REDEPLOY (API image only, no resource-group recreation)
+=====================================================================
+
+az acr build --registry acrtmxapdevl3fgxt --image tmx-api:pending-first-build
+  --file apps/api/Dockerfile .
+  -> Local az CLI exit reported success this time (no colorama crash on this run); confirmed
+     server-side completion via az acr task list-runs (status Succeeded) and
+     az acr repository show-tags (digest updated, lastUpdateTime 2026-08-08T01:32:52Z).
+
+az containerapp update --name ca-tmxap-dev-api --resource-group rg-tmx-agent-platform-dev
+  --image acrtmxapdevl3fgxt.azurecr.io/tmx-api:pending-first-build --revision-suffix v5
+  -> Succeeded. az containerapp revision list: v5 healthState Healthy (v4 also still Healthy,
+     but 100% traffic routed to v5 per az containerapp ingress traffic show).
+
+No az deployment group create was run. No az group create was run. rg-tmx-agent-platform-dev
+and all 11 other resources (Log Analytics, Managed Identity, Key Vault, AI Search, ACR,
+Cosmos DB, App Insights, Container Apps Environment, web Container App, Azure OpenAI, the
+smart-detector alert rule) were reused completely unchanged.
+
+=====================================================================
+5. LIVE VALIDATION AGAINST THE REAL DEPLOYED SERVICE
+=====================================================================
+
+curl https://ca-tmxap-dev-api.bluemushroom-e2f74836.eastus2.azurecontainerapps.io/health
+  -> 200 {"status":"ok"}
+
+curl -X POST .../chat -d '{"userId":"synthetic-user-pbi-03-06",
+  "message":"Hello, I would like to report a claim after hours."}'
+  -> 200
+  {"conversationId":"3b98b628-70d1-4b4a-9433-b335bf638601","agent":"ClaimsAgent",
+   "intent":"CLAIMS","response":"Could you provide your policy number?
+   [prompt=claims.system@3.0.0] [llm=gpt-5-mini-2025-08-07]",
+   "metadata":{"claimsIntakeState":"{...\"last_asked_field\":\"policy_number\"}"},
+   "citations":[...2 items...],"groundingMetadata":{"retrievedCount":2,"citationCount":2,
+   "topK":2,"isGrounded":true},"toolCalls":[]}
+  -> [llm=gpt-5-mini-2025-08-07] confirms the REAL deployed gpt-5-mini model produced this
+     text (the Claims Agent embeds completion.model in its response suffix). RAG citations
+     and grounding populated normally (unaffected by this PBI's change).
+
+curl -X POST .../chat -d '{"userId":"synthetic-user-pbi-03-06-broker",
+  "message":"I want to check my commission payments for this month."}'
+  -> 200
+  {"conversationId":"0a2843a3-...","agent":"BrokerAgent","intent":"BROKER",
+   "response":"Please provide your broker ID and the period you want to review.
+   [prompt=broker.system@2.0.0] [llm=gpt-5-mini-2025-08-07]",
+   "metadata":{"brokerInquiryState":"{...}"},"citations":[],"groundingMetadata":null,
+   "toolCalls":[]}
+
+curl -X POST .../chat -d '{"userId":"synthetic-user-pbi-03-06-commercial",
+  "message":"I need commercial insurance for my new business."}'
+  -> 200
+  {"conversationId":"a1bc048e-...","agent":"CommercialIntakeAgent","intent":"COMMERCIAL",
+   "response":"What is your company or business name? [prompt=commercial.system@2.0.0]
+   [llm=gpt-5-mini-2025-08-07]","metadata":{"commercialIntakeState":"{...}"},
+   "citations":[],"groundingMetadata":null,"toolCalls":[]}
+
+curl -X POST .../chat -d '{"userId":"synthetic-user-pbi-03-06",
+  "conversationId":"3b98b628-70d1-4b4a-9433-b335bf638601",
+  "message":"My policy number is SYN-POL-0001"}'
+  -> 200
+  {"conversationId":"3b98b628-...","agent":"BrokerAgent","intent":"BROKER",
+   "response":"Policy SYN-POL-0001 status: active. Payments on this policy are up to date.
+   [prompt=broker.system@2.0.0] [llm=gpt-5-mini-2025-08-07]",
+   "metadata":{"brokerInquiryState":"{...\"policy_status\":\"active\",
+   \"policy_payment_current\":true...}"},"citations":[],"groundingMetadata":null,
+   "toolCalls":[]}
+  NOTE: this follow-up turn was routed to BrokerAgent, not ClaimsAgent (which was handling the
+  conversation). This is a PRE-EXISTING characteristic of RuleBasedIntentResolver (a
+  keyword-based classifier that confidently classifies "policy number" as BROKER intent,
+  which _resolve_agent's own documented design then honors over staying with the current
+  agent — see src/supervisor/orchestrator.py's own module docstring). Unrelated to this PBI's
+  provider-layer change. Observed and documented here for transparency; NOT modified, per
+  explicit instruction not to touch Supervisor/Agent/business-workflow code.
+
+az containerapp logs show --name ca-tmxap-dev-api --resource-group rg-tmx-agent-platform-dev
+  --revision ca-tmxap-dev-api--v5 --tail 30 | grep -i "warn"
+  -> Confirmed present for both Claims-routed turns:
+  {"timestamp": "2026-08-08T01:35:54+0000", "level": "WARNING",
+   "logger": "src.llm.azure_openai_provider",
+   "message": "azure_openai reasoning-family model capability gap: model='gpt-5-mini'
+   (deployment='chat') does not support the requested temperature=0.0; executing with the
+   API's fixed default (1.0) instead. Deterministic response behavior is NOT preserved for
+   this call.", "correlationId": "21e54b0f-473a-47d5-871d-685246d64cb7"}
+  -> Structured JSON, correctly correlation-ID-tagged (matches the request that triggered it).
+     Confirms the semantic gap is surfaced loudly and traceably, never silent.
+
+=====================================================================
+6. STOP CONDITION CHECK
+=====================================================================
+
+"PBI is COMPLETE only when the real deployed DEV POST /chat returns 200 using gpt-5-mini."
+
+MET. Confirmed 4 times across 3 distinct intents (Claims, Broker, Commercial Intake) plus one
+Claims follow-up turn, all against the real, live ca-tmxap-dev-api--v5 revision. Every
+response's [llm=gpt-5-mini-2025-08-07] tag confirms the real deployed model produced the text.
+
+=====================================================================
+7. FINAL STATE
+=====================================================================
+
+rg-tmx-agent-platform-dev: all 12 original resources unchanged; API Container App now on
+revision v5 (Healthy, 100% traffic), web Container App unchanged from PBI-03-05.
+
+455 tests passed, 2 skipped; ruff clean; mypy clean (13 + 102 files). No Bicep files touched
+this PBI. No Agent, Supervisor, PromptManager, Tool, or RAG code touched. gpt-5-mini kept, not
+downgraded. No commit, no push, per standing instruction.
