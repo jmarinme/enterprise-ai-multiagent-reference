@@ -4,8 +4,14 @@ Extracted from ClaimsAgent (PBI-01-05) and BrokerAgent (PBI-01-06), which had im
 this exact logic twice, byte-for-byte identical apart from already-parameterized inputs
 (prompt identifier, agent name, intent). PromptManager and LLMProvider are invoked every turn
 so both frameworks stay genuinely wired (provable via the returned [prompt=...]/[llm=...]
-annotation), but neither's output ever becomes response_text itself — the caller's
+diagnostic string), but neither's output ever becomes response_text itself — the caller's
 deterministic, Tool-sourced text is the only source of a business fact (CLAUDE.md §3).
+
+PBI-04-04: the diagnostic string is no longer appended to the user-visible response text —
+prompt identifiers/versions and LLM model names are technical details end users must never see
+(CLAUDE.md's Sprint 04 UX mandate). Callers now receive the diagnostic separately and store it
+only in AgentResponse.metadata (never rendered by the Web UI, available for logs/observability
+per CLAUDE.md §10's "redacted metadata").
 """
 
 from __future__ import annotations
@@ -19,7 +25,6 @@ from src.prompts.models import PromptRenderContext
 
 
 async def annotate_with_prompt_and_llm(
-    response_text: str,
     prompt_identifier: str,
     prompt_manager: PromptManager,
     llm_provider: LLMProvider,
@@ -29,16 +34,19 @@ async def annotate_with_prompt_and_llm(
     conversation_id: str | None,
     user_id: str | None,
 ) -> str:
-    """Render prompt_identifier, call the LLM, and append a provable annotation of both
-    invocations to response_text. Degrades gracefully to response_text alone (or with only
-    the prompt annotation) if PromptManager or LLMProvider fails — CLAUDE.md §11 requires a
-    safe, understandable response even when a downstream framework fails."""
+    """Render prompt_identifier, call the LLM, and return a provable diagnostic string
+    ("[prompt=...] [llm=...]") of both invocations — a metadata-only value, never appended to
+    or derived from the caller's own user-visible response text (PBI-04-04). Degrades
+    gracefully to an empty string (or a prompt-only diagnostic) if PromptManager or LLMProvider
+    fails — CLAUDE.md §11 requires a safe, understandable response even when a downstream
+    framework fails; the caller's own response text is untouched by any of these failure
+    modes, since this function never sees or returns it."""
     try:
         rendered_prompt = await prompt_manager.render(prompt_identifier, render_context)
     except PromptError:
-        return response_text
+        return ""
 
-    prompt_annotation = f"[prompt={rendered_prompt.identifier}@{rendered_prompt.metadata.version}]"
+    prompt_diagnostic = f"[prompt={rendered_prompt.identifier}@{rendered_prompt.metadata.version}]"
 
     try:
         llm_response = await llm_provider.generate(
@@ -54,6 +62,6 @@ async def annotate_with_prompt_and_llm(
             )
         )
     except LLMError:
-        return f"{response_text} {prompt_annotation}"
+        return prompt_diagnostic
 
-    return f"{response_text} {prompt_annotation} [llm={llm_response.model}]"
+    return f"{prompt_diagnostic} [llm={llm_response.model}]"

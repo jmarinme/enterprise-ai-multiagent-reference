@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { Citation, GroundingMetadata, ToolCallResult } from "../api/chat";
+import type { Citation, GroundingMetadata } from "../api/chat";
 
 export interface Message {
   id: string;
@@ -9,20 +9,30 @@ export interface Message {
   intent?: string;
   citations?: Citation[];
   groundingMetadata?: GroundingMetadata | null;
-  toolCalls?: ToolCallResult[];
   isError?: boolean;
 }
 
 interface MessageAreaProps {
   messages: Message[];
-  /** True while a request is in flight — renders a lightweight typing indicator at the
+  /** True while a request is in flight — renders a lightweight "Analizando…" indicator at the
    * bottom, kept separate from `messages` so the history itself never contains a synthetic
    * "loading" entry. */
   isAssistantTyping: boolean;
 }
 
+// Friendly, Spanish-first labels for internal agent class names — PBI-04-04 requirement 7
+// ("normal users must never see... internal [identifiers]"): the raw class name (e.g.
+// "ClaimsAgent") is a technical detail; the caller only needs to know which specialist is
+// helping them, in their own language.
+const AGENT_LABELS: Record<string, string> = {
+  ClaimsAgent: "Siniestros",
+  BrokerAgent: "Servicios a Corredores",
+  CommercialIntakeAgent: "Nuevos Negocios",
+  FallbackAgent: "Asistente",
+};
+
 function AgentBadge({ agent }: { agent: string }) {
-  return <span className="agent-badge">{agent}</span>;
+  return <span className="agent-badge">{AGENT_LABELS[agent] ?? "Asistente"}</span>;
 }
 
 function CitationCard({ citation }: { citation: Citation }) {
@@ -41,23 +51,8 @@ function GroundingBadge({ grounding }: { grounding: GroundingMetadata }) {
   }
   return (
     <span className="grounding-badge">
-      Grounded — {grounding.citationCount} source{grounding.citationCount === 1 ? "" : "s"}
+      Basado en {grounding.citationCount} fuente{grounding.citationCount === 1 ? "" : "s"}
     </span>
-  );
-}
-
-function ToolCallBadge({ toolCalls }: { toolCalls: ToolCallResult[] }) {
-  if (toolCalls.length === 0) {
-    return null;
-  }
-  return (
-    <ul className="tool-call-list">
-      {toolCalls.map((call) => (
-        <li key={call.callId} className={`tool-call-badge tool-call-badge--${call.success ? "ok" : "failed"}`}>
-          🔧 {call.toolName} {call.success ? "succeeded" : "failed"}
-        </li>
-      ))}
-    </ul>
   );
 }
 
@@ -87,16 +82,16 @@ export function MessageArea({ messages, isAssistantTyping }: MessageAreaProps) {
               ))}
             </ul>
           )}
-          {message.toolCalls && <ToolCallBadge toolCalls={message.toolCalls} />}
         </div>
       ))}
       {isAssistantTyping && (
         <div className="message message--assistant message--typing" role="status" aria-live="polite">
-          <span className="typing-indicator" aria-label="TMX Agent Platform is responding">
+          <span className="typing-indicator" aria-label="Analizando tu mensaje">
             <span />
             <span />
             <span />
           </span>
+          <span className="typing-indicator__label">Analizando…</span>
         </div>
       )}
       <div ref={bottomRef} />

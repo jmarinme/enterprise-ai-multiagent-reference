@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.middleware.correlation_id import CORRELATION_ID_HEADER, CorrelationIdMiddleware
-from api.routes import chat, health, version
+from api.routes import chat, conversations, health, version
 from config.settings import get_settings
 from observability.logging import configure_logging
 
@@ -32,6 +32,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(version.router)
     app.include_router(chat.router)
+    app.include_router(conversations.router)
     return app
 
 

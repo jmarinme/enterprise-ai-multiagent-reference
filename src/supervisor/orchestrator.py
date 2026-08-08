@@ -4,9 +4,22 @@ Depends only on interfaces (ConversationRepository, IntentResolver, AgentRegistr
 typed SupervisorConfig — all injected through the constructor, no globals. This class never
 imports or references any concrete Agent implementation; adding a new agent never requires
 changing this file.
+
+PBI-04-04 (performance requirement): each pipeline phase is timed and logged (never raised,
+never blocking) via the standard library `logging` module — deliberately not
+apps.api.src.observability (this is a reusable src/ module; apps/api depends on src/, never the
+reverse). "Supervisor" latency is split into its two real phases (Cosmos context load, Cosmos
+turn persistence); "LLM"/"Tool Calling"/"RAG" latency is not further broken down here — all
+three happen inside whichever Agent.handle() runs, and this class deliberately has zero
+knowledge of Agent internals (see class docstring above) so it cannot time them individually
+without violating that boundary. See docs/sprint_04/decisions.md for the measured breakdown
+and why a deeper per-Agent breakdown was judged out of this PBI's scope.
 """
 
 from __future__ import annotations
+
+import logging
+import time
 
 from src.domain.conversation import Conversation, Message, MessageRole
 from src.domain.conversation_repository import ConversationRepository
@@ -21,6 +34,8 @@ from src.supervisor.models import (
     SupervisorConfig,
 )
 from src.supervisor.registry import Agent, AgentRegistry
+
+_logger = logging.getLogger(__name__)
 
 
 class SupervisorOrchestrator:
@@ -48,18 +63,40 @@ class SupervisorOrchestrator:
         self._config = config or SupervisorConfig()
 
     async def handle(self, request: AgentRequest) -> AgentResponse:
+        pipeline_start = time.perf_counter()
+
+        context_start = time.perf_counter()
         context = await load_conversation_context(
             repository=self._conversation_repository,
             user_id=request.user_id,
             conversation_id=request.conversation_id,
             max_history_messages=self._config.max_history_messages,
         )
+        context_load_ms = (time.perf_counter() - context_start) * 1000
 
         intent = await self._intent_resolver.resolve(request.message)
         agent = self._resolve_agent(intent, context)
-        response = await agent.handle(request=request, context=context)
 
+        agent_start = time.perf_counter()
+        response = await agent.handle(request=request, context=context)
+        agent_handle_ms = (time.perf_counter() - agent_start) * 1000
+
+        persist_start = time.perf_counter()
         await self._persist_turn(context=context, request=request, response=response)
+        persist_ms = (time.perf_counter() - persist_start) * 1000
+
+        _logger.info(
+            "supervisor_turn_latency",
+            extra={
+                "correlationId": request.correlation_id,
+                "conversationId": context.conversation_id,
+                "agent": response.agent,
+                "contextLoadMs": round(context_load_ms, 1),
+                "agentHandleMs": round(agent_handle_ms, 1),
+                "persistMs": round(persist_ms, 1),
+                "totalMs": round((time.perf_counter() - pipeline_start) * 1000, 1),
+            },
+        )
 
         return response
 

@@ -56,6 +56,9 @@ def test_chat_drives_a_full_claim_report_end_to_end_through_the_real_api() -> No
     conversation_id: str | None = None
     final_response = ""
 
+    # PBI-04-04: a direct policy number short-circuits customer discovery (no customer_name
+    # question), and an explicit yes/no confirmation is now required after policy/payment/
+    # coverage validation before the claim is actually registered — hence the trailing "yes".
     for message in [
         "I need to report a claim",
         "SYN-POL-0001",
@@ -63,9 +66,9 @@ def test_chat_drives_a_full_claim_report_end_to_end_through_the_real_api() -> No
         "In my driveway",
         "It was a collision",
         "Another car hit me while parked",
-        "Jane Caller",
         "555-123-4567",
         "no",
+        "yes",
         "yes",
     ]:
         payload = {"message": message, "userId": user_id}

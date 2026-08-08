@@ -9,6 +9,7 @@ from pathlib import Path
 
 from src.agents.claims.state import ClaimsIntakeState, ClaimsIntakeStatus
 from src.agents.claims_agent import ClaimsAgent
+from src.agents.shared.language import LANGUAGE_METADATA_KEY
 from src.core.tool_calling.orchestrator import ToolCallingOrchestrator
 from src.llm.mock_provider import MockLLMProvider
 from src.prompts.filesystem_provider import FileSystemPromptProvider
@@ -40,7 +41,7 @@ def _ready_for_validation_state() -> ClaimsIntakeState:
         event_location="Main St",
         loss_type="collision",
         loss_description="Rear-ended at a stoplight.",
-        contact_name="Jane Caller",
+        customer_name="Jane Caller",
         contact_phone="555-123-4567",
         injuries_reported=False,
         third_parties_involved=True,
@@ -48,10 +49,13 @@ def _ready_for_validation_state() -> ClaimsIntakeState:
 
 
 def _seed_context(state: ClaimsIntakeState) -> ConversationContext:
+    # "here you go" carries no clear English/Spanish signal word, so it would otherwise resolve
+    # to this platform's Spanish-first default (src.agents.shared.language) — pin the sticky
+    # per-conversation language explicitly so these tests can assert on English notice text.
     return ConversationContext(
         conversation_id="conv-1",
         user_id="user-1",
-        metadata={"claimsIntakeState": state.model_dump_json()},
+        metadata={"claimsIntakeState": state.model_dump_json(), LANGUAGE_METADATA_KEY: "en"},
     )
 
 

@@ -31,7 +31,6 @@ class _RaisingLLMProvider:
 
 async def test_appends_prompt_and_llm_annotations_on_success() -> None:
     result = await annotate_with_prompt_and_llm(
-        response_text="base text",
         prompt_identifier="claims.system",
         prompt_manager=_build_prompt_manager(),
         llm_provider=MockLLMProvider(),
@@ -42,14 +41,12 @@ async def test_appends_prompt_and_llm_annotations_on_success() -> None:
         user_id="user-1",
     )
 
-    assert result.startswith("base text ")
-    assert "[prompt=claims.system@" in result
+    assert result.startswith("[prompt=claims.system@")
     assert "[llm=mock-llm]" in result
 
 
 async def test_degrades_to_base_text_when_prompt_manager_fails() -> None:
     result = await annotate_with_prompt_and_llm(
-        response_text="base text",
         prompt_identifier="claims.system",
         prompt_manager=_RaisingPromptManager(),  # type: ignore[arg-type]
         llm_provider=MockLLMProvider(),
@@ -60,12 +57,11 @@ async def test_degrades_to_base_text_when_prompt_manager_fails() -> None:
         user_id="user-1",
     )
 
-    assert result == "base text"
+    assert result == ""
 
 
 async def test_degrades_to_prompt_annotation_only_when_llm_provider_fails() -> None:
     result = await annotate_with_prompt_and_llm(
-        response_text="base text",
         prompt_identifier="claims.system",
         prompt_manager=_build_prompt_manager(),
         llm_provider=_RaisingLLMProvider(),

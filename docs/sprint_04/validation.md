@@ -237,3 +237,107 @@ Full transcript archived at docs/sprint_04/evidence/pbi-04-03-tool-calling-messa
 | No architecture regression exists | MET — zero changes outside src/llm/, src/core/tool_calling/orchestrator.py, and their tests; Supervisor/Agents/PromptManager/RAG/Grounding/Tool allow-lists/conversation-correlation-user IDs/max-iteration protection all verified unchanged by both code review and the full regression suite |
 
 Conclusion: PBI-04-03 resolves, completely and precisely, the exact defect PBI-04-02 discovered and was correctly forbidden from touching. The fix is minimal (one new optional field, one orchestrator change, two provider-mapping updates, zero changes to Mock), provider-agnostic (both real providers updated consistently, no Azure-specific special-casing), and validated not just by unit tests but by driving a complete, realistic 10-turn Claims conversation to a genuine business outcome against the real Azure OpenAI deployment — the strongest possible evidence this class of defect cannot recur silently.
+
+## 2026-08-08 — PBI-04-04: Demo Readiness (Spanish-first UX, customer discovery, Claims orchestration, history sidebar)
+
+### Pre-work: research (two background Explore agents, run in parallel)
+
+| Check | Result |
+|---|---|
+| Backend agent/orchestration/prompt architecture research | Confirmed: intent routing is 100% keyword-based (`RuleBasedIntentResolver`), no i18n/locale field exists anywhere, all 3 Agents' user-facing text is hardcoded English string literals (not LLM-authored), no customer entity/tool exists, Claims asks for policy number before any name, `ToolCallingOrchestrator.max_iterations` defaults to 3 |
+| Frontend + Cosmos conversation storage research | Confirmed: `ConversationRepository.list_conversations`/`get_conversation` already fully implemented on both adapters but exposed at zero HTTP routes; no i18n library in `apps/web/package.json`; `App.tsx` has no "load a past conversation" path at all; raw agent name/tool-call names/success flags were rendered directly in the UI |
+
+### Backend implementation — targeted validation during development
+
+| Command | Result |
+|---|---|
+| `ruff check src apps/api/src` (after each new/changed module) | All checks passed! (run repeatedly through development, not just once) |
+| `mypy src apps/api/src` (after each new/changed module) | Success: no issues found in 120 source files (run repeatedly through development) |
+| `pytest tests/unit -q` (first full run after all backend changes, before test fix-up) | 48 failed, 420 passed — all 48 failures traced to intentional behavior changes (bilingual text, new `language` parameter, diagnostics moved to metadata, `contact_name`→`customer_name`), not regressions; full triage list recorded and handed to a background agent |
+| Background agent: "Fix backend tests for PBI-04-04 Spanish-first changes" | Updated only files under `tests/`; final state **468 passed, 0 failed**; flagged one minor dead-parameter observation in `src/agents/shared/annotation.py` (fixed directly afterward, see `decisions.md`) |
+| `pytest tests/unit -q` (independent re-verification after the background agent's report) | 468 passed, 1 warning — confirmed independently, not merely trusted |
+
+### Frontend implementation — targeted validation during development
+
+| Command | Result |
+|---|---|
+| `npx vitest run` (first run after Spanish/history-sidebar rewrite) | 11 failed, 12 passed — all failures were stale English-text assertions (`"Message"`, `"Send"`, `"+ New conversation"`, `"Sorry, something went wrong"`, `"Grounded — 1 source"`) fixed directly (small, self-contained — not delegated) |
+| Follow-up fix: a `replace_all` text substitution accidentally renamed the `MessageInput` identifier itself (`Message`→`Mensaje` matched inside the component name too) | Caught by the very next `vitest run`'s import-resolution error; fixed by a second, scoped `MensajeInput`→`MessageInput` replace |
+| `npx vitest run` (after fixes, 33 tests: 23 original + `Sidebar.test.tsx` (6 new) + `conversations.test.ts` (4 new)) | 33 passed |
+| `npx tsc --noEmit` | Clean |
+| `npx eslint .` | Clean |
+| `npx vite build` | Succeeded — `dist/assets/index-*.js` 152.48 kB (49.27 kB gzip) |
+
+### Full regression (backend + frontend together, run repeatedly as bugs were found and fixed live — see below)
+
+| Command | Final result |
+|---|---|
+| `pytest tests/unit -q` | **479 passed**, 1 warning (468 baseline + 5 new extraction tests + 6 new `test_conversations.py` tests) |
+| `ruff check tests src apps/api/src` | All checks passed! |
+| `mypy src apps/api/src` | Success: no issues found in 120 source files |
+| `npx vitest run` (apps/web) | 33 passed |
+| `npx tsc --noEmit` (apps/web) | Clean |
+| `npx eslint .` (apps/web) | Clean |
+| `npx vite build` (apps/web) | Succeeded |
+
+### Deployment (API + Web images; API rebuilt/redeployed 5 times total as live-validation bugs were found and fixed — see below; Web built/deployed once, never needed a second rebuild)
+
+| Step | Result |
+|---|---|
+| Pre-check: `az group show`/`az acr list`/`az containerapp list` | Confirmed `rg-tmx-agent-platform-dev`, ACR `acrtmxapdevl3fgxt`, `ca-tmxap-dev-api`/`ca-tmxap-dev-web` all present and healthy before any change |
+| Build Web (`az acr build`, `--build-arg VITE_API_URL=https://ca-tmxap-dev-api...`) | Succeeded (local `az` CLI hit the same known cosmetic colorama/Windows-console log-streaming crash documented in every prior PBI this sprint; `az acr task list-runs` confirmed the remote build itself `Succeeded` every time this happened) |
+| Deploy Web (`az containerapp update --image ...`) | Succeeded; new revision, `GET /` → 200 |
+| Build + deploy API, round 1 (initial Spanish/customer-discovery/history implementation) | Succeeded; `GET /health` → 200 |
+| **Live validation, round 1**: drove a real Spanish Claims conversation | Surfaced bug #1 (customer lookup deferred to end of conversation — see `decisions.md`) |
+| Build + deploy API, round 2 (bug #1 fix) | Succeeded; `GET /health` → 200 |
+| **Live validation, round 2**: gave "Juan Pérez", tried "la Hilux" | Surfaced bug #2 (vehicle-description matching backwards) |
+| Build + deploy API, round 3 (bug #2 fix) | Succeeded; `GET /health` → 200 |
+| **Live validation, round 3**: full conversation through date+location | Surfaced bug #3 (`event_location` dropped from a grouped answer) |
+| Build + deploy API, round 4 (bug #3 fix, plus new regression tests) | Succeeded; `GET /health` → 200 |
+| **Live validation, round 4**: full conversation reached confirmation | Found a text-quality issue ("en en Avenida Reforma") — fixed (location-connector stripping), full regression re-run (473 passed), redeployed |
+| Build + deploy API, round 5 (`GET /conversations` query-param bug fix, found while validating the history endpoints) | Succeeded; `GET /health` → 200 |
+| **Live validation, round 5 (final)**: complete 9-turn Spanish Claims conversation, `GET /conversations`, `GET /conversations/{id}`, Broker, Commercial, CORS, Web homepage | All passed — see full transcript below |
+
+### Live DEV validation — final, complete pass (real calls against the real redeployed service)
+
+| # | Check | Result |
+|---|---|---|
+| 1 | `GET /health` | 200 `{"status":"ok"}` |
+| 2 | `GET /` (Web homepage) | 200 |
+| 3 | Claims T1: "Quiero reportar un accidente, tuve un choque." | 200 — `agent: ClaimsAgent`, response: "¿Cuál es tu nombre completo? Así puedo buscar tus pólizas." (Spanish routing + customer-discovery-first confirmed); `loss_type` already extracted as "collision" from "choque" in the same message |
+| 4 | Claims T2: "Juan Pérez" | 200 — `customer_lookup` tool call succeeded (`toolCalls: [{name: customer_lookup, success: true}]`), response lists both of Juan Pérez's policies ("la primera (Nissan Sentra 2022); la segunda (Toyota Hilux 2021)") — customer lookup fires immediately after the name, not at the end |
+| 5 | Claims T3: "la Hilux" | 200 — correctly resolved to `SYN-POL-1002` (vehicle-word matching fix confirmed), moved on to ask for date+location (loss_type already known, correctly excluded from the question) |
+| 6 | Claims T4: "2026-08-07, en Avenida Reforma, Ciudad de Mexico" | 200 — both `event_date` and `event_location` captured from the single combined answer (grouped free-text-recovery fix confirmed); moved on to `loss_description` |
+| 7 | Claims T5-T7: description, phone, injuries+third-parties (partial) | 200 each — injuries/third-parties combo captured only the first answer per message and correctly re-asked the second (documented, accepted limitation — see `decisions.md`), not a break |
+| 8 | Claims T8: business validation | 200 — response: "Tu póliza está vigente. Los pagos de esta póliza están al corriente. Tu cobertura es 'Cobertura amplia', con suma asegurada de \$320,000.00 y deducible de \$5,000.00. Antes de registrar tu siniestro, confirmemos los datos: póliza SYN-POL-1002, incidente del 2026-08-07 en Avenida Reforma, Ciudad de Mexico, tipo 'collision'. ¿Confirmas...?" — policy, payment, and coverage all validated and reported in natural Spanish, confirmation gate reached (no double "en en", connector-stripping fix confirmed) |
+| 9 | Claims T9: "sí, confirmo" | 200 — response: "Tu aviso de siniestro ha sido registrado. Tu número de referencia es SYN-CLM-2026-0001. Synthetic Adjuster Chen fue asignado a tu siniestro SYN-CLM-2026-0001 y te contactará pronto." — real claim registration + adjuster assignment, full ClaimsAgent orchestration (customer → policy → payment → coverage → claim registration → adjuster assignment) completed inside a single Agent, Supervisor never re-entered mid-flow |
+| 10 | Every turn above: `metadata.diagnostics` | Present (`"[prompt=claims.system@3.1.0] [llm=gpt-5-mini-2025-08-07]"`) — proves PromptManager/LLMProvider still genuinely invoked every turn — but **absent from `response`/the visible text** in every turn, confirmed by direct inspection of each response string |
+| 11 | `GET /conversations?userId=<the same user>` | 200 — returns the conversation with an automatic Spanish title ("Quiero reportar un accidente, tuve un choque."), `currentAgent: ClaimsAgent`, correct timestamps |
+| 12 | `GET /conversations/{id}?userId=...` | 200 — 18 messages (9 turns × 2), first message role=`user`/content matches the original T1 text exactly — full restore-on-reload capability confirmed |
+| 13 | Broker: "Quiero conocer mis comisiones." | 200 — `agent: BrokerAgent`, Spanish response ("Por favor indica tu ID de corredor y el período que deseas revisar."), `metadata.diagnostics` present and hidden from response text — zero regression |
+| 14 | Commercial: "Necesito una cotización para asegurar mi empresa." | 200 — `agent: CommercialIntakeAgent`, Spanish response ("¿Cuál es el nombre de tu empresa o negocio?") — zero regression |
+| 15 | CORS preflight (`OPTIONS /chat`) with `Origin: https://ca-tmxap-dev-web...` | 200, `access-control-allow-origin` exactly matches the real deployed Web origin, `access-control-allow-methods: GET, POST` (confirms the new `GET /conversations` routes are covered by the existing CORS policy) |
+
+Encoding note: raw `curl`/bash string arguments containing accented characters (e.g. "Pérez") were unreliable in this Windows Git-Bash environment (`{"detail":"There was an error parsing the body"}`); every live turn above was sent via a small UTF-8-explicit Python client script instead (`json.dumps(...).encode("utf-8")`), and console-rendering artifacts (`�`) seen in raw terminal output were confirmed to be a Windows console display issue only, not real data corruption, by forcing `PYTHONIOENCODING=utf-8` and by independently reading the JSON response programmatically.
+
+### Not performed: interactive browser click-through
+
+No browser-automation tool was available in this environment. The Web UI's own behavior was verified through its full automated test suite (33 `vitest` tests covering the history sidebar, Spanish strings, hidden technical badges, conversation loading, and retry/error flows against a mocked API), a clean production `vite build`, and live HTTP-level confirmation that the deployed Web app serves correctly (`GET /` → 200) with working CORS against the real API origin — but an actual human-style click-through in a real browser was not performed. This is reported honestly as a condition, not silently assumed.
+
+### STOP CONDITION accounting
+
+| Requirement | Status |
+|---|---|
+| Spanish-first experience | MET — live-verified across Claims/Broker/Commercial; default language is es-MX, English compatibility preserved via `src.agents.shared.language` (not re-tested live this PBI, but unit-tested: `detect_language`/`resolve_language` tests pass) |
+| Claims works naturally (customer discovery, grouped questions, orchestration, confirmation) | MET — full 9-turn live conversation, single Agent, zero Supervisor re-entry, real coverage validation and confirmation gate |
+| Broker works naturally | MET — live Spanish regression confirmed, zero change to Broker's state-machine shape |
+| Commercial works naturally | MET — live Spanish regression confirmed, zero change to Commercial's state-machine shape |
+| Customer lookup works | MET — live-verified, including multi-policy disambiguation by vehicle description and ordinal |
+| Policy selection works | MET — "la Hilux" (vehicle description) and implicitly ordinal selection are both unit- and live-tested |
+| Conversation history works | MET — `GET /conversations`/`GET /conversations/{id}` both live-verified, restore-on-reload wired in `App.tsx` |
+| Conversation search works | MET for the delivered scope — client-side filter over the fetched list, unit-tested in `Sidebar.test.tsx`; no server-side full-text search was built (documented, deliberate scope boundary, see `decisions.md`) |
+| No technical metadata visible | MET — diagnostics/prompt-version/LLM-model confirmed absent from every live response's visible text; raw tool names/failures removed from the frontend entirely |
+| Regression passes | MET — 479 backend tests, 33 frontend tests, ruff/mypy/tsc/eslint/build all clean |
+| Deployment completed | MET — both Container Apps redeployed, healthy, live-validated |
+
+Conclusion: PBI-04-04 delivers a Spanish-first, naturally-conversing Claims/Broker/Commercial experience with working customer discovery, coverage validation, an explicit confirmation gate, a functional conversation-history sidebar, and no visible technical metadata — validated not just by unit tests but by a real, complete, multi-turn Spanish conversation driven against the live DEV deployment, which is precisely what surfaced and let this PBI fix five genuine defects (documented in full in `decisions.md`) that the unit-test suite alone had missed. One small, deliberately-scoped UX gap remains and is honestly documented rather than hidden (the injuries/third-parties combined yes/no question only captures one answer per message), and interactive browser click-through was not performed for lack of a browser tool in this environment — both are reported as explicit conditions, not silently omitted.

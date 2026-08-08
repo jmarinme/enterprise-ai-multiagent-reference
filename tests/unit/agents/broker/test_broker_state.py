@@ -43,13 +43,13 @@ def test_missing_required_fields_shrinks_as_fields_are_filled() -> None:
 
 
 def test_prompt_for_missing_combines_both_commission_fields_in_one_message() -> None:
-    prompt = prompt_for_missing(["broker_id", "commission_period"])
+    prompt = prompt_for_missing(["broker_id", "commission_period"], "en")
 
     assert "broker ID" in prompt
     assert "period" in prompt
 
 
 def test_prompt_for_missing_a_single_field_uses_its_own_prompt() -> None:
-    prompt = prompt_for_missing(["policy_number"])
+    prompt = prompt_for_missing(["policy_number"], "en")
 
-    assert prompt == FIELD_PROMPTS["policy_number"]
+    assert prompt == FIELD_PROMPTS["policy_number"]["en"]

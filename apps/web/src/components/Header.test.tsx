@@ -10,7 +10,7 @@ describe("Header", () => {
     vi.restoreAllMocks();
   });
 
-  it("shows Connected and the API version when the API responds", async () => {
+  it("shows Conectado when the API responds", async () => {
     globalThis.fetch = vi.fn().mockImplementation((input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/health")) {
@@ -24,15 +24,14 @@ describe("Header", () => {
 
     render(<Header />);
 
-    await waitFor(() => expect(screen.getByText("Connected")).toBeInTheDocument());
-    expect(screen.getByText("API v0.1.0")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("Conectado")).toBeInTheDocument());
   });
 
-  it("shows Disconnected when the API is unreachable", async () => {
+  it("shows Sin conexión when the API is unreachable", async () => {
     globalThis.fetch = vi.fn().mockRejectedValue(new Error("network error"));
 
     render(<Header />);
 
-    await waitFor(() => expect(screen.getByText("Disconnected")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Sin conexión")).toBeInTheDocument());
   });
 });

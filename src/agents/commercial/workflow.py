@@ -1,4 +1,4 @@
-"""Commercial-intake state machine (PBI-01-07).
+"""Commercial-intake state machine (PBI-01-07, bilingual notices added by PBI-04-04).
 
 Dict-dispatched per-status handlers, mirroring src.agents.claims.workflow's single-linear-flow
 shape (there is no branching "inquiry type" here, unlike Broker). No if/elif chain selects
@@ -19,18 +19,55 @@ from src.agents.commercial.state import (
     CommercialIntakeStatus,
     missing_required_fields,
 )
+from src.agents.shared.language import Language
+from src.agents.shared.messages import t
 from src.tools.executor import ToolExecutor
 from src.tools.models import ToolRequest
 
 _ToolContext = dict[str, str | None]
 _HandlerResult = tuple[CommercialIntakeState, list[str], bool]
-_Handler = Callable[[CommercialIntakeState, ToolExecutor, _ToolContext], Awaitable[_HandlerResult]]
+_Handler = Callable[
+    [CommercialIntakeState, ToolExecutor, _ToolContext, Language], Awaitable[_HandlerResult]
+]
+
+_MESSAGES: dict[str, dict[Language, str]] = {
+    "registration_failed": {
+        "es-MX": "No pudimos registrar tu solicitud en este momento. Intenta de nuevo en breve.",
+        "en": "We were unable to register your inquiry right now. Please try again shortly.",
+    },
+    "registration_success": {
+        "es-MX": (
+            "Gracias — tu solicitud ha sido registrada. Tu número de referencia es "
+            "{lead_reference}. Un representante te contactará por {channel}."
+        ),
+        "en": (
+            "Thank you — your inquiry has been registered. Your reference is {lead_reference}. "
+            "A representative will follow up via {channel}."
+        ),
+    },
+    "already_registered": {
+        "es-MX": (
+            "Tu solicitud ya está registrada. Tu número de referencia es {lead_reference}. No "
+            "necesitas hacer nada más por ahora."
+        ),
+        "en": (
+            "Your inquiry is already registered. Your reference is {lead_reference}. No "
+            "further action is needed from you right now."
+        ),
+    },
+}
+
+_CHANNEL_LABELS: dict[str, dict[Language, str]] = {
+    "email": {"es-MX": "correo electrónico", "en": "email"},
+    "phone": {"es-MX": "teléfono", "en": "phone"},
+}
 
 
 async def advance_commercial_intake(
     state: CommercialIntakeState,
     message: str,
     tool_executor: ToolExecutor,
+    language: Language,
     correlation_id: str | None = None,
     conversation_id: str | None = None,
     user_id: str | None = None,
@@ -49,7 +86,7 @@ async def advance_commercial_intake(
     while True:
         handler = _HANDLERS[current_state.status]
         current_state, new_notices, should_continue = await handler(
-            current_state, tool_executor, tool_context
+            current_state, tool_executor, tool_context, language
         )
         notices.extend(new_notices)
         if not should_continue:
@@ -59,7 +96,7 @@ async def advance_commercial_intake(
 
 
 async def _handle_new(
-    state: CommercialIntakeState, _tool_executor: ToolExecutor, _ctx: _ToolContext
+    state: CommercialIntakeState, _tool_executor: ToolExecutor, _ctx: _ToolContext, _language: Language
 ) -> _HandlerResult:
     return (
         state.model_copy(update={"status": CommercialIntakeStatus.COLLECTING_INFORMATION}),
@@ -69,13 +106,13 @@ async def _handle_new(
 
 
 async def _handle_collecting_information(
-    state: CommercialIntakeState, _tool_executor: ToolExecutor, _ctx: _ToolContext
+    state: CommercialIntakeState, _tool_executor: ToolExecutor, _ctx: _ToolContext, language: Language
 ) -> _HandlerResult:
     missing = missing_required_fields(state)
     if missing:
         next_field = missing[0]
         new_state = state.model_copy(update={"last_asked_field": next_field})
-        return new_state, [FIELD_PROMPTS[next_field]], False
+        return new_state, [t(FIELD_PROMPTS, next_field, language)], False
 
     new_state = state.model_copy(
         update={"status": CommercialIntakeStatus.READY_TO_REGISTER, "last_asked_field": None}
@@ -84,7 +121,7 @@ async def _handle_collecting_information(
 
 
 async def _handle_ready_to_register(
-    state: CommercialIntakeState, tool_executor: ToolExecutor, ctx: _ToolContext
+    state: CommercialIntakeState, tool_executor: ToolExecutor, ctx: _ToolContext, language: Language
 ) -> _HandlerResult:
     result = await tool_executor.execute(
         ToolRequest(
@@ -102,7 +139,7 @@ async def _handle_ready_to_register(
         )
     )
     if not result.success or result.data is None:
-        notice = "We were unable to register your inquiry right now. Please try again shortly."
+        notice = t(_MESSAGES, "registration_failed", language)
         return state, [notice], False
 
     new_state = state.model_copy(
@@ -111,21 +148,22 @@ async def _handle_ready_to_register(
             "status": CommercialIntakeStatus.REGISTERED,
         }
     )
-    notice = (
-        f"Thank you — your inquiry has been registered. Your reference is "
-        f"{result.data.lead_reference}. A representative will follow up via "
-        f"{state.preferred_contact_channel}."
+    channel = state.preferred_contact_channel or ""
+    channel_label = t(_CHANNEL_LABELS, channel, language) if channel in _CHANNEL_LABELS else channel
+    notice = t(
+        _MESSAGES,
+        "registration_success",
+        language,
+        lead_reference=result.data.lead_reference,
+        channel=channel_label,
     )
     return new_state, [notice], False
 
 
 async def _handle_registered(
-    state: CommercialIntakeState, _tool_executor: ToolExecutor, _ctx: _ToolContext
+    state: CommercialIntakeState, _tool_executor: ToolExecutor, _ctx: _ToolContext, language: Language
 ) -> _HandlerResult:
-    notice = (
-        f"Your inquiry is already registered. Your reference is {state.lead_reference}. "
-        "No further action is needed from you right now."
-    )
+    notice = t(_MESSAGES, "already_registered", language, lead_reference=state.lead_reference)
     return state, [notice], False
 
 

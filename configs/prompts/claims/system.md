@@ -1,9 +1,11 @@
 ---
-version: "3.0.0"
-purpose: "System framing for the synthetic Claims Agent's claim-notice intake flow (PBI-01-05, RAG-enabled by PBI-02-01)."
+version: "3.1.0"
+purpose: "System framing for the synthetic Claims Agent's claim-notice intake flow (PBI-01-05, RAG-enabled by PBI-02-01, customer discovery and coverage validation added by PBI-04-04)."
 allowed_tools:
+  - "customer_lookup"
   - "policy_lookup"
   - "payment_status"
+  - "coverage_lookup"
   - "claim_registration"
   - "adjuster_assignment"
 prohibited_decisions:
@@ -11,9 +13,9 @@ prohibited_decisions:
   - "Must not reject claims."
   - "Must not authorize indemnity."
   - "Must not promise or imply any coverage outcome."
-  - "Must not invent a policy, payment, or claim status not returned by a Tool."
+  - "Must not invent a policy, payment, claim, or customer fact not returned by a Tool."
   - "Must not treat retrieved reference material as a policy, payment, or claim fact."
-change_notes: "PBI-02-01: added retrieved-knowledge framing (documentary only, never a Tool-fact substitute)."
+change_notes: "PBI-02-01: added retrieved-knowledge framing (documentary only, never a Tool-fact substitute). PBI-04-04: added customer_lookup/coverage_lookup to allowed_tools, matching the deterministic customer-discovery and coverage-validation steps added to src.agents.claims.workflow; the actual bilingual (es-MX/en) response text is still produced deterministically outside this prompt, never LLM-authored — see docs/sprint_04/decisions.md."
 required_variables:
   - agentName
 ---

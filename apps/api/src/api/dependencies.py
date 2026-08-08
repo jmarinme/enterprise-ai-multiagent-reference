@@ -18,6 +18,7 @@ from src.agents.claims_agent import ClaimsAgent
 from src.agents.commercial_intake_agent import CommercialIntakeAgent
 from src.agents.fallback_agent import FallbackAgent
 from src.core.tool_calling.orchestrator import ToolCallingOrchestrator
+from src.domain.conversation_repository import ConversationRepository
 from src.domain.secret_provider import SecretProvider
 from src.llm.factory import get_llm_provider as build_llm_provider
 from src.llm.provider import LLMProvider
@@ -34,6 +35,8 @@ from src.services.tools.claim_registration_tool import ClaimRegistrationTool
 from src.services.tools.claims_status_tool import ClaimsStatusTool
 from src.services.tools.commission_lookup_tool import CommissionLookupTool
 from src.services.tools.commission_payment_request_tool import CommissionPaymentRequestTool
+from src.services.tools.coverage_lookup_tool import CoverageLookupTool
+from src.services.tools.customer_lookup_tool import CustomerLookupTool
 from src.services.tools.lead_registration_tool import LeadRegistrationTool
 from src.services.tools.payment_status_tool import PaymentStatusTool
 from src.services.tools.policy_lookup_tool import PolicyLookupTool
@@ -79,6 +82,8 @@ def get_tool_registry() -> ToolRegistry:
     tool_registry.register(CommissionLookupTool())
     tool_registry.register(CommissionPaymentRequestTool())
     tool_registry.register(LeadRegistrationTool())
+    tool_registry.register(CustomerLookupTool())
+    tool_registry.register(CoverageLookupTool())
     return tool_registry
 
 
@@ -167,10 +172,23 @@ def get_tool_calling_orchestrator() -> ToolCallingOrchestrator:
 
 
 @lru_cache
+def get_conversation_repository_dep() -> ConversationRepository:
+    """Build and cache the process-wide ConversationRepository (PBI-04-04's conversation-
+    history endpoints reuse this exact instance — never a second, competing repository).
+    """
+    return get_conversation_repository(ConversationStoreSettings())
+
+
+@lru_cache
 def get_supervisor() -> SupervisorOrchestrator:
-    """Build and cache the process-wide Supervisor instance."""
-    conversation_store_settings = ConversationStoreSettings()
-    repository = get_conversation_repository(conversation_store_settings)
+    """Build and cache the process-wide Supervisor instance.
+
+    Reuses get_conversation_repository_dep()'s exact cached instance (PBI-04-04) — not a
+    second, independently-constructed repository — so a conversation POST /chat just wrote is
+    always visible to GET /conversations in the same process, including the in-memory adapter
+    used locally/in tests, which holds state only in its own instance's dict.
+    """
+    repository = get_conversation_repository_dep()
     tool_executor = get_tool_executor()
     prompt_manager = get_prompt_manager()
     llm_provider = get_llm_provider()

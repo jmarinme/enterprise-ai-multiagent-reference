@@ -1,4 +1,5 @@
-"""Claims-intake state machine (PBI-01-05).
+"""Claims-intake state machine (PBI-01-05, extended by PBI-04-04 with customer discovery,
+coverage validation, and an explicit pre-registration confirmation step).
 
 Dict-dispatched per-status handlers, each returning the (possibly updated) state, the
 user-facing notices produced this step, and whether the loop should immediately continue into
@@ -6,34 +7,201 @@ the next status within the same turn. No if/elif chain selects behavior — reso
 single dict lookup, mirroring the registry pattern already used by
 src.supervisor.registry.AgentRegistry and src.tools.registry.ToolRegistry.
 
-Only a "policy not found" failure blocks progression. An inactive policy or a payment issue is
-surfaced as a fact and does not block claim registration — the Agent gathers and reports facts,
-it never approves, rejects, or adjudicates coverage (CLAUDE.md §2).
+Only a "not found" failure (customer or policy) blocks progression. An inactive policy or a
+payment issue is surfaced as a fact and does not block claim registration — the Agent gathers
+and reports facts, it never approves, rejects, or adjudicates coverage (CLAUDE.md §2).
+
+PBI-04-04 requirement 5 ("ClaimsAgent should autonomously orchestrate Customer/Policy/Payment/
+Coverage/Knowledge/Claim Registration Tools... do not return to the Supervisor for Claims
+operations"): every one of those Tool calls below happens inside this single agent's own
+advance_claims_intake loop, across as many statuses as one HTTP turn needs — the Supervisor is
+never re-entered mid-flow (see src.supervisor.orchestrator, which calls agent.handle() exactly
+once per turn and never inspects or drives Agent-internal state).
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 
-from src.agents.claims.extraction import extract_fields
+from src.agents.claims.extraction import extract_fields, resolve_selection
 from src.agents.claims.state import (
     FIELD_PROMPTS,
     ClaimsIntakeState,
     ClaimsIntakeStatus,
+    PolicyCandidate,
     missing_required_fields,
+    next_question_group,
 )
+from src.agents.shared.language import Language
+from src.agents.shared.messages import t
 from src.tools.executor import ToolExecutor
 from src.tools.models import ToolRequest
 
 _ToolContext = dict[str, str | None]
 _HandlerResult = tuple[ClaimsIntakeState, list[str], bool]
-_Handler = Callable[[ClaimsIntakeState, ToolExecutor, _ToolContext], Awaitable[_HandlerResult]]
+_Handler = Callable[
+    [ClaimsIntakeState, ToolExecutor, _ToolContext, Language], Awaitable[_HandlerResult]
+]
+
+_MESSAGES: dict[str, dict[Language, str]] = {
+    "customer_not_found": {
+        "es-MX": (
+            "No encontré ningún cliente con el nombre '{name}'. ¿Podrías verificar tu nombre "
+            "completo, o darme directamente tu número de póliza?"
+        ),
+        "en": (
+            "I could not find a customer named '{name}'. Could you double-check your full "
+            "name, or provide your policy number directly?"
+        ),
+    },
+    "customer_single_match": {
+        "es-MX": "Encontré tu póliza ({line_of_business}{vehicle}).",
+        "en": "I found your policy ({line_of_business}{vehicle}).",
+    },
+    "customer_multiple_matches": {
+        "es-MX": "Encontré estas pólizas a tu nombre: {options} ¿Cuál corresponde a tu siniestro?",
+        "en": "I found these policies under your name: {options} Which one is this claim about?",
+    },
+    "selection_not_understood": {
+        "es-MX": "No logré identificar cuál póliza elegiste. {options} ¿Cuál corresponde?",
+        "en": "I couldn't tell which policy you meant. {options} Which one is it?",
+    },
+    "policy_not_found": {
+        "es-MX": (
+            "No encontramos una póliza con el número '{policy_number}'. ¿Puedes verificarlo y "
+            "proporcionarlo de nuevo?"
+        ),
+        "en": (
+            "We could not find a policy with number '{policy_number}'. Could you double-check "
+            "and provide it again?"
+        ),
+    },
+    "policy_active": {
+        "es-MX": "Tu póliza está vigente.",
+        "en": "Your policy is active.",
+    },
+    "policy_inactive": {
+        "es-MX": (
+            "Nota: el estado de esta póliza es '{status}', no vigente. Aun así registraremos "
+            "tu aviso de siniestro."
+        ),
+        "en": (
+            "Note: this policy's status is currently '{status}', not active. We'll still "
+            "record your claim notice."
+        ),
+    },
+    "payment_current": {
+        "es-MX": "Los pagos de esta póliza están al corriente.",
+        "en": "Payments on this policy are up to date.",
+    },
+    "payment_issue": {
+        "es-MX": (
+            "Nota: esta póliza tiene un pago pendiente. Aun así registraremos tu aviso de "
+            "siniestro."
+        ),
+        "en": "Note: this policy has an outstanding payment issue. We'll still record your claim notice.",
+    },
+    "payment_unknown": {
+        "es-MX": "No pudimos confirmar el estado de pago de esta póliza.",
+        "en": "We could not confirm this policy's payment status.",
+    },
+    "coverage_found": {
+        "es-MX": (
+            "Tu cobertura es '{coverage_type}', con suma asegurada de ${limit:,.2f} y "
+            "deducible de ${deductible:,.2f}."
+        ),
+        "en": (
+            "Your coverage is '{coverage_type}', with a limit of ${limit:,.2f} and a "
+            "deductible of ${deductible:,.2f}."
+        ),
+    },
+    "coverage_unknown": {
+        "es-MX": "No pudimos confirmar el detalle de cobertura de esta póliza.",
+        "en": "We could not confirm this policy's coverage detail.",
+    },
+    "confirmation_summary": {
+        "es-MX": (
+            "Antes de registrar tu siniestro, confirmemos los datos: póliza {policy_number}, "
+            "incidente del {event_date} en {event_location}, tipo '{loss_type}'. ¿Confirmas "
+            "que deseamos registrar tu siniestro con esta información? (sí/no)"
+        ),
+        "en": (
+            "Before registering your claim, let's confirm the details: policy {policy_number}, "
+            "incident on {event_date} at {event_location}, type '{loss_type}'. Shall I go "
+            "ahead and register your claim with this information? (yes/no)"
+        ),
+    },
+    "confirmation_declined": {
+        "es-MX": "De acuerdo, no lo registraré todavía. ¿Qué dato te gustaría corregir?",
+        "en": "Understood, I won't register it yet. What would you like to correct?",
+    },
+    "registration_failed": {
+        "es-MX": "No pudimos registrar tu aviso de siniestro en este momento. Intenta de nuevo en breve.",
+        "en": "We were unable to register your claim notice right now. Please try again shortly.",
+    },
+    "registration_success": {
+        "es-MX": "Tu aviso de siniestro ha sido registrado. Tu número de referencia es {claim_reference}.",
+        "en": "Your claim notice has been registered. Your claim reference is {claim_reference}.",
+    },
+    "adjuster_pending": {
+        "es-MX": (
+            "Tu siniestro {claim_reference} está registrado. La asignación de ajustador está "
+            "pendiente — te contactaremos pronto."
+        ),
+        "en": (
+            "Your claim {claim_reference} is registered. Adjuster assignment is pending — "
+            "we'll follow up shortly."
+        ),
+    },
+    "adjuster_assigned": {
+        "es-MX": "{adjuster_name} fue asignado a tu siniestro {claim_reference} y te contactará pronto.",
+        "en": "{adjuster_name} has been assigned to your claim {claim_reference} and will contact you soon.",
+    },
+    "already_assigned": {
+        "es-MX": (
+            "Tu siniestro {claim_reference} ya está registrado y asignado a {adjuster_name}. "
+            "No necesitas hacer nada más por ahora."
+        ),
+        "en": (
+            "Your claim {claim_reference} is already registered and assigned to "
+            "{adjuster_name}. No further action is needed from you right now."
+        ),
+    },
+    "customer_default_name": {
+        "es-MX": "Cliente",
+        "en": "Customer",
+    },
+}
+
+# Natural, hand-written combined phrasings for the two multi-field groups defined in
+# state.FIELD_GROUPS (PBI-04-04 "group related questions" requirement) — reads far better than
+# mechanically concatenating each field's individual FIELD_PROMPTS entry.
+_INCIDENT_DETAILS_GROUP = {"event_date", "event_location", "loss_type"}
+_YES_NO_GROUP = {"injuries_reported", "third_parties_involved"}
+_COMBINED_PROMPTS: dict[str, dict[Language, str]] = {
+    "incident_details": {
+        "es-MX": (
+            "Cuéntame sobre el incidente: ¿qué día ocurrió (AAAA-MM-DD), dónde fue, y qué tipo "
+            "de siniestro es (colisión, robo, incendio, daño por agua, clima, vandalismo, otro)?"
+        ),
+        "en": (
+            "Tell me about the incident: what date did it occur (YYYY-MM-DD), where did it "
+            "happen, and what type of loss is it (collision, theft, fire, water damage, "
+            "weather, vandalism, other)?"
+        ),
+    },
+    "injuries_and_third_parties": {
+        "es-MX": "¿Hubo personas lesionadas, y estuvieron involucrados terceros? (sí/no para cada una)",
+        "en": "Were there any injuries, and were any third parties involved? (yes/no for each)",
+    },
+}
 
 
 async def advance_claims_intake(
     state: ClaimsIntakeState,
     message: str,
     tool_executor: ToolExecutor,
+    language: Language,
     correlation_id: str | None = None,
     conversation_id: str | None = None,
     user_id: str | None = None,
@@ -41,6 +209,16 @@ async def advance_claims_intake(
     """Extract any recognizable fields from message, then drive the state machine forward
     until it needs more information from the user. Returns the updated state and the ordered
     list of user-facing notices produced this turn."""
+    if state.status == ClaimsIntakeStatus.SELECTING_POLICY:
+        selection = resolve_selection(message, state.candidates)
+        if selection is not None:
+            state = state.model_copy(
+                update={
+                    "policy_number": selection.policy_number,
+                    "candidates": [],
+                    "status": ClaimsIntakeStatus.COLLECTING_INFORMATION,
+                }
+            )
     current_state = extract_fields(message, state)
     tool_context: _ToolContext = {
         "correlation_id": correlation_id,
@@ -52,7 +230,7 @@ async def advance_claims_intake(
     while True:
         handler = _HANDLERS[current_state.status]
         current_state, new_notices, should_continue = await handler(
-            current_state, tool_executor, tool_context
+            current_state, tool_executor, tool_context, language
         )
         notices.extend(new_notices)
         if not should_continue:
@@ -62,50 +240,158 @@ async def advance_claims_intake(
 
 
 async def _handle_new(
-    state: ClaimsIntakeState, _tool_executor: ToolExecutor, _ctx: _ToolContext
+    state: ClaimsIntakeState, _tool_executor: ToolExecutor, _ctx: _ToolContext, _language: Language
 ) -> _HandlerResult:
     return state.model_copy(update={"status": ClaimsIntakeStatus.COLLECTING_INFORMATION}), [], True
 
 
 async def _handle_collecting_information(
-    state: ClaimsIntakeState, _tool_executor: ToolExecutor, _ctx: _ToolContext
+    state: ClaimsIntakeState, _tool_executor: ToolExecutor, _ctx: _ToolContext, language: Language
 ) -> _HandlerResult:
+    # Customer discovery is a priority step, not just another required field: the caller's
+    # name is asked for first, and looked up immediately once given — before any incident
+    # detail — so a multi-policy caller is asked to pick a policy right away rather than after
+    # narrating the whole incident. A direct policy number (regex-detected anywhere, any turn)
+    # always short-circuits this entirely.
+    if state.policy_number is None and state.customer_name is None:
+        new_state = state.model_copy(update={"last_asked_field": "customer_name"})
+        return new_state, [t(FIELD_PROMPTS, "customer_name", language)], False
+
+    if state.policy_number is None and state.customer_name is not None:
+        new_state = state.model_copy(
+            update={"status": ClaimsIntakeStatus.LOOKING_UP_CUSTOMER, "last_asked_field": None}
+        )
+        return new_state, [], True
+
     missing = missing_required_fields(state)
-    if missing:
-        next_field = missing[0]
-        new_state = state.model_copy(update={"last_asked_field": next_field})
-        return new_state, [FIELD_PROMPTS[next_field]], False
+    group = next_question_group(missing)
+    if group:
+        new_state = state.model_copy(
+            update={"last_asked_field": group[0], "last_asked_group": group}
+        )
+        return new_state, [_prompt_for_group(group, language)], False
 
     new_state = state.model_copy(
-        update={"status": ClaimsIntakeStatus.VALIDATING_POLICY, "last_asked_field": None}
+        update={
+            "status": ClaimsIntakeStatus.VALIDATING_POLICY,
+            "last_asked_field": None,
+            "last_asked_group": [],
+        }
     )
     return new_state, [], True
 
 
+def _prompt_for_group(group: list[str], language: Language) -> str:
+    group_set = set(group)
+    if group_set == _INCIDENT_DETAILS_GROUP:
+        return t(_COMBINED_PROMPTS, "incident_details", language)
+    if group_set == _YES_NO_GROUP:
+        return t(_COMBINED_PROMPTS, "injuries_and_third_parties", language)
+    return " ".join(t(FIELD_PROMPTS, field, language) for field in group)
+
+
+async def _handle_looking_up_customer(
+    state: ClaimsIntakeState, tool_executor: ToolExecutor, ctx: _ToolContext, language: Language
+) -> _HandlerResult:
+    result = await tool_executor.execute(
+        ToolRequest(
+            tool_name="customer_lookup", tool_input={"full_name": state.customer_name}, **ctx
+        )
+    )
+    if not result.success or result.data is None:
+        notice = t(_MESSAGES, "customer_not_found", language, name=state.customer_name)
+        new_state = state.model_copy(
+            update={
+                "customer_name": None,
+                "status": ClaimsIntakeStatus.COLLECTING_INFORMATION,
+                "last_asked_field": "customer_name",
+            }
+        )
+        return new_state, [notice], False
+
+    candidates = [
+        PolicyCandidate(
+            policy_number=policy.policy_number,
+            customer_name=match.full_name,
+            line_of_business=policy.line_of_business,
+            vehicle_description=policy.vehicle_description,
+        )
+        for match in result.data.matches
+        for policy in match.policies
+    ]
+
+    if len(candidates) == 1:
+        only = candidates[0]
+        vehicle = f", {only.vehicle_description}" if only.vehicle_description else ""
+        notice = t(
+            _MESSAGES,
+            "customer_single_match",
+            language,
+            line_of_business=only.line_of_business,
+            vehicle=vehicle,
+        )
+        new_state = state.model_copy(
+            update={
+                "policy_number": only.policy_number,
+                "candidates": [],
+                "status": ClaimsIntakeStatus.COLLECTING_INFORMATION,
+            }
+        )
+        return new_state, [notice], True
+
+    notice = t(
+        _MESSAGES,
+        "customer_multiple_matches",
+        language,
+        options=_format_candidates(candidates),
+    )
+    new_state = state.model_copy(
+        update={"candidates": candidates, "status": ClaimsIntakeStatus.SELECTING_POLICY}
+    )
+    return new_state, [notice], False
+
+
+def _format_candidates(candidates: list[PolicyCandidate]) -> str:
+    ordinals_es = ["la primera", "la segunda", "la tercera", "la cuarta"]
+    parts = []
+    for index, candidate in enumerate(candidates):
+        label = ordinals_es[index] if index < len(ordinals_es) else f"la #{index + 1}"
+        detail = candidate.vehicle_description or candidate.line_of_business
+        parts.append(f"{label} ({detail})")
+    return "; ".join(parts) + "."
+
+
+async def _handle_selecting_policy(
+    state: ClaimsIntakeState, _tool_executor: ToolExecutor, _ctx: _ToolContext, language: Language
+) -> _HandlerResult:
+    # Reached only if extract_fields/advance_claims_intake's own selection resolution (at the
+    # top of advance_claims_intake) did not already resolve a candidate this turn.
+    notice = t(
+        _MESSAGES,
+        "selection_not_understood",
+        language,
+        options=_format_candidates(state.candidates),
+    )
+    return state, [notice], False
+
+
 async def _handle_validating_policy(
-    state: ClaimsIntakeState, tool_executor: ToolExecutor, ctx: _ToolContext
+    state: ClaimsIntakeState, tool_executor: ToolExecutor, ctx: _ToolContext, language: Language
 ) -> _HandlerResult:
     policy_result = await tool_executor.execute(
         ToolRequest(
-            tool_name="policy_lookup",
-            tool_input={"policy_number": state.policy_number},
-            **ctx,
+            tool_name="policy_lookup", tool_input={"policy_number": state.policy_number}, **ctx
         )
     )
     if not policy_result.success or policy_result.data is None:
-        notice = (
-            f"We could not find a policy with number '{state.policy_number}'. "
-            "Could you double-check and provide it again?"
-        )
+        notice = t(_MESSAGES, "policy_not_found", language, policy_number=state.policy_number)
         return state, [notice], False
 
     policy_active = policy_result.data.status == "active"
 
     payment_result = await tool_executor.execute(
         ToolRequest(
-            tool_name="payment_status",
-            tool_input={"policy_number": state.policy_number},
-            **ctx,
+            tool_name="payment_status", tool_input={"policy_number": state.policy_number}, **ctx
         )
     )
     payment_current = (
@@ -114,38 +400,100 @@ async def _handle_validating_policy(
         else None
     )
 
+    coverage_result = await tool_executor.execute(
+        ToolRequest(
+            tool_name="coverage_lookup", tool_input={"policy_number": state.policy_number}, **ctx
+        )
+    )
+    coverage_data = coverage_result.data if coverage_result.success else None
+
     notices: list[str] = []
-    if policy_active:
-        notices.append("Your policy is active.")
-    else:
-        notices.append(
-            f"Note: this policy's status is currently '{policy_result.data.status}', not "
-            "active. We'll still record your claim notice."
-        )
+    notices.append(t(_MESSAGES, "policy_active" if policy_active else "policy_inactive", language, status=policy_result.data.status))
     if payment_current is True:
-        notices.append("Payments on this policy are up to date.")
+        notices.append(t(_MESSAGES, "payment_current", language))
     elif payment_current is False:
+        notices.append(t(_MESSAGES, "payment_issue", language))
+    else:
+        notices.append(t(_MESSAGES, "payment_unknown", language))
+
+    if coverage_data is not None:
         notices.append(
-            "Note: this policy has an outstanding payment issue. We'll still record your "
-            "claim notice."
+            t(
+                _MESSAGES,
+                "coverage_found",
+                language,
+                coverage_type=coverage_data.coverage_type,
+                limit=coverage_data.limit_amount,
+                deductible=coverage_data.deductible,
+            )
         )
     else:
-        notices.append("We could not confirm this policy's payment status.")
+        notices.append(t(_MESSAGES, "coverage_unknown", language))
 
     new_state = state.model_copy(
         update={
             "policy_validated": True,
             "policy_active": policy_active,
             "payment_current": payment_current,
-            "status": ClaimsIntakeStatus.READY_TO_REGISTER,
+            "holder_name": policy_result.data.holder_name,
+            "coverage_type": coverage_data.coverage_type if coverage_data else None,
+            "coverage_limit": coverage_data.limit_amount if coverage_data else None,
+            "coverage_deductible": coverage_data.deductible if coverage_data else None,
+            "status": ClaimsIntakeStatus.CONFIRMING,
         }
     )
     return new_state, notices, True
 
 
-async def _handle_ready_to_register(
-    state: ClaimsIntakeState, tool_executor: ToolExecutor, ctx: _ToolContext
+async def _handle_confirming(
+    state: ClaimsIntakeState, _tool_executor: ToolExecutor, _ctx: _ToolContext, language: Language
 ) -> _HandlerResult:
+    if state.confirmed is None:
+        notice = t(
+            _MESSAGES,
+            "confirmation_summary",
+            language,
+            policy_number=state.policy_number,
+            event_date=state.event_date,
+            event_location=state.event_location,
+            loss_type=state.loss_type,
+        )
+        new_state = state.model_copy(update={"last_asked_field": "confirmed"})
+        return new_state, [notice], False
+
+    if state.confirmed:
+        new_state = state.model_copy(update={"status": ClaimsIntakeStatus.READY_TO_REGISTER})
+        return new_state, [], True
+
+    # A decline must actually change something, or the very next turn would immediately
+    # re-reach CONFIRMING with the same unchanged summary (missing_required_fields() would
+    # return [] since every field is already filled, silently looping the caller back to the
+    # same confirmation instead of letting them correct anything). Clearing the incident-detail
+    # fields — never customer_name/policy_number/holder_name/coverage, already resolved — means
+    # the grouped re-ask flow in _handle_collecting_information genuinely re-collects them.
+    notice = t(_MESSAGES, "confirmation_declined", language)
+    new_state = state.model_copy(
+        update={
+            "confirmed": None,
+            "event_date": None,
+            "event_time": None,
+            "event_location": None,
+            "loss_type": None,
+            "loss_description": None,
+            "contact_phone": None,
+            "injuries_reported": None,
+            "third_parties_involved": None,
+            "status": ClaimsIntakeStatus.COLLECTING_INFORMATION,
+            "last_asked_field": None,
+        }
+    )
+    return new_state, [notice], False
+
+
+async def _handle_ready_to_register(
+    state: ClaimsIntakeState, tool_executor: ToolExecutor, ctx: _ToolContext, language: Language
+) -> _HandlerResult:
+    contact_name = state.customer_name or state.holder_name or t(_MESSAGES, "customer_default_name", language)
     result = await tool_executor.execute(
         ToolRequest(
             tool_name="claim_registration",
@@ -156,7 +504,7 @@ async def _handle_ready_to_register(
                 "event_location": state.event_location,
                 "loss_type": state.loss_type,
                 "loss_description": state.loss_description,
-                "contact_name": state.contact_name,
+                "contact_name": contact_name,
                 "contact_phone": state.contact_phone,
                 "contact_email": state.contact_email,
                 "injuries_reported": bool(state.injuries_reported),
@@ -166,7 +514,7 @@ async def _handle_ready_to_register(
         )
     )
     if not result.success or result.data is None:
-        notice = "We were unable to register your claim notice right now. Please try again shortly."
+        notice = t(_MESSAGES, "registration_failed", language)
         return state, [notice], False
 
     new_state = state.model_copy(
@@ -175,25 +523,20 @@ async def _handle_ready_to_register(
             "status": ClaimsIntakeStatus.REGISTERED,
         }
     )
-    notice = f"Your claim notice has been registered. Your claim reference is {result.data.claim_reference}."
+    notice = t(_MESSAGES, "registration_success", language, claim_reference=result.data.claim_reference)
     return new_state, [notice], True
 
 
 async def _handle_registered(
-    state: ClaimsIntakeState, tool_executor: ToolExecutor, ctx: _ToolContext
+    state: ClaimsIntakeState, tool_executor: ToolExecutor, ctx: _ToolContext, language: Language
 ) -> _HandlerResult:
     result = await tool_executor.execute(
         ToolRequest(
-            tool_name="adjuster_assignment",
-            tool_input={"claim_reference": state.claim_reference},
-            **ctx,
+            tool_name="adjuster_assignment", tool_input={"claim_reference": state.claim_reference}, **ctx
         )
     )
     if not result.success or result.data is None:
-        notice = (
-            f"Your claim {state.claim_reference} is registered. Adjuster assignment is "
-            "pending — we'll follow up shortly."
-        )
+        notice = t(_MESSAGES, "adjuster_pending", language, claim_reference=state.claim_reference)
         return state, [notice], False
 
     new_state = state.model_copy(
@@ -202,19 +545,25 @@ async def _handle_registered(
             "status": ClaimsIntakeStatus.ADJUSTER_ASSIGNED,
         }
     )
-    notice = (
-        f"{result.data.adjuster_name} has been assigned to your claim "
-        f"{state.claim_reference} and will contact you soon."
+    notice = t(
+        _MESSAGES,
+        "adjuster_assigned",
+        language,
+        adjuster_name=result.data.adjuster_name,
+        claim_reference=state.claim_reference,
     )
     return new_state, [notice], False
 
 
 async def _handle_adjuster_assigned(
-    state: ClaimsIntakeState, _tool_executor: ToolExecutor, _ctx: _ToolContext
+    state: ClaimsIntakeState, _tool_executor: ToolExecutor, _ctx: _ToolContext, language: Language
 ) -> _HandlerResult:
-    notice = (
-        f"Your claim {state.claim_reference} is already registered and assigned to "
-        f"{state.adjuster_assigned}. No further action is needed from you right now."
+    notice = t(
+        _MESSAGES,
+        "already_assigned",
+        language,
+        claim_reference=state.claim_reference,
+        adjuster_name=state.adjuster_assigned,
     )
     return state, [notice], False
 
@@ -222,7 +571,10 @@ async def _handle_adjuster_assigned(
 _HANDLERS: dict[ClaimsIntakeStatus, _Handler] = {
     ClaimsIntakeStatus.NEW: _handle_new,
     ClaimsIntakeStatus.COLLECTING_INFORMATION: _handle_collecting_information,
+    ClaimsIntakeStatus.LOOKING_UP_CUSTOMER: _handle_looking_up_customer,
+    ClaimsIntakeStatus.SELECTING_POLICY: _handle_selecting_policy,
     ClaimsIntakeStatus.VALIDATING_POLICY: _handle_validating_policy,
+    ClaimsIntakeStatus.CONFIRMING: _handle_confirming,
     ClaimsIntakeStatus.READY_TO_REGISTER: _handle_ready_to_register,
     ClaimsIntakeStatus.REGISTERED: _handle_registered,
     ClaimsIntakeStatus.ADJUSTER_ASSIGNED: _handle_adjuster_assigned,

@@ -54,7 +54,7 @@ async def test_claims_agent_response_proves_the_mock_llm_provider_was_invoked() 
         AgentRequest(message="I need to file a claim", user_id="user-1"), context
     )
 
-    assert "[llm=mock-llm]" in response.response
+    assert "[llm=mock-llm]" in response.metadata["diagnostics"]
 
 
 async def test_claims_agent_response_is_fully_deterministic_for_the_same_state_and_message() -> (

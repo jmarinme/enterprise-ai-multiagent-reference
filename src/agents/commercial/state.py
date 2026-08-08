@@ -1,4 +1,5 @@
-"""Typed working state for a single conversation's commercial-intake flow (PBI-01-07).
+"""Typed working state for a single conversation's commercial-intake flow (PBI-01-07, bilingual
+messages added by PBI-04-04).
 
 Structurally mirrors src.agents.claims.state (single linear flow — unlike Broker, there is no
 "inquiry type" dimension here, every conversation collects the same lead fields). This is
@@ -12,6 +13,8 @@ from __future__ import annotations
 from enum import Enum
 
 from pydantic import BaseModel
+
+from src.agents.shared.language import Language
 
 
 class CommercialIntakeStatus(str, Enum):
@@ -43,14 +46,35 @@ class CommercialIntakeState(BaseModel):
     last_asked_field: str | None = None
 
 
-FIELD_PROMPTS: dict[str, str] = {
-    "company_name": "What is your company or business name?",
-    "contact_name": "What is the best contact person's full name?",
-    "preferred_contact_channel": "Would you prefer to be contacted by email or phone?",
-    "contact_email": "What is the best email address to reach you?",
-    "contact_phone": "What is the best phone number to reach you?",
-    "insurance_need": "What type of insurance or coverage are you looking for?",
-    "risk_description": "Could you briefly describe your business or the risk you'd like covered?",
+FIELD_PROMPTS: dict[str, dict[Language, str]] = {
+    "company_name": {
+        "es-MX": "¿Cuál es el nombre de tu empresa o negocio?",
+        "en": "What is your company or business name?",
+    },
+    "contact_name": {
+        "es-MX": "¿Cuál es el nombre completo de la persona de contacto?",
+        "en": "What is the best contact person's full name?",
+    },
+    "preferred_contact_channel": {
+        "es-MX": "¿Prefieres que te contactemos por correo electrónico o por teléfono?",
+        "en": "Would you prefer to be contacted by email or phone?",
+    },
+    "contact_email": {
+        "es-MX": "¿Cuál es el mejor correo electrónico para contactarte?",
+        "en": "What is the best email address to reach you?",
+    },
+    "contact_phone": {
+        "es-MX": "¿Cuál es el mejor teléfono para contactarte?",
+        "en": "What is the best phone number to reach you?",
+    },
+    "insurance_need": {
+        "es-MX": "¿Qué tipo de seguro o cobertura estás buscando?",
+        "en": "What type of insurance or coverage are you looking for?",
+    },
+    "risk_description": {
+        "es-MX": "¿Podrías describir brevemente tu negocio o el riesgo que te gustaría cubrir?",
+        "en": "Could you briefly describe your business or the risk you'd like covered?",
+    },
 }
 
 

@@ -29,14 +29,14 @@ export function MessageInput({ onSend, disabled = false }: MessageInputProps) {
       <input
         type="text"
         className="message-input__field"
-        placeholder={disabled ? "Waiting for a response…" : "Type a message…"}
+        placeholder={disabled ? "Analizando…" : "Escribe un mensaje…"}
         value={value}
         onChange={(event) => setValue(event.target.value)}
-        aria-label="Message"
+        aria-label="Mensaje"
         disabled={disabled}
       />
       <button type="submit" className="message-input__send" disabled={disabled}>
-        Send
+        Enviar
       </button>
     </form>
   );
