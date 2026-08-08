@@ -362,9 +362,9 @@ async def test_generate_maps_a_tool_role_message_to_the_sdk_tool_message_shape(
     }
 
 
-# Model-capability adaptation (PBI-03-05): reasoning-family models (gpt-5*, o1*, o3*, o4*)
-# reject an explicit, non-default temperature outright — confirmed via a real Azure OpenAI
-# deployment failure against gpt-5-mini. See src/llm/azure_openai_provider.py's
+# Model-capability adaptation (PBI-03-05/PBI-03-06): reasoning-family models (gpt-5*, o1*,
+# o3*, o4*) reject an explicit, non-default temperature outright — confirmed via a real Azure
+# OpenAI deployment failure against gpt-5-mini. See src/llm/azure_openai_provider.py's
 # _is_reasoning_model and docs/sprint_03/decisions.md for the full writeup.
 #
 # Azure OpenAI addresses deployments by an arbitrary alias (e.g. "chat"), never by the
@@ -374,6 +374,12 @@ async def test_generate_maps_a_tool_role_message_to_the_sdk_tool_message_shape(
 # not start with "gpt-5"). These tests therefore always use a realistic, distinct
 # deployment/model_name pair (deployment="chat", model_name="gpt-5-mini") for the reasoning-
 # model cases, not the same string for both, so this exact regression cannot reappear silently.
+#
+# PBI-03-06: real DEV deployment validation required POST /chat to actually succeed against
+# gpt-5-mini, not just fail predictably — PBI-03-05's fail-fast LLMConfigurationError blocked
+# every call outright. The provider now executes the call using the API's only supported
+# temperature, surfacing the unpreserved determinism loudly via a WARNING log (asserted via
+# caplog below) rather than a silent behavior change or a blocked request.
 
 
 @patch("src.llm.azure_openai_provider.AsyncAzureOpenAI")
@@ -426,23 +432,38 @@ async def test_reasoning_model_capability_check_uses_model_name_not_deployment_a
 @patch("src.llm.azure_openai_provider.AsyncAzureOpenAI")
 @patch("azure.identity.aio.DefaultAzureCredential")
 @patch("azure.identity.aio.get_bearer_token_provider")
-async def test_reasoning_model_with_default_temperature_raises_configuration_error_without_calling_the_api(
-    mock_token_provider: MagicMock, mock_credential_cls: MagicMock, mock_client_cls: MagicMock
+async def test_reasoning_model_with_default_temperature_executes_and_logs_a_warning(
+    mock_token_provider: MagicMock,
+    mock_credential_cls: MagicMock,
+    mock_client_cls: MagicMock,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """gpt-5-mini cannot honor LLMGenerationSettings' deterministic temperature=0.0 default.
-    This must fail loudly and typed (LLMConfigurationError) before any network call is made,
-    never silently drop the caller's requested temperature or silently change response
-    determinism."""
+    """gpt-5-mini cannot honor LLMGenerationSettings' deterministic temperature=0.0 default
+    (PBI-03-06, superseding PBI-03-05's fail-fast LLMConfigurationError): the call must still
+    execute successfully against the real model — deployment validation requires a genuine
+    200 from POST /chat — with the unpreserved determinism surfaced loudly via a WARNING log,
+    never silently dropped and never blocking the request."""
     mock_client = mock_client_cls.return_value
     mock_client.chat.completions.create = AsyncMock(return_value=_fake_completion())
     provider = _build_provider(deployment="chat", model_name="gpt-5-mini")
 
-    with pytest.raises(LLMConfigurationError):
-        await provider.generate(
+    with caplog.at_level("WARNING", logger="src.llm.azure_openai_provider"):
+        response = await provider.generate(
             LLMRequest(messages=[LLMMessage(role=LLMMessageRole.USER, content="hello")])
         )
 
-    mock_client.chat.completions.create.assert_not_called()
+    assert response.text == "a mocked completion"
+    mock_client.chat.completions.create.assert_called_once()
+    _, call_kwargs = mock_client.chat.completions.create.call_args
+    assert call_kwargs["model"] == "chat"  # the deployment alias, never the model name
+    assert "temperature" not in call_kwargs
+    assert "max_completion_tokens" in call_kwargs
+    assert "max_tokens" not in call_kwargs
+    assert any(
+        "does not support the requested temperature" in record.message
+        and "NOT preserved" in record.message
+        for record in caplog.records
+    ), "expected a WARNING documenting the unpreserved determinism, found none"
 
 
 @patch("src.llm.azure_openai_provider.AsyncAzureOpenAI")
