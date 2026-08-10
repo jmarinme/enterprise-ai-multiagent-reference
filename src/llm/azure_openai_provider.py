@@ -43,6 +43,7 @@ from openai.types.chat.chat_completion_message_function_tool_call import (
     ChatCompletionMessageFunctionToolCall,
 )
 
+from src.core.resilience import CircuitBreaker, CircuitBreakerOpenError, retry_with_backoff
 from src.domain.secret_provider import SecretProvider
 from src.llm.exceptions import (
     LLMConfigurationError,
@@ -77,6 +78,23 @@ _ENTRA_ID_SCOPE = "https://cognitiveservices.azure.com/.default"
 # docs/sprint_03/decisions.md (PBI-03-05, PBI-03-06) for the full capability-gap writeup.
 _REASONING_MODEL_PREFIXES = ("gpt-5", "o1", "o3", "o4")
 _REASONING_MODEL_FIXED_TEMPERATURE = 1.0
+
+# Resilience (Architecture Review Finding A-07, CLAUDE.md principle #9): retries only genuinely
+# transient SDK exceptions (connection failure, timeout, rate limit) — never APIStatusError,
+# which covers both retryable 5xx AND non-retryable 4xx/content-filter business outcomes the
+# SDK doesn't distinguish by exception type alone, so this deliberately stays conservative
+# rather than parsing status codes out of APIStatusError. Circuit breaker is per-process, one
+# instance for this provider's lifetime (matches the existing @lru_cache singleton scope).
+_RETRYABLE_EXCEPTIONS: tuple[type[Exception], ...] = (
+    APIConnectionError,
+    APITimeoutError,
+    RateLimitError,
+)
+_RETRY_MAX_ATTEMPTS = 3
+_RETRY_BASE_DELAY_SECONDS = 0.5
+_RETRY_MAX_DELAY_SECONDS = 8.0
+_CIRCUIT_BREAKER_FAILURE_THRESHOLD = 5
+_CIRCUIT_BREAKER_RESET_TIMEOUT_SECONDS = 30.0
 
 
 def _is_reasoning_model(model: str) -> bool:
@@ -120,6 +138,11 @@ class AzureOpenAIProvider:
         self._model_name = model_name or deployment
         self._client: AsyncAzureOpenAI | None = None
         self._credential_close: object | None = None
+        self._circuit_breaker = CircuitBreaker(
+            _PROVIDER_NAME,
+            failure_threshold=_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+            reset_timeout_seconds=_CIRCUIT_BREAKER_RESET_TIMEOUT_SECONDS,
+        )
 
     async def _get_client(self) -> AsyncAzureOpenAI:
         if self._client is not None:
@@ -150,6 +173,22 @@ class AzureOpenAIProvider:
             await self._client.close()
         if self._credential_close is not None:
             await self._credential_close.close()  # type: ignore[attr-defined]
+
+    async def health_check(self) -> bool:
+        """`models.list()` — a lightweight metadata/introspection call, never a real
+        completion (no token cost, no prompt content sent). Bypasses the retry/circuit-breaker
+        wrapping `generate()` uses (a readiness probe should reflect the dependency's state
+        right now, not spend several seconds retrying) and never raises: any failure (auth,
+        network, timeout) is caught and reported as False."""
+        import asyncio
+
+        try:
+            client = await self._get_client()
+            async with asyncio.timeout(5.0):
+                await client.models.list()
+            return True
+        except Exception:  # noqa: BLE001 -- a health check must never itself raise; the Protocol's own contract (src/llm/provider.py) guarantees this method reports False on any failure rather than propagating.
+            return False
 
     async def generate(self, request: LLMRequest) -> LLMResponse:
         client = await self._get_client()
@@ -208,7 +247,23 @@ class AzureOpenAIProvider:
                 create_kwargs["temperature"] = request.settings.temperature
             if request.tools:
                 create_kwargs["tools"] = _to_openai_tools(request.tools)
-            completion = await client.chat.completions.create(**create_kwargs)
+
+            async def _call_completions_api() -> Any:
+                return await client.chat.completions.create(**create_kwargs)
+
+            async def _resilient_call() -> Any:
+                return await retry_with_backoff(
+                    _call_completions_api,
+                    retryable_exceptions=_RETRYABLE_EXCEPTIONS,
+                    max_attempts=_RETRY_MAX_ATTEMPTS,
+                    base_delay_seconds=_RETRY_BASE_DELAY_SECONDS,
+                    max_delay_seconds=_RETRY_MAX_DELAY_SECONDS,
+                    operation_name=f"{_PROVIDER_NAME} chat.completions.create",
+                )
+
+            completion = await self._circuit_breaker.call(_resilient_call)
+        except CircuitBreakerOpenError as exc:
+            raise LLMProviderError(_PROVIDER_NAME, str(exc)) from exc
         except APITimeoutError as exc:
             raise LLMTimeoutError(_PROVIDER_NAME) from exc
         except RateLimitError as exc:

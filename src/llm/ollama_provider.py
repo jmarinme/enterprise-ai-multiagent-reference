@@ -123,6 +123,25 @@ class OllamaLLMProvider:
             correlation_id=request.correlation_id,
         )
 
+    async def health_check(self) -> bool:
+        """GET /api/tags — Ollama's own lightweight "list installed models" endpoint, no
+        inference performed. A short, fixed timeout (never this provider's own, potentially
+        long, generate()-tuned timeout_seconds) so a slow/unreachable Ollama server cannot
+        stall a readiness probe."""
+        import aiohttp
+
+        try:
+            timeout = aiohttp.ClientTimeout(total=5.0)
+            async with (
+                aiohttp.ClientSession(timeout=timeout) as session,
+                session.get(f"{self._base_url}/api/tags") as response,
+            ):
+                return response.status == 200
+        except aiohttp.ClientError:
+            return False
+        except TimeoutError:
+            return False
+
 
 def _to_ollama_messages(messages: list[LLMMessage]) -> list[dict[str, Any]]:
     """Maps typed LLMMessages to Ollama's chat message shape — structurally the same

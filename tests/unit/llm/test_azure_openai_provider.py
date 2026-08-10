@@ -623,3 +623,112 @@ async def test_generate_treats_an_assistant_message_without_tool_calls_as_plain_
         "role": "assistant",
         "content": "a prior plain reply",
     }
+
+
+# ---------------------------------------------------------------------------------------------
+# Resilience (Architecture Review Finding A-07): retry-with-backoff and circuit breaker,
+# integrated into AzureOpenAIProvider.generate(). Retry/circuit-breaker delays are monkeypatched
+# to near-zero so these tests run fast without weakening what they assert.
+# ---------------------------------------------------------------------------------------------
+
+
+@patch("src.llm.azure_openai_provider.AsyncAzureOpenAI")
+@patch("azure.identity.aio.DefaultAzureCredential")
+@patch("azure.identity.aio.get_bearer_token_provider")
+async def test_generate_retries_a_transient_timeout_then_succeeds(
+    mock_token_provider: MagicMock,
+    mock_credential_cls: MagicMock,
+    mock_client_cls: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.llm.azure_openai_provider as module
+
+    monkeypatch.setattr(module, "_RETRY_BASE_DELAY_SECONDS", 0.001)
+    monkeypatch.setattr(module, "_RETRY_MAX_DELAY_SECONDS", 0.002)
+
+    mock_client = mock_client_cls.return_value
+    mock_client.chat.completions.create = AsyncMock(
+        side_effect=[
+            APITimeoutError(request=_fake_request()),
+            APITimeoutError(request=_fake_request()),
+            _fake_completion("recovered on the third attempt"),
+        ]
+    )
+    provider = _build_provider()
+
+    response = await provider.generate(
+        LLMRequest(messages=[LLMMessage(role=LLMMessageRole.USER, content="hello")])
+    )
+
+    assert response.text == "recovered on the third attempt"
+    assert mock_client.chat.completions.create.await_count == 3
+
+
+@patch("src.llm.azure_openai_provider.AsyncAzureOpenAI")
+@patch("azure.identity.aio.DefaultAzureCredential")
+@patch("azure.identity.aio.get_bearer_token_provider")
+async def test_generate_does_not_retry_a_non_transient_status_error(
+    mock_token_provider: MagicMock,
+    mock_credential_cls: MagicMock,
+    mock_client_cls: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A business/content-shaped failure (APIStatusError, e.g. a 400) must fail on the first
+    attempt — retrying it would never help and would only add latency."""
+    import src.llm.azure_openai_provider as module
+
+    monkeypatch.setattr(module, "_RETRY_BASE_DELAY_SECONDS", 0.001)
+
+    mock_client = mock_client_cls.return_value
+    mock_client.chat.completions.create = AsyncMock(
+        side_effect=APIStatusError(
+            "bad request", response=_fake_response(400), body=None
+        )
+    )
+    provider = _build_provider()
+
+    with pytest.raises(LLMProviderError):
+        await provider.generate(
+            LLMRequest(messages=[LLMMessage(role=LLMMessageRole.USER, content="hello")])
+        )
+
+    assert mock_client.chat.completions.create.await_count == 1
+
+
+@patch("src.llm.azure_openai_provider.AsyncAzureOpenAI")
+@patch("azure.identity.aio.DefaultAzureCredential")
+@patch("azure.identity.aio.get_bearer_token_provider")
+async def test_generate_circuit_breaker_opens_and_fails_fast_after_repeated_failures(
+    mock_token_provider: MagicMock,
+    mock_credential_cls: MagicMock,
+    mock_client_cls: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.llm.azure_openai_provider as module
+
+    monkeypatch.setattr(module, "_RETRY_BASE_DELAY_SECONDS", 0.001)
+    monkeypatch.setattr(module, "_RETRY_MAX_DELAY_SECONDS", 0.002)
+    monkeypatch.setattr(module, "_RETRY_MAX_ATTEMPTS", 1)
+    monkeypatch.setattr(module, "_CIRCUIT_BREAKER_FAILURE_THRESHOLD", 2)
+    monkeypatch.setattr(module, "_CIRCUIT_BREAKER_RESET_TIMEOUT_SECONDS", 999.0)
+
+    mock_client = mock_client_cls.return_value
+    mock_client.chat.completions.create = AsyncMock(
+        side_effect=APITimeoutError(request=_fake_request())
+    )
+    provider = _build_provider()
+    request = LLMRequest(messages=[LLMMessage(role=LLMMessageRole.USER, content="hello")])
+
+    # First two calls each fail (1 attempt each, retries disabled above) — the second failure
+    # reaches the circuit breaker's failure_threshold=2 and opens it.
+    with pytest.raises(LLMTimeoutError):
+        await provider.generate(request)
+    with pytest.raises(LLMTimeoutError):
+        await provider.generate(request)
+    assert mock_client.chat.completions.create.await_count == 2
+
+    # Third call: the circuit is open, so the SDK is never invoked again — fails fast with a
+    # typed LLMProviderError (CircuitBreakerOpenError mapped at the LLMProvider boundary).
+    with pytest.raises(LLMProviderError):
+        await provider.generate(request)
+    assert mock_client.chat.completions.create.await_count == 2

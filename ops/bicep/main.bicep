@@ -125,15 +125,18 @@ param knowledgeProvider string = 'local'
 @allowed(['in_memory', 'cosmos'])
 param conversationStoreProvider string = 'cosmos'
 
-@description('Which ToolProvider the API Container App selects at runtime (PBI-06-01, src.config.settings.ToolProviderSettings). The Function App below is always provisioned regardless of this value — this only selects whether the API actually calls it. inprocess (the default) preserves pre-PBI-06-01 behavior exactly.')
+@description('Which ToolProvider the API Container App selects at runtime (PBI-06-01, src.config.settings.ToolProviderSettings). inprocess (the default) preserves pre-PBI-06-01 behavior exactly and does not require the Function App below to be deployed at all — see deployServerlessToolLayer. Selecting azure_functions here without also setting deployServerlessToolLayer=true leaves AZURE_FUNCTIONS_BASE_URL empty, which is a real misconfiguration (the API would have nothing to call) — this is a deliberate, visible failure mode, not silently tolerated.')
 @allowed(['inprocess', 'azure_functions'])
 param toolProvider string = 'inprocess'
 
-@description('Which ClaimsWorkflowProvider the API Container App selects at runtime (PBI-06-01, src.config.settings.ClaimsWorkflowSettings). inprocess (the default) preserves pre-PBI-06-01 behavior exactly; durable routes Claims registration + adjuster assignment through the Durable Functions orchestration below.')
+@description('Which ClaimsWorkflowProvider the API Container App selects at runtime (PBI-06-01, src.config.settings.ClaimsWorkflowSettings). inprocess (the default) preserves pre-PBI-06-01 behavior exactly and does not require the Function App below to be deployed at all — see deployServerlessToolLayer. durable routes Claims registration + adjuster assignment through the Durable Functions orchestration, but only once deployServerlessToolLayer=true actually provisions it — same visible-misconfiguration reasoning as toolProvider above.')
 @allowed(['inprocess', 'durable'])
 param claimsWorkflowProvider string = 'inprocess'
 
-@description('App Service Plan SKU for the Claims Tool Layer Function App. Y1 (Consumption) is the architectural default; B1 (Basic) is a documented fallback for subscriptions with 0 quota on the Dynamic VM family; P0v4 (Premium v4, Dedicated) is a DEV-only workaround for subscriptions with 0 quota on the Dynamic/Basic/Standard/PremiumV2/V3 families but available Premium v4 quota — not a production recommendation. See ops/bicep/modules/function-app.bicep and docs/Architecture/adr/0003-azure-functions-tool-and-workflow-layer.md.')
+@description('PBI-08-01A: whether to physically deploy the Claims Tool Layer Function App, its App Service Plan, and its dedicated Storage Account at all. false by default. Azure Functions/Durable Functions remain this platform\'s target architecture (CLAUDE.md §4.1/§4.2, ADR-0003) — this flag controls DEPLOYMENT, not the architecture decision: the Bicep module, the Azure Functions application code (ops/functions/claims_tools/), and the ToolProvider/ClaimsWorkflowProvider abstractions that call it all remain fully in place either way. Set to false specifically because this subscription has 0 Microsoft.Web (App Service) quota in every region checked (docs/Architecture/adr/0003-azure-functions-tool-and-workflow-layer.md, docs/sprint_06/decisions.md D-07) — 3 independent real deployment attempts (Y1/B1/P0v4 SKUs) all failed with SubscriptionIsOverQuotaForSku. Setting this to true once quota is granted is the ONLY change required to deploy the serverless architecture — no application code or Bicep redesign needed. Leave toolProvider/claimsWorkflowProvider at "inprocess" while this is false (DEV\'s actual current runtime configuration).')
+param deployServerlessToolLayer bool = false
+
+@description('App Service Plan SKU for the Claims Tool Layer Function App — only relevant when deployServerlessToolLayer=true. Y1 (Consumption) is the architectural default; B1 (Basic) is a documented fallback for subscriptions with 0 quota on the Dynamic VM family; P0v4 (Premium v4, Dedicated) is a DEV-only workaround for subscriptions with 0 quota on the Dynamic/Basic/Standard/PremiumV2/V3 families but available Premium v4 quota — not a production recommendation. See ops/bicep/modules/function-app.bicep and docs/Architecture/adr/0003-azure-functions-tool-and-workflow-layer.md.')
 @allowed(['Y1', 'B1', 'P0v4'])
 param functionAppPlanSkuName string = 'Y1'
 
@@ -155,6 +158,12 @@ resource cicdInfrastructureContributorRoleAssignment 'Microsoft.Authorization/ro
 
 @description('Production network hardening (PBI-03-04): provisions a VNet, subnet separation, NSGs, Private Endpoints, and Private DNS Zones for Azure OpenAI/AI Search/Cosmos DB/Key Vault, and disables each one\'s public endpoint. false (the default, matching dev\'s conservative-cost posture) leaves every resource exactly as PBI-03-02 shipped it — publicly reachable, RBAC-gated only. NOTE: if aiSearchSkuName is "free", this MUST stay false — Azure AI Search\'s Free tier does not support Private Link.')
 param enablePrivateNetworking bool = false
+
+@description('PBI-08-01 (Architecture Review Finding A-11): email address notified by the Azure Monitor alert rules (elevated error rate, high latency, availability). Empty string (the default) creates the alert rules and action group with zero notification receivers — alerts still fire and are visible in the Azure Portal, but nobody is paged until a real operational email is set here. Never defaulted to a placeholder/invented address.')
+param alertEmailAddress string = ''
+
+@description('PBI-08-01 (Architecture Review Finding A-11): whether to create the Azure Monitor alert rules/action group at all. true by default so this finding is resolved out of the box.')
+param enableMonitoringAlerts bool = true
 
 @description('VNet address space. Never hardcoded — only read when enablePrivateNetworking is true.')
 param vnetAddressPrefix string = '10.0.0.0/16'
@@ -472,7 +481,14 @@ module appInsightsSecret 'modules/key-vault-secret.bicep' = {
 // PBI-06-01 (Architecture Review Finding A-03): Claims Tool Layer + Durable Functions Workflow
 // Engine. Additive only — reuses the existing managedIdentity, appInsights, and Key Vault; does
 // not modify Container Apps, Cosmos, AI Search, Azure OpenAI, or networking.
-module functionAppStorage 'modules/storage-account.bicep' = {
+//
+// PBI-08-01A: both gated behind deployServerlessToolLayer (default false — see that param's own
+// description for the full rationale: 0 subscription App Service quota, confirmed live,
+// 3 real failed attempts). Neither resource is used by anything else in this template — the
+// Storage Account here exists exclusively for this Function App's AzureWebJobsStorage/Durable
+// Task Hub (a dedicated, globally-unique-name resource, never shared with any other module) —
+// so gating both together is safe and complete; no unrelated resource depends on either.
+module functionAppStorage 'modules/storage-account.bicep' = if (deployServerlessToolLayer) {
   name: 'function-app-storage-deployment'
   params: {
     location: location
@@ -483,20 +499,27 @@ module functionAppStorage 'modules/storage-account.bicep' = {
   }
 }
 
-module claimsToolsFunctionApp 'modules/function-app.bicep' = {
+module claimsToolsFunctionApp 'modules/function-app.bicep' = if (deployServerlessToolLayer) {
   name: 'claims-tools-function-app-deployment'
   params: {
     location: location
     name: functionAppName
     appServicePlanName: functionAppServicePlanName
     tags: tags
-    storageAccountName: functionAppStorage.outputs.name
+    storageAccountName: functionAppStorage.?outputs.?name ?? ''
     userAssignedIdentityId: managedIdentity.outputs.id
     userAssignedIdentityClientId: managedIdentity.outputs.clientId
     appInsightsConnectionStringSecretUri: appInsightsSecret.outputs.secretUri
     appServicePlanSkuName: functionAppPlanSkuName
   }
 }
+
+// PBI-08-01A: single safe-dereference point for claimsToolsFunctionApp's output (module | null
+// when deployServerlessToolLayer is false) — every other reference below reads this plain
+// string instead of re-dereferencing the conditional module, avoiding repeated null-safety
+// warnings (BCP318) at each call site. Empty string whenever the flag is false.
+var claimsFunctionAppHostName = claimsToolsFunctionApp.?outputs.?defaultHostName ?? ''
+var claimsFunctionAppUrl = !empty(claimsFunctionAppHostName) ? 'https://${claimsFunctionAppHostName}' : ''
 
 module containerAppsEnvironment 'modules/container-apps-environment.bicep' = {
   name: 'container-apps-environment-deployment'
@@ -581,13 +604,18 @@ module apiContainerApp 'modules/container-app.bicep' = {
       { name: 'COSMOS_DB_DATABASE', value: cosmosDb.outputs.databaseName }
       { name: 'COSMOS_DB_CONTAINER', value: cosmosDb.outputs.containerName }
       // PBI-06-01: Claims Tool Layer / Durable Functions Workflow Engine provider selection.
-      // The Function App is always provisioned above regardless of these values — inprocess
-      // (the default for both) preserves pre-PBI-06-01 behavior exactly; flipping either to
-      // azure_functions/durable is a config-only change, no redeploy of application code.
+      // PBI-08-01A: the Function App is now only provisioned when deployServerlessToolLayer is
+      // true (see that param's description) — AZURE_FUNCTIONS_BASE_URL/DURABLE_FUNCTIONS_BASE_URL
+      // are empty strings whenever it is false, which is exactly correct for DEV's actual
+      // current runtime configuration (toolProvider/claimsWorkflowProvider both "inprocess",
+      // which never reads either URL). inprocess (the default for both) preserves
+      // pre-PBI-06-01 behavior exactly; flipping either to azure_functions/durable is a
+      // config-only change once deployServerlessToolLayer=true has actually provisioned the
+      // Function App — no redeploy of application code either way.
       { name: 'TOOL_PROVIDER', value: toolProvider }
-      { name: 'AZURE_FUNCTIONS_BASE_URL', value: 'https://${claimsToolsFunctionApp.outputs.defaultHostName}' }
+      { name: 'AZURE_FUNCTIONS_BASE_URL', value: claimsFunctionAppUrl }
       { name: 'CLAIMS_WORKFLOW_PROVIDER', value: claimsWorkflowProvider }
-      { name: 'DURABLE_FUNCTIONS_BASE_URL', value: 'https://${claimsToolsFunctionApp.outputs.defaultHostName}' }
+      { name: 'DURABLE_FUNCTIONS_BASE_URL', value: claimsFunctionAppUrl }
     ]
     secrets: [
       { name: appInsightsSecretName, keyVaultUrl: appInsightsSecret.outputs.secretUri }
@@ -635,6 +663,22 @@ module webContainerApp 'modules/container-app.bicep' = {
   }
 }
 
+// PBI-08-01 (Architecture Review Finding A-11): minimal Azure Monitor alerting. Additive only
+// — references the already-deployed appInsights/apiContainerApp modules, creates no change to
+// either. See ops/bicep/modules/monitor-alerts.bicep for the full rationale (metric names
+// confirmed live, not guessed) and docs/sprint_08/decisions.md.
+module monitorAlerts 'modules/monitor-alerts.bicep' = {
+  name: 'monitor-alerts-deployment'
+  params: {
+    namePrefix: namePrefix
+    tags: tags
+    appInsightsId: appInsights.outputs.id
+    apiContainerAppId: apiContainerApp.outputs.id
+    alertEmailAddress: alertEmailAddress
+    enabled: enableMonitoringAlerts
+  }
+}
+
 output containerRegistryName string = containerRegistry.outputs.name
 output containerRegistryLoginServer string = containerRegistry.outputs.loginServer
 output containerRegistryId string = containerRegistry.outputs.id
@@ -667,6 +711,11 @@ output webContainerAppName string = webContainerApp.outputs.name
 output webContainerAppId string = webContainerApp.outputs.id
 output webContainerAppFqdn string = webContainerApp.outputs.fqdn
 
+output monitorAlertsActionGroupId string = monitorAlerts.outputs.actionGroupId
+output monitorAlertsErrorRateAlertId string = monitorAlerts.outputs.errorRateAlertId
+output monitorAlertsLatencyAlertId string = monitorAlerts.outputs.latencyAlertId
+output monitorAlertsAvailabilityAlertId string = monitorAlerts.outputs.availabilityAlertId
+
 output cosmosAccountName string = cosmosDb.outputs.accountName
 output cosmosDocumentEndpoint string = cosmosDb.outputs.documentEndpoint
 output cosmosDatabaseName string = cosmosDb.outputs.databaseName
@@ -682,12 +731,16 @@ output azureOpenAiEndpoint string = azureOpenAi.outputs.endpoint
 output azureOpenAiDeploymentName string = azureOpenAi.outputs.deploymentName
 output azureOpenAiId string = azureOpenAi.outputs.id
 
-output functionAppStorageAccountName string = functionAppStorage.outputs.name
-output functionAppStorageAccountId string = functionAppStorage.outputs.id
+// PBI-08-01A: empty strings whenever deployServerlessToolLayer is false (the Function
+// App/Storage Account modules above are not deployed at all in that case) — never an error,
+// since nothing downstream reads these outputs when the flag is off.
+output functionAppStorageAccountName string = functionAppStorage.?outputs.?name ?? ''
+output functionAppStorageAccountId string = functionAppStorage.?outputs.?id ?? ''
 
-output claimsToolsFunctionAppName string = claimsToolsFunctionApp.outputs.name
-output claimsToolsFunctionAppId string = claimsToolsFunctionApp.outputs.id
-output claimsToolsFunctionAppUrl string = 'https://${claimsToolsFunctionApp.outputs.defaultHostName}'
+output claimsToolsFunctionAppName string = claimsToolsFunctionApp.?outputs.?name ?? ''
+output claimsToolsFunctionAppId string = claimsToolsFunctionApp.?outputs.?id ?? ''
+output claimsToolsFunctionAppUrl string = claimsFunctionAppUrl
+output deployServerlessToolLayerEnabled bool = deployServerlessToolLayer
 
 output privateNetworkingEnabled bool = enablePrivateNetworking
 output vnetId string = virtualNetwork.?outputs.?id ?? ''
