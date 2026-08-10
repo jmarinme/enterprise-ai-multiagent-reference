@@ -14,10 +14,10 @@ from src.services.secret_store.environment import EnvironmentSecretProvider
 
 def get_secret_provider(settings: SecretProviderSettings) -> SecretProvider:
     """Return the SecretProvider implementation selected by settings."""
-    if settings.secret_provider == "environment":
+    if settings.secret_provider == "environment":  # pragma: allowlist secret -- provider-selection literal, not a credential
         return EnvironmentSecretProvider()
 
-    if settings.secret_provider == "key_vault":
+    if settings.secret_provider == "key_vault":  # pragma: allowlist secret -- provider-selection literal, not a credential
         from src.services.secret_store.key_vault import AzureKeyVaultSecretProvider
 
         if not settings.key_vault_uri:

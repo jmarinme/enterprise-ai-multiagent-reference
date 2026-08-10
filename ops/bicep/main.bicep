@@ -137,6 +137,22 @@ param claimsWorkflowProvider string = 'inprocess'
 @allowed(['Y1', 'B1', 'P0v4'])
 param functionAppPlanSkuName string = 'Y1'
 
+@description('OPTIONAL, off by default (empty string skips the role assignment). Principal ID of the identity to grant the built-in "Contributor" role, scoped to THIS resource group only, so it can run `az deployment group create` against ops/bicep/main.bicep unattended. NOT required for the Azure DevOps pipeline today: the real service connection ("sc-tmx-agent-platform-dev", PBI-07-01A) is backed by an Azure-DevOps-managed App Registration/service principal (object id 9f6190e9-b5dd-4651-a90b-45d9f37bcc5a, confirmed live via `az ad sp show`/`az ad app federated-credential list`) that Azure DevOps itself already granted Contributor on this resource group at connection-creation time — OUTSIDE this template. This param exists only as an OPTIONAL way to bring that already-existing external grant under this repo\'s IaC control later (by setting it to that same object id) — never point it at "id-tmxap-dev" (the platform\'s own runtime Managed Identity; a different, unrelated principal the pipeline does not authenticate as — PBI-07-01 assumed otherwise, corrected in PBI-07-01A, see docs/sprint_07/decisions.md). Deliberately Contributor, not Owner: Contributor excludes Microsoft.Authorization/*/write, so this identity can create/update every resource type this template declares EXCEPT role assignments — the roleAssignment resources already declared in this template (including this one) would fail authorization on an automated run using only this role, which is expected and treated as non-blocking by the pipeline (see azure-pipelines.yml InfrastructureDeploy stage) since those roles are already correctly applied and rarely change.')
+param cicdInfrastructureContributorPrincipalId string = ''
+
+var cicdInfrastructureContributorRoleId = 'b24988ac-6180-42a0-ab88-20f7382dd24c'
+
+// Resource-group-scoped (no explicit `scope:` — this template itself deploys at RG scope), so
+// this single role assignment covers every resource in ops/bicep/main.bicep, not just one.
+resource cicdInfrastructureContributorRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(cicdInfrastructureContributorPrincipalId)) {
+  name: guid(resourceGroup().id, cicdInfrastructureContributorPrincipalId, cicdInfrastructureContributorRoleId)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cicdInfrastructureContributorRoleId)
+    principalId: cicdInfrastructureContributorPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
 @description('Production network hardening (PBI-03-04): provisions a VNet, subnet separation, NSGs, Private Endpoints, and Private DNS Zones for Azure OpenAI/AI Search/Cosmos DB/Key Vault, and disables each one\'s public endpoint. false (the default, matching dev\'s conservative-cost posture) leaves every resource exactly as PBI-03-02 shipped it — publicly reachable, RBAC-gated only. NOTE: if aiSearchSkuName is "free", this MUST stay false — Azure AI Search\'s Free tier does not support Private Link.')
 param enablePrivateNetworking bool = false
 
@@ -214,7 +230,7 @@ var keyVaultName = take('kv-${namePrefix}-${uniqueSuffix}', 24)
 var cosmosAccountName = take('cosmos-${namePrefix}-${uniqueSuffix}', 44)
 var aiSearchName = take('srch-${namePrefix}-${uniqueSuffix}', 60)
 var azureOpenAiName = take('aoai-${namePrefix}-${uniqueSuffix}', 64)
-var appInsightsSecretName = 'appinsights-connection-string'
+var appInsightsSecretName = 'appinsights-connection-string' // pragma: allowlist secret -- Key Vault secret NAME, not a value
 var vnetName = 'vnet-${namePrefix}'
 
 // PBI-06-01: Claims Tool Layer / Durable Functions Function App + its Storage Account. Both

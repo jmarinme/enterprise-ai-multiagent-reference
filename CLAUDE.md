@@ -216,7 +216,49 @@ Rules:
 - Use synthetic data only.
 - State assumptions clearly.
 - Never claim a feature, test, deployment, or command succeeded unless it was actually executed.
-- Do not deploy to Azure, commit, push, or use destructive commands without explicit authorization.
+- Do not commit, push, or use destructive commands without explicit authorization.
+- Once Azure DevOps CI/CD is operational (PBI-07-01), Claude Code does not perform routine
+  Azure deployments — see §7.1. A genuine one-off manual deployment (e.g., an infrastructure-only
+  investigation the user explicitly requests) remains possible only when the user explicitly
+  authorizes that specific action; it is the exception, never the default path.
+
+### 7.1 Delivery responsibility model (Azure DevOps CI/CD owns deployment, PBI-07-01)
+
+`azure-pipelines.yml` is the single source of truth for build, test, security, and deployment
+automation (CLAUDE.md §5's stack table: "CI/CD | Azure DevOps Pipelines"). Once it is
+operational for a given change path, responsibilities split as follows:
+
+**Claude Code responsibilities:**
+
+- Implement code for the current PBI.
+- Add or update unit tests for the change.
+- Run targeted, fast local validation for changed areas only (focused `pytest`/`vitest`
+  selections, `ruff`/`mypy` on touched files) — never a routine full-repository regression as
+  a substitute for the pipeline's own Quality stage.
+- Update documentation (sprint docs, ADRs, this file where applicable).
+- Stop before deployment: do not routinely run `docker build`/`docker push`,
+  `az containerapp update`, or `az deployment group create` as part of normal PBI delivery —
+  that is `azure-pipelines.yml`'s job (Stages 3-6: Build, Infrastructure, Deploy DEV, Smoke
+  Tests).
+
+**Azure DevOps responsibilities (`azure-pipelines.yml`):**
+
+- Full regression — the complete backend (`pytest`) and frontend (`vitest`) suites, not just
+  changed areas.
+- Security gates — dependency vulnerability scanning (`pip-audit`, `npm audit`), secret
+  scanning (`detect-secrets`).
+- Image build and push to the existing Azure Container Registry, with commit/build-traceable
+  versioned tags (never `latest`).
+- Bicep validation and DEV infrastructure deployment.
+- DEV Container App deployment (image update only — no infrastructure recreation).
+- Smoke tests against the real deployed DEV environment.
+- Deployment evidence (a published summary artifact: image tags, revisions, test results).
+
+**Exception handling:** an infrastructure-only condition external to this codebase (e.g., an
+Azure subscription quota limitation) must never be allowed to silently mark unrelated
+application delivery as failed — the pipeline's Infrastructure stage is deliberately isolated
+from the Deploy/Smoke Test stages for exactly this reason (see `azure-pipelines.yml`'s own
+`InfrastructureDeploy` stage comments and `docs/sprint_07/decisions.md`).
 
 ---
 

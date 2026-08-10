@@ -20,7 +20,7 @@ def test_factory_returns_key_vault_provider_when_configured() -> None:
     from src.services.secret_store.key_vault import AzureKeyVaultSecretProvider
 
     settings = SecretProviderSettings(
-        secret_provider="key_vault", key_vault_uri="https://example.vault.azure.net/"
+        secret_provider="key_vault", key_vault_uri="https://example.vault.azure.net/"  # pragma: allowlist secret -- example.vault.azure.net placeholder, not a real URI
     )
 
     provider = get_secret_provider(settings)

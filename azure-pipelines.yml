@@ -1,44 +1,112 @@
 # TMX Enterprise AI Reference Platform — CI/CD pipeline.
 #
-# Sprint 0 (PBI-00-07) built the CI foundation: Stages 1-3 below (BackendQuality,
-# FrontendQuality, InfrastructureValidation) validate the repository on every push/PR to
-# develop/main and deploy nothing. Sprint 04 (PBI-04-01) adds real, automatic Continuous
-# Deployment to the already-existing, already-operational DEV environment
-# (rg-tmx-agent-platform-dev) — Stages 4-8 below. No new Azure environment (QA/Prod) is
-# created; no existing Azure resource is redesigned or recreated. See
-# docs/sprint_04/decisions.md for the full design rationale.
+# Delivery responsibility model (CLAUDE.md SS7.1, PBI-07-01): THIS FILE — not Claude Code — owns
+# full regression, security gates, image build/push, infrastructure validation/deployment, DEV
+# deployment, smoke tests, and deployment evidence. Claude Code's role, once this pipeline is
+# operational, is limited to implementing code, targeted local tests/lint/type-check on changed
+# areas, and documentation — never a routine manual `docker build`/`az containerapp update`/
+# `az deployment group create` in place of a real pipeline run.
+#
+# Stage map (PBI-07-01's 6 requested stages, plus 1 bonus reporting stage — some YAML stages
+# below split further for genuine parallelism/isolation reasons, documented at each one):
+#   1 (Quality)        -> BackendQuality + FrontendQuality (parallel)
+#   2 (Security)        -> SecurityScan (parallel with 1; gates stage 3)
+#   3 (Build)           -> ContainerBuildValidation (feat/*/fix/*/review/*/PR — build only, no
+#                          push, no Azure login) + ContainerBuildAndPush (main only — build +
+#                          push combined — see that stage's own comment)
+#   4 (Infrastructure)  -> InfrastructureValidation (4a, offline, every run) + InfrastructureDeploy
+#                          (4b, isDeployRun only, quota-aware, never blocks stages 5-6)
+#   5 (Deploy DEV)      -> DeployDev
+#   6 (Smoke Tests)     -> SmokeTests
+#   7 (bonus)           -> DeploymentSummary; ArtifactPublication (validation-only, every run)
+#
+# Sprint 0 (PBI-00-07) built the CI foundation (Quality + Infrastructure-Validate, deploy
+# nothing). Sprint 04 (PBI-04-01) added real, automatic Continuous Deployment to the
+# already-existing, already-operational DEV environment (rg-tmx-agent-platform-dev). Sprint 07
+# (PBI-07-01) added Security, real (quota-aware) Infrastructure deployment, Web-only-when-changed
+# builds, commit-SHA image traceability, and expanded Smoke Tests (correlation ID, conversation
+# continuity, a Claims scenario, deployed-revision verification). PBI-07-01A reconciled all of
+# the above with the Azure DevOps project/service connection actually created manually (see
+# below). PBI-07-01B replaced the (never-used) `develop` branch assumption with this project's
+# real branch model (`main`/`feat/*`/`fix/*`/`review/*`, no long-lived integration branch — see
+# CLAUDE.md §15) and added `ContainerBuildValidation` so feature/fix/review branches get a real
+# "does the image build" check without any Azure authentication or push. No new Azure
+# environment (QA/Prod) is created; no existing Azure resource is redesigned or recreated. See
+# docs/sprint_04/decisions.md and docs/sprint_07/decisions.md for the full design rationale.
 #
 # ============================================================================================
-# PREREQUISITE — must exist before ContainerBuildAndPush/DeployDev/SmokeTests/DeploymentSummary
-# can run (this pipeline cannot create Azure DevOps org-level objects; this is a one-time
-# manual/administrator step, documented in full in docs/sprint_04/decisions.md):
+# IDENTITY MODEL (corrected, PBI-07-01A) — read this before touching RBAC anywhere in this repo
 #
-#   1. An Azure Resource Manager service connection in this Azure DevOps project, named
-#      "${{ parameters.azureServiceConnection }}" (default: tmx-agent-platform-dev-oidc),
-#      configured for Workload Identity Federation (OIDC) against the EXISTING user-assigned
-#      Managed Identity "id-tmxap-dev" in resource group "rg-tmx-agent-platform-dev",
-#      subscription 4112e852-665c-44c4-ad9d-67432600fc65. No client secret, no publish
-#      profile, no service principal password — per docs/sprint_00/security-baseline.md §6's
-#      already-documented recommendation. Azure DevOps's own "Workload identity federation
-#      (automatic)" service connection type creates the federated credential on the target
-#      identity for you, given sufficient RBAC (Owner/User Access Administrator) on it.
-#   2. That same Managed Identity must hold the two new, narrowly-scoped roles this PBI added
-#      to ops/bicep/main.bicep (AcrPush on the registry; Container Apps Contributor on each of
-#      the two Container Apps individually — never resource-group-wide) — applied via a
-#      one-time `az deployment group create` against the existing resource group, requiring
-#      explicit human approval before being run (this pipeline never runs
-#      `az deployment group create` itself; see Stage 6 below).
+# The Azure DevOps service connection is "sc-tmx-agent-platform-dev" (Azure DevOps project
+# "Enterprise-ai-multiagent-reference", org "tokio-marine-mx-devops"), ARM, Workload Identity
+# Federation, created via Azure DevOps's "App registration (automatic)" flow — CONFIRMED (via
+# `az ad sp show`/`az ad app federated-credential list`) to be backed by its OWN, freshly-created
+# Entra ID App Registration (appId `e35d2b19-6ac8-41e5-af14-66a9095d4e35`, service principal
+# object id `9f6190e9-b5dd-4651-a90b-45d9f37bcc5a`, display name
+# "tokio-marine-mx-devops-Enterprise-ai-multiagent-referen-...") — this is a DIFFERENT principal
+# from the platform's own user-assigned Managed Identity "id-tmxap-dev". PBI-07-01's original
+# design incorrectly assumed the service connection would target id-tmxap-dev (per
+# docs/sprint_00/security-baseline.md §6's original recommendation) — it does not, and every
+# RBAC grant made to id-tmxap-dev for CI purposes (AcrPush, Container Apps Contributor —
+# PBI-04-01) does NOT apply to the real pipeline identity.
 #
-# Until both exist, BackendQuality/FrontendQuality/InfrastructureValidation still run and
-# validate every push/PR exactly as they did before this PBI — only the deploy-affecting
-# stages require the prerequisite above.
+# CONFIRMED (live `az role assignment list --resource-group rg-tmx-agent-platform-dev`): the
+# real service-connection service principal already holds **Contributor**, scoped to
+# rg-tmx-agent-platform-dev — granted automatically by Azure DevOps's own "automatic" WIF
+# service-connection-creation flow at connection-creation time, OUTSIDE this repo's Bicep (a
+# real RBAC grant that exists in Azure but is not currently codified as IaC — see
+# docs/sprint_07/decisions.md PBI-07-01A entries for the full evidence chain and the drift this
+# implies). Contributor's own definition (`Actions: ["*"]`, excluding only
+# Microsoft.Authorization/*/write and a few Blueprint/Purview actions) already covers every
+# capability ContainerBuildAndPush (ACR push)/DeployDev (Container App update)/InfrastructureDeploy
+# (Bicep resource deployment, excluding role assignments) need — no further RBAC grant is
+# required for this pipeline to function, on any identity, right now.
+#
+# ops/bicep/main.bicep's `cicdInfrastructureContributorPrincipalId` param (PBI-07-01) remains
+# off by default (empty string) — it exists only as an OPTIONAL way to bring the
+# already-existing, externally-granted Contributor role under this repo's IaC control in the
+# future (pointing it at the real SP object id above, not id-tmxap-dev), never as something this
+# pipeline or Claude Code applies automatically. id-tmxap-dev's own PBI-04-01 AcrPush/Container
+# Apps Contributor grants remain in place (harmless, unused by CI) — removing them is a separate,
+# not-yet-authorized cleanup, not done here.
+# ============================================================================================
+#
+# ============================================================================================
+# PREREQUISITES — must exist before the deploy-affecting stages
+# (ContainerBuildAndPush/InfrastructureDeploy/DeployDev/SmokeTests/DeploymentSummary) can run
+# for real. Full walkthrough: docs/sprint_07/azure-devops-setup.md. Summary:
+#
+#   1. Azure DevOps organization + project — DONE ("tokio-marine-mx-devops" /
+#      "Enterprise-ai-multiagent-reference").
+#   2. The ARM service connection ("${{ parameters.azureServiceConnection }}", default:
+#      sc-tmx-agent-platform-dev), Workload Identity Federation, no client secret, no publish
+#      profile, no service principal password — DONE. See the IDENTITY MODEL block above for
+#      exactly which principal this is and what RBAC it already holds.
+#   3. This Git repository connected to the Azure DevOps project (GitHub connection, if hosted
+#      on GitHub, or an Azure Repos import) — NOT YET DONE.
+#   4. The pipeline itself created from this YAML file, and authorized to use the service
+#      connection (Azure Pipelines requires a one-time manual "Permit" click the first time a
+#      pipeline run actually attempts to use a service connection it hasn't used before) — NOT
+#      YET DONE.
+#   5. No further RBAC grant is required for a first run to exercise every stage, including
+#      InfrastructureDeploy — the service connection's principal already holds Contributor on
+#      rg-tmx-agent-platform-dev (see IDENTITY MODEL above). This is unverified against a REAL
+#      pipeline run (every check so far used the human user's own Owner-level `az` session, not
+#      a live OIDC token exchange through this exact service connection) — treat as a strong
+#      hypothesis, not a certainty, until the first real run confirms it.
+#
+# Until 3-4 are done, BackendQuality/FrontendQuality/SecurityScan/InfrastructureValidation still
+# run and validate every push/PR exactly as before — only the deploy-affecting stages require
+# them.
 # ============================================================================================
 
 trigger:
   branches:
     include:
-      - develop
       - main
+      - feat/*
+      - fix/*
+      - review/*
   paths:
     exclude:
       - docs/**
@@ -47,7 +115,6 @@ trigger:
 pr:
   branches:
     include:
-      - develop
       - main
 
 parameters:
@@ -77,10 +144,11 @@ parameters:
       - ops/bicep/parameters/prod.bicepparam
   # Name of the Azure DevOps service connection created per the PREREQUISITE above. A
   # parameter, not a hardcoded literal inline in every deploy step, so renaming it means
-  # changing one line, not hunting through the file.
+  # changing one line, not hunting through the file. Real value, confirmed live (PBI-07-01A) —
+  # see the IDENTITY MODEL block above for exactly which principal backs it.
   - name: azureServiceConnection
     type: string
-    default: 'tmx-agent-platform-dev-oidc'
+    default: 'sc-tmx-agent-platform-dev'
   # The only Azure resource NAME hardcoded anywhere in this file: the resource group itself.
   # It has no generated suffix, was deliberately chosen, and is the unavoidable entry point
   # for every dynamic lookup below (ACR name, Container App names, FQDNs — all resolved via
@@ -88,10 +156,13 @@ parameters:
   - name: resourceGroupName
     type: string
     default: 'rg-tmx-agent-platform-dev'
-  # Only pushes to this branch trigger Stages 4-8 (build+push+deploy+smoke test+summary).
-  # develop-branch pushes and PR validation builds still run Stages 1-3 (quality gates) but
-  # never deploy — this is deliberate: DEV should track integrated, reviewed changes, not
-  # every feature branch.
+  # Only pushes to this branch trigger the deploy-affecting stages (ContainerBuildAndPush,
+  # InfrastructureDeploy, DeployDev, SmokeTests, DeploymentSummary). feat/*, fix/*, review/*
+  # pushes and PR validation builds (which always target main — see the `pr:` trigger above)
+  # still run Quality/Security/ContainerBuildValidation/Infrastructure-Validate but never
+  # deploy — this project has no `develop` branch (PBI-07-01B); DEV tracks `main` only,
+  # reviewed/merged changes, never an individual feature branch (CLAUDE.md §15's branch model:
+  # `feature/*`/`fix/*`/`review/*` off `main`, no long-lived integration branch).
   - name: deployBranch
     type: string
     default: 'main'
@@ -103,20 +174,22 @@ variables:
   webImageName: 'tmx-web'
   # Image versioning (PBI-04-01 requirement — never "latest"): Build.BuildId is unique and
   # monotonically increasing per Azure DevOps project with zero extra setup. Prefixed with
-  # "dev-" purely for readability when browsing tags in the registry.
-  imageTag: 'dev-$(Build.BuildId)'
+  # "dev-" purely for readability when browsing tags in the registry. PBI-07-01 appends the
+  # full commit SHA (Build.SourceVersion) so every image tag maps back to an exact commit
+  # without needing to cross-reference the Azure DevOps build history — "preserve commit/build
+  # traceability in image tags" (docker tags allow up to 128 chars; this is well under that).
+  imageTag: 'dev-$(Build.BuildId)-$(Build.SourceVersion)'
   isDeployRun: $[eq(variables['Build.SourceBranch'], 'refs/heads/${{ parameters.deployBranch }}')]
 
 stages:
   # ============================================================================================
-  # STAGE 1 (of this pipeline's 8 conceptual stages: Source checkout + Python environment +
-  # Quality Gates) — Backend Quality
+  # PBI-07-01 STAGE 1 (Quality) — Backend
   # Validates both Python projects in this repo (apps/api's transport layer and the root
   # src/ domain library) in one shared environment. Fails immediately on any pytest/ruff/mypy
   # failure — each is its own step; a failing step stops the job before the next one runs.
   # ============================================================================================
   - stage: BackendQuality
-    displayName: '1 - Backend Quality (checkout, Python env, quality gates)'
+    displayName: '1a - Quality: Backend (checkout, Python env, quality gates)'
     jobs:
       - job: BackendQualityJob
         displayName: Backend quality gate
@@ -211,10 +284,10 @@ stages:
             displayName: 'Publish backend-reports artifact'
 
   # ============================================================================================
-  # STAGE 2 — Frontend Quality (parallel with Stage 1; both feed Stage 4)
+  # PBI-07-01 STAGE 1 (Quality) — Frontend (parallel with Backend Quality; both gate Build)
   # ============================================================================================
   - stage: FrontendQuality
-    displayName: '2 - Frontend Quality'
+    displayName: '1b - Quality: Frontend'
     jobs:
       - job: FrontendQualityJob
         displayName: Frontend quality gate
@@ -283,13 +356,169 @@ stages:
             displayName: 'Publish Web production build'
 
   # ============================================================================================
-  # STAGE 3 — Infrastructure Validation
+  # PBI-07-01 STAGE 2 — Security
+  # Resolves Architecture Review Finding SEC-08 (reports/review/02_security_review.md): "no
+  # dependency or container vulnerability scanning exists anywhere in azure-pipelines.yml."
+  # Three lightweight, single-purpose tools — no heavyweight/enterprise product:
+  #   - pip-audit (official PyPA tool) — Python runtime dependency CVEs.
+  #   - npm audit (built into npm, zero extra install) — frontend dependency CVEs.
+  #   - detect-secrets (Yelp, pip-installable) — committed-secret scan.
+  # Runs in parallel with BackendQuality/FrontendQuality (no dependsOn — disjoint concern);
+  # gates ContainerBuildAndPush exactly like the quality stages do (see that stage's dependsOn).
+  # ============================================================================================
+  - stage: SecurityScan
+    displayName: '2 - Security (dependency + secret scanning)'
+    jobs:
+      - job: SecurityScanJob
+        displayName: Security gates
+        pool:
+          vmImage: ubuntu-latest
+        variables:
+          PIP_CACHE_DIR: $(Pipeline.Workspace)/.pip-cache
+        steps:
+          - checkout: self
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+            displayName: 'Use Python $(pythonVersion)'
+
+          - task: Cache@2
+            inputs:
+              key: 'pip-security | "$(Agent.OS)" | apps/api/pyproject.toml | pyproject.toml'
+              restoreKeys: |
+                pip-security | "$(Agent.OS)"
+              path: $(PIP_CACHE_DIR)
+            displayName: 'Cache pip packages'
+
+          - script: |
+              set -e
+              python -m pip install --cache-dir $(PIP_CACHE_DIR) --upgrade pip
+              # Same runtime dependency set BackendQuality installs — pip-audit audits the
+              # environment it runs in, not pyproject.toml text, so the real installed set must
+              # match what actually ships/runs, not a superset (this repo has no lock file; see
+              # reports/review/02_security_review.md Finding SEC-08's own note on that gap).
+              pip install --cache-dir $(PIP_CACHE_DIR) \
+                "fastapi>=0.115,<1" "uvicorn[standard]>=0.30,<1" \
+                "pydantic>=2.7,<3" "pydantic-settings>=2.3,<3" \
+                "pytest>=8.2,<9" "httpx>=0.27,<1" \
+                "pytest-asyncio>=0.23,<1" \
+                "azure-cosmos>=4.7,<5" "azure-identity>=1.17,<2" \
+                "azure-keyvault-secrets>=4.8,<5" "openai>=1.40,<2" "aiohttp>=3.9,<4" \
+                "pytest-cov>=5,<7"
+              pip install --cache-dir $(PIP_CACHE_DIR) "pip-audit>=2.7,<3" "detect-secrets>=1.5,<2"
+              # setuptools ships bundled with every venv (packaging/build tooling, not a
+              # declared project dependency, never imported by application code) but pip-audit
+              # still flags an outdated bundled copy — real, current findings confirmed locally
+              # 2026-08-10 (PYSEC-2022-43012/PYSEC-2025-49/PYSEC-2026-1918/PYSEC-2026-3447 on
+              # setuptools 65.5.0). Upgrading it is a zero-risk, zero-compatibility-impact fix
+              # (it never affects apps/api/pyproject.toml's own declared versions), unlike the
+              # pytest finding below.
+              pip install --cache-dir $(PIP_CACHE_DIR) --upgrade "setuptools>=78.1.1"
+            displayName: 'Install runtime dependencies + security tools'
+
+          - script: |
+              set -e
+              mkdir -p "$(Build.ArtifactStagingDirectory)/security-reports"
+              echo "=== pip-audit: scanning installed environment for known CVEs ==="
+              # PYSEC-2026-1845 (pytest 8.4.2, fixed only in pytest 9.x): apps/api/pyproject.toml
+              # pins pytest>=8.2,<9 deliberately (this repo's whole test suite is un-validated
+              # against pytest 9's breaking changes) — a real, separately-scoped upgrade
+              # decision, not something this CI/CD PBI should make unilaterally. pytest also
+              # never ships in the deployed container (test-only tool). Ignored here, with this
+              # justification, not silently — everything else in the real, installed dependency
+              # set must still pass with zero exceptions.
+              pip-audit --desc --ignore-vuln PYSEC-2026-1845 \
+                | tee "$(Build.ArtifactStagingDirectory)/security-reports/pip-audit.txt"
+            displayName: 'Python dependency vulnerability scan (pip-audit) — gate 1/3'
+
+          - script: |
+              set -e
+              mkdir -p "$(Build.ArtifactStagingDirectory)/security-reports"
+              echo "=== detect-secrets: scanning repository for committed secrets ==="
+              # docs/**/evidence/*.txt are frozen, historical raw CLI-output transcripts (Sprint
+              # validation records — CLAUDE.md SS12's "do not erase previous entries") that
+              # legitimately contain high-entropy content with no security meaning (Ollama model
+              # digests, OpenAI tool-call IDs) — confirmed by hand, 2026-08-10, not guessed. All
+              # actual source/test/config findings (5, all "Secret Keyword" false positives on
+              # parameter/variable NAMES like secretName/SecretProvider, never a value) are
+              # suppressed inline via `pragma: allowlist secret` at their exact line, auditable
+              # in code review — no repo-wide baseline file needed.
+              detect-secrets scan --all-files --exclude-files 'docs/.*/evidence/.*' \
+                > "$(Build.ArtifactStagingDirectory)/security-reports/detect-secrets.json"
+              python3 -c "
+              import json
+              report = json.load(open('$(Build.ArtifactStagingDirectory)/security-reports/detect-secrets.json'))
+              results = report.get('results', {})
+              if results:
+                  print('POTENTIAL SECRETS FOUND (not suppressed by an existing pragma comment):')
+                  for path, findings in results.items():
+                      for f in findings:
+                          print(f\"  {path}:{f['line_number']} - {f['type']}\")
+                  raise SystemExit(1)
+              print('No potential secrets found.')
+              "
+            displayName: 'Secret scan (detect-secrets) — gate 2/3'
+
+          - task: NodeTool@0
+            inputs:
+              versionSpec: '$(nodeVersion)'
+            displayName: 'Use Node $(nodeVersion)'
+
+          - task: Cache@2
+            inputs:
+              key: 'npm | "$(Agent.OS)" | apps/web/package-lock.json'
+              restoreKeys: |
+                npm | "$(Agent.OS)"
+              path: apps/web/node_modules
+            displayName: 'Cache npm packages'
+
+          - script: npm ci
+            workingDirectory: apps/web
+            displayName: 'npm ci'
+
+          - script: |
+              set -e
+              mkdir -p "$(Build.ArtifactStagingDirectory)/security-reports"
+              echo "=== npm audit (full, informational): all dependencies including devDependencies ==="
+              # Non-blocking (continueOnError below): confirmed 2026-08-10 this currently reports
+              # 5 findings (1 critical, 1 high, 3 moderate), all transitively via
+              # esbuild/vite/vitest (devDependencies only — the Vite dev server, never shipped
+              # in the production build apps/web/Dockerfile actually serves); fixing requires
+              # `npm audit fix --force` (a breaking Vite major-version bump) — an out-of-scope
+              # build-toolchain upgrade, not a CI/CD pipeline change. Published for visibility,
+              # not silently hidden.
+              npm audit --audit-level=high \
+                | tee "$(Build.ArtifactStagingDirectory)/security-reports/npm-audit-full.txt" || true
+            displayName: 'npm dependency scan — full report (informational, non-blocking)'
+
+          - script: |
+              set -e
+              mkdir -p "$(Build.ArtifactStagingDirectory)/security-reports"
+              echo "=== npm audit --omit=dev: production dependencies only (react, react-dom) ==="
+              # The real gate: production dependencies (what actually ships in the built app)
+              # must be clean at high/critical severity. Confirmed clean (0 vulnerabilities)
+              # 2026-08-10.
+              npm audit --omit=dev --audit-level=high \
+                | tee "$(Build.ArtifactStagingDirectory)/security-reports/npm-audit-prod.txt"
+            displayName: 'npm dependency vulnerability scan (production deps) — gate 3/3'
+
+          - task: PublishPipelineArtifact@1
+            condition: succeededOrFailed()
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)/security-reports'
+              artifactName: 'security-reports'
+            displayName: 'Publish security-reports artifact'
+
+  # ============================================================================================
+  # PBI-07-01 STAGE 4a (Infrastructure — Validate half)
   # Compiles every Bicep module, main.bicep, and all environment parameter files. No Azure
   # login, no `az deployment create`, no `az deployment what-if`. Runs in parallel with
-  # Stages 1-2 (no dependsOn) since it validates a disjoint file set.
+  # Stages 1-2 (no dependsOn) since it validates a disjoint file set. See InfrastructureDeploy
+  # below for the "deploy" half (isDeployRun-only, requires new RBAC, quota-aware).
   # ============================================================================================
   - stage: InfrastructureValidation
-    displayName: '3 - Infrastructure Validation'
+    displayName: '4a - Infrastructure: Validate (offline Bicep build, every run)'
     jobs:
       - job: InfrastructureValidationJob
         displayName: Validate Bicep
@@ -312,7 +541,167 @@ stages:
                   filePath: ${{ paramFile }}
 
   # ============================================================================================
-  # STAGE 4 — Container Build (build) + STAGE 5 — Push Images (push), combined into one YAML
+  # PBI-07-01 STAGE 4b (Infrastructure — Deploy half)
+  # Runs `az deployment group validate` then `az deployment group create` against the real DEV
+  # resource group, for pushes to the deploy branch only. Needs a broader RBAC grant than
+  # ContainerBuildAndPush/DeployDev — Contributor scoped to rg-tmx-agent-platform-dev only.
+  # (PBI-07-01A, corrected): the real service connection principal ALREADY holds this role —
+  # granted automatically by Azure DevOps at service-connection-creation time, confirmed live
+  # (see this file's own IDENTITY MODEL header block) — no Bicep-driven grant is required for
+  # this stage to authenticate and deploy. `ops/bicep/main.bicep`'s
+  # `cicdInfrastructureContributorPrincipalId` param stays off by default; it exists only to
+  # optionally codify this already-existing external grant into IaC later, never to grant it to
+  # id-tmxap-dev (a different, unrelated identity). If this stage still fails with an
+  # authorization error on a real run, treat that as evidence the hypothesis above needs
+  # revisiting (docs/sprint_07/decisions.md), not as "the prerequisite isn't done yet."
+  #
+  # Deliberately INDEPENDENT of DeployDev/SmokeTests (dependsOn is InfrastructureValidation
+  # only, and DeployDev's own dependsOn does NOT include this stage): infra-deploy problems —
+  # the still-open Microsoft.Web/serverFarms quota block, or the new RBAC not being granted yet
+  # — must never block unrelated API/Web container delivery. Enforced structurally (this stage
+  # is simply not on DeployDev's dependency graph at all), not only by the error-handling script
+  # below — belt and suspenders, per this PBI's explicit requirement.
+  #
+  # Error handling: only ONE specific, empirically-confirmed condition is treated as
+  # known/non-blocking (a warning, exit 0) — SubscriptionIsOverQuotaForSku on
+  # Microsoft.Web/serverFarms (the Claims Tool Layer Function App's App Service Plan), which
+  # this subscription cannot currently provision — an external Azure quota limitation, not a
+  # code or pipeline defect (docs/Architecture/adr/0003-azure-functions-tool-and-workflow-layer.md,
+  # docs/sprint_06/decisions.md D-07 — confirmed via 3 independent real `az deployment group
+  # create` attempts, 2026-08-09/10). main.bicep is idempotent and ARM applies every OTHER
+  # resource in the template independently of that one failure — confirmed each of those 3
+  # times: every non-blocked resource (Storage Account, role assignments, etc.) was successfully
+  # applied even though the overall deployment's exit code was 1. Any OTHER failure (a real
+  # Bicep defect, an authorization error, a different Azure error) fails this stage for real —
+  # this script never blanket-swallows errors, only this one documented, evidenced condition.
+  # ============================================================================================
+  - stage: InfrastructureDeploy
+    displayName: '4b - Infrastructure: Deploy (DEV only, quota-aware, never blocks Deploy/Smoke)'
+    dependsOn:
+      - InfrastructureValidation
+    condition: and(succeeded(), eq(variables.isDeployRun, true))
+    jobs:
+      - job: InfrastructureDeployJob
+        displayName: Deploy DEV infrastructure changes (main.bicep)
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+
+          - task: AzureCLI@2
+            displayName: 'az deployment group validate + create (quota-aware, non-blocking for known blocker)'
+            inputs:
+              azureSubscription: '${{ parameters.azureServiceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -e
+
+                echo "=== az deployment group validate ==="
+                az deployment group validate \
+                  --resource-group "${{ parameters.resourceGroupName }}" \
+                  --template-file ops/bicep/main.bicep \
+                  --parameters ops/bicep/parameters/dev.bicepparam
+
+                echo "=== az deployment group create ==="
+                set +e
+                DEPLOY_OUTPUT=$(az deployment group create \
+                  --resource-group "${{ parameters.resourceGroupName }}" \
+                  --name "pipeline-infra-$(Build.BuildId)" \
+                  --template-file ops/bicep/main.bicep \
+                  --parameters ops/bicep/parameters/dev.bicepparam \
+                  -o json 2>&1)
+                DEPLOY_EXIT=$?
+                set -e
+
+                echo "$DEPLOY_OUTPUT"
+
+                if [ $DEPLOY_EXIT -ne 0 ]; then
+                  if echo "$DEPLOY_OUTPUT" | grep -q "SubscriptionIsOverQuotaForSku" && \
+                     echo "$DEPLOY_OUTPUT" | grep -q "Microsoft.Web/serverFarms"; then
+                    echo "##vso[task.logissue type=warning]Known external blocker: the Claims Tool Layer Function App (Microsoft.Web/serverFarms) could not be provisioned — this subscription reports SubscriptionIsOverQuotaForSku (0 App Service quota, confirmed across 5 regions, 3 independent real deployment attempts). This is an EXTERNAL Azure subscription limitation, not a pipeline, Bicep, or application defect — see docs/Architecture/adr/0003-azure-functions-tool-and-workflow-layer.md and docs/sprint_06/decisions.md D-07. Every OTHER resource in main.bicep still deploys successfully (ARM applies independent resources even when one nested deployment fails). Resolving this requires an Azure Support App Service quota-increase request — no pipeline or code change can work around it. This does NOT affect API/Web delivery (Stages 5-6 continue regardless of this stage's outcome)."
+                    echo "Infrastructure deploy: PARTIAL — all resources except the quota-blocked Function App applied. Treated as non-blocking (documented, expected). See warning above."
+                    echo "##vso[task.setvariable variable=infraDeployResult;isOutput=true]partial-quota-blocked"
+                    exit 0
+                  else
+                    echo "Infrastructure deploy failed for a reason OTHER than the known Function App quota block — a real failure, not a documented/expected condition. Failing this stage."
+                    echo "##vso[task.setvariable variable=infraDeployResult;isOutput=true]failed"
+                    exit 1
+                  fi
+                fi
+
+                echo "Infrastructure deploy: fully succeeded, including the Function App (subscription quota must have been granted since docs/sprint_06/decisions.md D-07)."
+                echo "##vso[task.setvariable variable=infraDeployResult;isOutput=true]succeeded"
+            name: infraDeploy
+
+  # ============================================================================================
+  # PBI-07-01B STAGE 3 (Build) — validation half, feat/*/fix/*/review*/PR branches
+  # Requirement 3 ("feat/fix/review branches must run CI validation only... they may run:
+  # Quality, Security, Build, Infrastructure validation") + requirement 4 (deployment stages —
+  # InfrastructureDeploy/DeployDev/SmokeTests — main-only) together mean Build itself belongs on
+  # feature branches too, but strictly as a "does this image build" check — no ACR login, no
+  # push, no Azure authentication of any kind, nothing this identity could use to affect Azure.
+  # Plain `docker build`, discarded when the job ends. Deliberately the mirror image of
+  # ContainerBuildAndPush below: runs when isDeployRun is NOT true (every PR against main, every
+  # feat/*/fix/*/review/* push) so main never redundantly builds twice — ContainerBuildAndPush's
+  # own (superset) build+push already covers main.
+  # ============================================================================================
+  - stage: ContainerBuildValidation
+    displayName: '3 - Build (validation only — no push, no Azure login, non-main branches)'
+    dependsOn:
+      - BackendQuality
+      - FrontendQuality
+      - SecurityScan
+    condition: and(succeeded(), ne(variables.isDeployRun, true))
+    jobs:
+      - job: ContainerBuildValidationJob
+        displayName: Build API/Web images locally (no push)
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+            fetchDepth: 2
+
+          - script: |
+              set -e
+              echo "=== Building API image (validation only, repo-root context — see apps/api/Dockerfile) ==="
+              docker build \
+                --file apps/api/Dockerfile \
+                -t "$(apiImageName):ci-validation" \
+                .
+              echo "API image builds successfully."
+            displayName: 'docker build: API image (no push)'
+
+          - script: |
+              set -e
+              # Same "only when relevant" comparison ContainerBuildAndPush/DeployDev use for the
+              # real build — kept independent (not a cross-stage variable) since this stage must
+              # be usable standalone, without ContainerBuildAndPush ever running (it never runs
+              # on these branches).
+              if git rev-parse HEAD^ >/dev/null 2>&1; then
+                if git diff --name-only HEAD^ HEAD -- apps/web | grep -q .; then
+                  WEB_CHANGED=true
+                else
+                  WEB_CHANGED=false
+                fi
+              else
+                echo "No parent commit found (first commit in history) — defaulting to changed=true."
+                WEB_CHANGED=true
+              fi
+              echo "apps/web changed since parent commit: $WEB_CHANGED"
+              if [ "$WEB_CHANGED" = "true" ]; then
+                echo "=== Building Web image (validation only; VITE_API_URL uses the Dockerfile's own default — no real deployed API exists on this branch) ==="
+                docker build \
+                  -t "$(webImageName):ci-validation" \
+                  apps/web
+                echo "Web image builds successfully."
+              else
+                echo "Skipping Web image build — apps/web unchanged since parent commit."
+              fi
+            displayName: 'docker build: Web image (no push, only when apps/web changed)'
+
+  # ============================================================================================
+  # PBI-07-01 STAGE 3 — Build (build + push, combined into one YAML
   # stage/job deliberately: Azure Pipelines stages do not share a filesystem/Docker image
   # cache across stage boundaries (each stage may run on a different agent instance), so
   # "build in one stage, push in a separate stage" would require save/publish/download-ing a
@@ -320,8 +709,10 @@ stages:
   # overhead with no benefit for a DEV-only, non-approval-gated flow. Build and Push remain
   # two clearly separated, independently-named step groups below.
   #
-  # Runs only for the deploy branch (isDeployRun) — PR validation and develop-branch builds
-  # stop after Stage 3, exactly as they did before this PBI.
+  # Runs only for the deploy branch (isDeployRun) — PR validation (always against main) and
+  # feat/*/fix/*/review/* pushes stop after Stages 1/2/4a
+  # (Quality/Security/Infrastructure-Validate) plus the build-only ContainerBuildValidation
+  # stage above, exactly as before (this project has no `develop` branch — PBI-07-01B).
   #
   # Fixes a pre-existing bug in this pipeline: the Sprint-0 version of this stage built the
   # API image with `./apps/api` as the Docker build context. apps/api/Dockerfile has required
@@ -330,10 +721,11 @@ stages:
   # docs/sprint_04/decisions.md.
   # ============================================================================================
   - stage: ContainerBuildAndPush
-    displayName: '4+5 - Container Build and Push Images'
+    displayName: '3 - Build (image build + push to ACR)'
     dependsOn:
       - BackendQuality
       - FrontendQuality
+      - SecurityScan
     condition: and(succeeded(), eq(variables.isDeployRun, true))
     jobs:
       - job: ContainerBuildAndPushJob
@@ -342,9 +734,33 @@ stages:
           vmImage: ubuntu-latest
         steps:
           - checkout: self
+            fetchDepth: 2
+
+          - script: |
+              set -e
+              # "Build Web image only when relevant" (PBI-07-01): compares this push against
+              # its immediate parent commit. fetchDepth: 2 above ensures HEAD^ exists for a
+              # normal push. A single merge/squash commit per PR (this project's flow) captures
+              # the PR's whole diff this way. If HEAD^ can't be resolved (e.g. the very first
+              # commit in the repo's history), default to "changed" — always build rather than
+              # silently skip on an edge case this check cannot reason about.
+              if git rev-parse HEAD^ >/dev/null 2>&1; then
+                if git diff --name-only HEAD^ HEAD -- apps/web | grep -q .; then
+                  WEB_CHANGED=true
+                else
+                  WEB_CHANGED=false
+                fi
+              else
+                echo "No parent commit found (first commit in history) — defaulting to changed=true."
+                WEB_CHANGED=true
+              fi
+              echo "apps/web changed since parent commit: $WEB_CHANGED"
+              echo "##vso[task.setvariable variable=webChanged;isOutput=true]$WEB_CHANGED"
+            name: detectWebChange
+            displayName: 'Detect whether apps/web changed since the parent commit'
 
           - task: AzureCLI@2
-            displayName: 'Resolve existing ACR + API Container App FQDN, build, and push both images'
+            displayName: 'Resolve existing ACR + API Container App FQDN, build, and push image(s)'
             inputs:
               azureSubscription: '${{ parameters.azureServiceConnection }}'
               scriptType: bash
@@ -384,31 +800,48 @@ stages:
                 # (this PBI's explicit context), so its FQDN is resolved directly above rather
                 # than waiting on a fresh deployment's output, unlike the original disabled
                 # Deploy_Dev stage's documented (from-scratch) assumption.
-                echo "=== Building Web image (context apps/web, VITE_API_URL=https://$API_FQDN) ==="
-                docker build \
-                  --build-arg VITE_API_URL="https://$API_FQDN" \
-                  -t "$ACR_LOGIN_SERVER/$(webImageName):$(imageTag)" \
-                  apps/web
+                #
+                # "Build Web image only when relevant" (PBI-07-01): skipped when apps/web has no
+                # changes since the parent commit (detectWebChange step above) — DeployDev reads
+                # the same flag and correspondingly skips `az containerapp update` for Web too,
+                # so an unchanged Web app is never rebuilt, repushed, or redeployed.
+                if [ "$(detectWebChange.webChanged)" = "true" ]; then
+                  echo "=== Building Web image (apps/web changed; context apps/web, VITE_API_URL=https://$API_FQDN) ==="
+                  docker build \
+                    --build-arg VITE_API_URL="https://$API_FQDN" \
+                    -t "$ACR_LOGIN_SERVER/$(webImageName):$(imageTag)" \
+                    apps/web
 
-                echo "=== Pushing Web image ==="
-                docker push "$ACR_LOGIN_SERVER/$(webImageName):$(imageTag)"
+                  echo "=== Pushing Web image ==="
+                  docker push "$ACR_LOGIN_SERVER/$(webImageName):$(imageTag)"
+                else
+                  echo "=== Skipping Web image build/push — apps/web unchanged since parent commit ==="
+                fi
             name: buildAndPush
 
   # ============================================================================================
-  # STAGE 6 — Deployment
+  # PBI-07-01 STAGE 5 — Deploy DEV
   # Updates ONLY the two existing Container Apps' image reference — never
   # `az deployment group create`/`what-if`, never touches Cosmos DB, Key Vault, Azure OpenAI,
   # AI Search, the Managed Identity, or the registry's own management plane. The image tag is
-  # unique per pipeline run (Build.BuildId-derived), so Azure Container Apps always creates a
-  # genuine new revision — no `--revision-suffix` workaround needed (that was only required in
-  # PBI-03-05/06's manual validation, which reused a fixed "pending-first-build" tag).
+  # unique per pipeline run (Build.BuildId + commit-SHA-derived), so Azure Container Apps always
+  # creates a genuine new revision — no `--revision-suffix` workaround needed (that was only
+  # required in PBI-03-05/06's manual validation, which reused a fixed
+  # "pending-first-build" tag). Deliberately does NOT dependsOn InfrastructureDeploy — API/Web
+  # delivery must never be blocked by an infrastructure-only issue (the still-open Function App
+  # quota block, or the new Infrastructure-deploy RBAC not being granted yet).
   # ============================================================================================
   - stage: DeployDev
-    displayName: '6 - Deployment (existing DEV Container Apps only)'
+    displayName: '5 - Deploy DEV (existing Container Apps only)'
     dependsOn:
       - ContainerBuildAndPush
       - InfrastructureValidation
     condition: and(succeeded(), eq(variables.isDeployRun, true))
+    variables:
+      # "Update Web only when changed" (PBI-07-01): same flag ContainerBuildAndPush computed and
+      # already used to skip building/pushing the Web image — read here via the same
+      # cross-stage output-variable pattern this file already uses for apiFqdn/apiAppName below.
+      webChanged: $[ stageDependencies.ContainerBuildAndPush.ContainerBuildAndPushJob.outputs['detectWebChange.webChanged'] ]
     jobs:
       - job: DeployDevJob
         displayName: Update DEV Container App revisions
@@ -416,7 +849,7 @@ stages:
           vmImage: ubuntu-latest
         steps:
           - task: AzureCLI@2
-            displayName: 'az containerapp update — API and Web (image only, no infra recreation)'
+            displayName: 'az containerapp update — API always, Web only when changed (image only, no infra recreation)'
             inputs:
               azureSubscription: '${{ parameters.azureServiceConnection }}'
               scriptType: bash
@@ -434,11 +867,15 @@ stages:
                   --resource-group "${{ parameters.resourceGroupName }}" \
                   --image "$ACR_LOGIN_SERVER/$(apiImageName):$(imageTag)"
 
-                echo "Updating $WEB_APP_NAME -> $ACR_LOGIN_SERVER/$(webImageName):$(imageTag)"
-                az containerapp update \
-                  --name "$WEB_APP_NAME" \
-                  --resource-group "${{ parameters.resourceGroupName }}" \
-                  --image "$ACR_LOGIN_SERVER/$(webImageName):$(imageTag)"
+                if [ "$(webChanged)" = "true" ]; then
+                  echo "Updating $WEB_APP_NAME -> $ACR_LOGIN_SERVER/$(webImageName):$(imageTag)"
+                  az containerapp update \
+                    --name "$WEB_APP_NAME" \
+                    --resource-group "${{ parameters.resourceGroupName }}" \
+                    --image "$ACR_LOGIN_SERVER/$(webImageName):$(imageTag)"
+                else
+                  echo "Skipping Web deployment — apps/web unchanged since parent commit (no new image was built)."
+                fi
 
                 API_REVISION=$(az containerapp show --name "$API_APP_NAME" --resource-group "${{ parameters.resourceGroupName }}" --query "properties.latestRevisionName" -o tsv)
                 WEB_REVISION=$(az containerapp show --name "$WEB_APP_NAME" --resource-group "${{ parameters.resourceGroupName }}" --query "properties.latestRevisionName" -o tsv)
@@ -454,71 +891,144 @@ stages:
             name: deploy
 
   # ============================================================================================
-  # STAGE 7 — Smoke Tests
-  # GET /health and POST /chat against the just-updated, real DEV API Container App. `curl -f`
-  # fails (non-zero exit) on any non-2xx response, which fails this step, which fails this
-  # stage, which blocks Stage 8 — satisfying "pipeline must fail if smoke tests fail" with no
-  # extra error-handling code needed.
+  # PBI-07-01 STAGE 6 — Smoke Tests
+  # Six checks against the just-updated, real DEV API Container App: deployed revision/image
+  # tag matches this run; GET /health; POST /chat with a real Claims-triggering message,
+  # asserting X-Correlation-ID is echoed back unchanged; a second POST /chat reusing the same
+  # conversationId (continuity). `curl -f`/explicit `exit 1` on any check failure fails this
+  # step, which fails this stage, which blocks the summary stage — "pipeline must fail if smoke
+  # tests fail" with no extra error-handling code needed. Uses the existing synthetic policy
+  # SYN-POL-0001 (src/services/tools/synthetic/provider.py) — never real customer data.
   # ============================================================================================
   - stage: SmokeTests
-    displayName: '7 - Smoke Tests (GET /health, POST /chat)'
+    displayName: '6 - Smoke Tests'
     dependsOn:
       - DeployDev
     condition: and(succeeded(), eq(variables.isDeployRun, true))
     variables:
       apiFqdn: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.apiFqdn'] ]
+      apiAppName: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.apiAppName'] ]
     jobs:
       - job: SmokeTestsJob
         displayName: Run smoke tests against the deployed DEV API
         pool:
           vmImage: ubuntu-latest
         steps:
-          - script: |
-              set -e
-              echo "Smoke test 1/2: GET https://$(apiFqdn)/health"
-              curl -sf --max-time 30 "https://$(apiFqdn)/health"
-              echo ""
-              echo "GET /health: OK"
-            displayName: 'Smoke test: GET /health'
+          - task: AzureCLI@2
+            displayName: 'Smoke test 1/4: verify deployed revision/image tag'
+            inputs:
+              azureSubscription: '${{ parameters.azureServiceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -e
+                DEPLOYED_IMAGE=$(az containerapp show --name "$(apiAppName)" --resource-group "${{ parameters.resourceGroupName }}" --query "properties.template.containers[0].image" -o tsv)
+                EXPECTED_IMAGE_SUFFIX="$(apiImageName):$(imageTag)"
+                echo "Deployed image: $DEPLOYED_IMAGE"
+                echo "Expected tag:   $EXPECTED_IMAGE_SUFFIX"
+                case "$DEPLOYED_IMAGE" in
+                  *"$EXPECTED_IMAGE_SUFFIX")
+                    echo "Deployed image matches this pipeline run's image tag: OK" ;;
+                  *)
+                    echo "MISMATCH: the live Container App is not running the image this run just built and deployed."
+                    exit 1 ;;
+                esac
 
           - script: |
               set -e
-              echo "Smoke test 2/2: POST https://$(apiFqdn)/chat"
-              HTTP_BODY=$(curl -sf --max-time 60 -X POST "https://$(apiFqdn)/chat" \
+              echo "Smoke test 2/4: GET https://$(apiFqdn)/health"
+              curl -sf --max-time 30 "https://$(apiFqdn)/health"
+              echo ""
+              echo "GET /health: OK"
+            displayName: 'Smoke test 2/4: GET /health'
+
+          - script: |
+              set -e
+              echo "Smoke test 3/4: POST /chat, turn 1 — Claims scenario + correlation ID"
+              CORR_ID="cicd-smoke-$(Build.BuildId)"
+              HEADERS_FILE=$(mktemp)
+              BODY=$(curl -sf --max-time 60 -D "$HEADERS_FILE" -X POST "https://$(apiFqdn)/chat" \
                 -H "Content-Type: application/json" \
-                -d '{"userId":"cicd-smoke-test","message":"Hello, this is an automated CI/CD smoke test."}')
-              echo "$HTTP_BODY"
-              # Fail the step (and therefore the stage/pipeline) if the response is not
-              # well-formed JSON with a non-empty "response" field — curl -f already covers
-              # non-2xx HTTP status; this additionally guards against a 200 with an empty or
-              # malformed body.
-              echo "$HTTP_BODY" | python3 -c "
+                -H "X-Correlation-ID: $CORR_ID" \
+                -d '{"userId":"cicd-smoke-test","message":"I need to report a claim for policy SYN-POL-0001."}')
+              echo "$BODY"
+
+              CONVERSATION_ID=$(echo "$BODY" | python3 -c "
               import json, sys
               body = json.load(sys.stdin)
               assert body.get('response'), 'POST /chat returned no response text'
               assert body.get('agent'), 'POST /chat returned no agent'
-              print(f\"POST /chat: OK (agent={body['agent']}, intent={body.get('intent')})\")
+              assert body.get('conversationId'), 'POST /chat returned no conversationId'
+              assert body.get('agent') == 'ClaimsAgent', f\"expected ClaimsAgent for a claim-report message, got {body.get('agent')!r}\"
+              print(f\"POST /chat turn 1: OK (agent={body['agent']}, intent={body.get('intent')}, conversationId={body['conversationId']})\", file=sys.stderr)
+              print(body['conversationId'])
+              ")
+              echo "##vso[task.setvariable variable=conversationId]$CONVERSATION_ID"
+
+              RETURNED_CORR_ID=$(grep -i '^x-correlation-id:' "$HEADERS_FILE" | tr -d '\r' | awk '{print $2}')
+              echo "Sent correlation ID:     $CORR_ID"
+              echo "Received correlation ID: $RETURNED_CORR_ID"
+              if [ "$CORR_ID" != "$RETURNED_CORR_ID" ]; then
+                echo "MISMATCH: X-Correlation-ID was not echoed back unchanged."
+                exit 1
+              fi
+              echo "Correlation ID propagation: OK"
+            displayName: 'Smoke test 3/4: POST /chat — Claims scenario + correlation ID (turn 1)'
+
+          - script: |
+              set -e
+              echo "Smoke test 4/4: POST /chat, turn 2 — conversation continuity"
+              BODY2=$(curl -sf --max-time 60 -X POST "https://$(apiFqdn)/chat" \
+                -H "Content-Type: application/json" \
+                -d "{\"userId\":\"cicd-smoke-test\",\"conversationId\":\"$(conversationId)\",\"message\":\"Never mind, thank you.\"}")
+              echo "$BODY2"
+              echo "$BODY2" | python3 -c "
+              import json, sys
+              body = json.load(sys.stdin)
+              assert body.get('response'), 'POST /chat (turn 2) returned no response text'
+              expected = '$(conversationId)'
+              actual = body.get('conversationId')
+              assert actual == expected, f'conversationId changed mid-conversation: expected {expected!r}, got {actual!r}'
+              print(f\"POST /chat turn 2: OK (conversationId preserved: {actual})\")
               "
-            displayName: 'Smoke test: POST /chat'
+              echo "Conversation continuity: OK"
+            displayName: 'Smoke test 4/4: POST /chat — conversation continuity (turn 2, same conversationId)'
 
   # ============================================================================================
-  # STAGE 8 — Deployment Summary
-  # Publishes image tags, deployed Container App names/revisions, execution time, and a test
-  # summary (parsed from the backend/frontend JUnit artifacts already published in Stages 1-2)
-  # as a single pipeline artifact and build-summary markdown.
+  # PBI-07-01 STAGE 7 (bonus, beyond this PBI's own 6-stage list) — Deployment Summary
+  # Publishes image tags, deployed Container App names/revisions, execution time, a test
+  # summary (parsed from the backend/frontend JUnit artifacts already published in Stages 1-2),
+  # and the Web-only-when-changed / Infrastructure-deploy outcomes as a single pipeline artifact
+  # and build-summary markdown. Deliberately depends on InfrastructureDeploy for ordering/output
+  # access but does NOT require it to have succeeded (see the explicit `dependencies.
+  # InfrastructureDeploy.result` check below, not the blanket `succeeded()` the other
+  # dependencies use) — this summary must still publish even when infra deploy hit the known,
+  # non-blocking quota condition (which itself already exits 0 — see that stage) or any other
+  # infra-only issue, consistent with "must not incorrectly mark unrelated API/Web delivery as
+  # failed."
   # ============================================================================================
   - stage: DeploymentSummary
-    displayName: '8 - Deployment Summary'
+    displayName: '7 (bonus) - Deployment Summary'
     dependsOn:
       - SmokeTests
       - DeployDev
-    condition: and(succeeded(), eq(variables.isDeployRun, true))
+      - ContainerBuildAndPush
+      - InfrastructureDeploy
+    condition: >
+      and(
+        eq(variables.isDeployRun, true),
+        in(dependencies.SmokeTests.result, 'Succeeded'),
+        in(dependencies.DeployDev.result, 'Succeeded'),
+        in(dependencies.ContainerBuildAndPush.result, 'Succeeded')
+      )
     variables:
       apiAppName: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.apiAppName'] ]
       webAppName: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.webAppName'] ]
       apiRevision: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.apiRevision'] ]
       webRevision: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.webRevision'] ]
       apiFqdn: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.apiFqdn'] ]
+      webChanged: $[ stageDependencies.ContainerBuildAndPush.ContainerBuildAndPushJob.outputs['detectWebChange.webChanged'] ]
+      infraDeployResult: $[ stageDependencies.InfrastructureDeploy.InfrastructureDeployJob.outputs['infraDeploy.infraDeployResult'] ]
     jobs:
       - job: DeploymentSummaryJob
         displayName: Publish deployment summary
@@ -571,26 +1081,50 @@ stages:
               fi
 
               {
-                echo "# PBI-04-01 Deployment Summary"
+                echo "# TMX Platform — Deployment Summary"
                 echo ""
                 echo "- **Build:** $(Build.BuildId)  **Commit:** $(Build.SourceVersion)  **Branch:** $(Build.SourceBranchName)"
                 echo "- **Execution time:** $EXEC_TIME"
                 echo ""
                 echo "## Image tags"
                 echo "- API: \`$(apiImageName):$(imageTag)\`"
-                echo "- Web: \`$(webImageName):$(imageTag)\`"
+                if [ "$(webChanged)" = "true" ]; then
+                  echo "- Web: \`$(webImageName):$(imageTag)\` (rebuilt — apps/web changed)"
+                else
+                  echo "- Web: not rebuilt this run — apps/web unchanged since the parent commit"
+                fi
                 echo ""
                 echo "## Deployed Container Apps"
                 echo "- API: \`$(apiAppName)\` — revision \`$(apiRevision)\` — https://$(apiFqdn)"
-                echo "- Web: \`$(webAppName)\` — revision \`$(webRevision)\`"
+                if [ "$(webChanged)" = "true" ]; then
+                  echo "- Web: \`$(webAppName)\` — revision \`$(webRevision)\` (redeployed)"
+                else
+                  echo "- Web: \`$(webAppName)\` — revision \`$(webRevision)\` (unchanged, not redeployed)"
+                fi
                 echo ""
-                echo "## Smoke tests"
-                echo "- GET /health: passed (pipeline would have failed otherwise)"
-                echo "- POST /chat: passed (pipeline would have failed otherwise)"
+                echo "## Infrastructure (Bicep) deploy — Stage 4b"
+                case "$(infraDeployResult)" in
+                  succeeded)
+                    echo "- Full main.bicep deploy succeeded, including the Claims Tool Layer Function App." ;;
+                  partial-quota-blocked)
+                    echo "- PARTIAL (expected): every resource except the Claims Tool Layer Function App applied successfully. The Function App (Microsoft.Web/serverFarms) is blocked by a known, external, documented Azure subscription App Service quota limitation (SubscriptionIsOverQuotaForSku) — NOT a pipeline, Bicep, or application defect. See docs/Architecture/adr/0003-azure-functions-tool-and-workflow-layer.md and docs/sprint_06/decisions.md D-07. Does not affect anything above (API/Web are independently delivered)." ;;
+                  failed)
+                    echo "- FAILED for a reason other than the known quota block — needs investigation (see the InfrastructureDeploy stage's own log). Did not block API/Web delivery above." ;;
+                  *)
+                    echo "- Not run or result unavailable (\`$(infraDeployResult)\`) — see the InfrastructureDeploy stage directly." ;;
+                esac
+                echo ""
+                echo "## Smoke tests (Stage 6)"
+                echo "- Deployed revision/image tag verified: passed"
+                echo "- GET /health: passed"
+                echo "- POST /chat (Claims scenario + correlation ID, turn 1): passed"
+                echo "- POST /chat (conversation continuity, turn 2): passed"
+                echo "(pipeline would have failed otherwise — see Stage 6's own steps for full output)"
                 echo ""
                 echo "## Test summary"
                 echo "- Backend (pytest): $BACKEND_SUMMARY"
                 echo "- Frontend (Vitest): $FRONTEND_SUMMARY"
+                echo "- Security scan reports: see the security-reports pipeline artifact (Stage 2)"
               } | tee "$(Build.ArtifactStagingDirectory)/deployment-summary/DEPLOYMENT-SUMMARY.md"
 
               # Also surface it directly on the Azure DevOps run summary page.
@@ -605,9 +1139,10 @@ stages:
 
   # ============================================================================================
   # ArtifactPublication — validation-only summary (Bicep/IaC content), unchanged in purpose
-  # from Sprint 0. Runs on every pipeline execution (PR/develop/main), not gated by
-  # isDeployRun, since it documents what was VALIDATED, not what was deployed — DeploymentSummary
-  # above is the deploy-specific counterpart, only meaningful on an actual deploy run.
+  # from Sprint 0. Runs on every pipeline execution (PR against main, or a push to
+  # main/feat/*/fix/*/review/*), not gated by isDeployRun, since it documents what was
+  # VALIDATED, not what was deployed — DeploymentSummary above is the deploy-specific
+  # counterpart, only meaningful on an actual deploy run.
   # ============================================================================================
   - stage: ArtifactPublication
     displayName: 'Artifact Publication (validation summary, every run)'
@@ -636,6 +1171,7 @@ stages:
                 echo ""
                 echo "- Backend quality: tests, ruff, mypy — see the backend-reports artifact"
                 echo "- Frontend quality: lint, typecheck, tests, build — see frontend-reports / web-build artifacts"
+                echo "- Security: pip-audit, npm audit (production deps), detect-secrets — see the security-reports artifact"
                 echo "- Infrastructure: all Bicep modules, main.bicep, and dev/staging/prod parameter files compiled"
                 echo ""
                 echo "Deployment to DEV runs only for pushes to '${{ parameters.deployBranch }}' — see the"
