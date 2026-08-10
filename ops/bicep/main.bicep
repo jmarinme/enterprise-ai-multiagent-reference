@@ -125,6 +125,18 @@ param knowledgeProvider string = 'local'
 @allowed(['in_memory', 'cosmos'])
 param conversationStoreProvider string = 'cosmos'
 
+@description('Which ToolProvider the API Container App selects at runtime (PBI-06-01, src.config.settings.ToolProviderSettings). The Function App below is always provisioned regardless of this value — this only selects whether the API actually calls it. inprocess (the default) preserves pre-PBI-06-01 behavior exactly.')
+@allowed(['inprocess', 'azure_functions'])
+param toolProvider string = 'inprocess'
+
+@description('Which ClaimsWorkflowProvider the API Container App selects at runtime (PBI-06-01, src.config.settings.ClaimsWorkflowSettings). inprocess (the default) preserves pre-PBI-06-01 behavior exactly; durable routes Claims registration + adjuster assignment through the Durable Functions orchestration below.')
+@allowed(['inprocess', 'durable'])
+param claimsWorkflowProvider string = 'inprocess'
+
+@description('App Service Plan SKU for the Claims Tool Layer Function App. Y1 (Consumption) is the architectural default; B1 (Basic) is a documented fallback for subscriptions with 0 quota on the Dynamic VM family; P0v4 (Premium v4, Dedicated) is a DEV-only workaround for subscriptions with 0 quota on the Dynamic/Basic/Standard/PremiumV2/V3 families but available Premium v4 quota — not a production recommendation. See ops/bicep/modules/function-app.bicep and docs/Architecture/adr/0003-azure-functions-tool-and-workflow-layer.md.')
+@allowed(['Y1', 'B1', 'P0v4'])
+param functionAppPlanSkuName string = 'Y1'
+
 @description('Production network hardening (PBI-03-04): provisions a VNet, subnet separation, NSGs, Private Endpoints, and Private DNS Zones for Azure OpenAI/AI Search/Cosmos DB/Key Vault, and disables each one\'s public endpoint. false (the default, matching dev\'s conservative-cost posture) leaves every resource exactly as PBI-03-02 shipped it — publicly reachable, RBAC-gated only. NOTE: if aiSearchSkuName is "free", this MUST stay false — Azure AI Search\'s Free tier does not support Private Link.')
 param enablePrivateNetworking bool = false
 
@@ -204,6 +216,13 @@ var aiSearchName = take('srch-${namePrefix}-${uniqueSuffix}', 60)
 var azureOpenAiName = take('aoai-${namePrefix}-${uniqueSuffix}', 64)
 var appInsightsSecretName = 'appinsights-connection-string'
 var vnetName = 'vnet-${namePrefix}'
+
+// PBI-06-01: Claims Tool Layer / Durable Functions Function App + its Storage Account. Both
+// globally-unique-name resources, so uniqueSuffix is included — same convention already used
+// for keyVaultName/cosmosAccountName/aiSearchName/azureOpenAiName above.
+var storageAccountName = take('st${replace(projectName, '-', '')}${environmentName}${uniqueSuffix}', 24)
+var functionAppName = take('func-${namePrefix}-${uniqueSuffix}', 60)
+var functionAppServicePlanName = 'plan-${namePrefix}-func'
 
 // Fixed Azure "privatelink.*" DNS suffixes (PBI-03-04) — global platform constants Azure
 // itself defines for each service, never environment-specific data. Same category as the
@@ -434,6 +453,35 @@ module appInsightsSecret 'modules/key-vault-secret.bicep' = {
   }
 }
 
+// PBI-06-01 (Architecture Review Finding A-03): Claims Tool Layer + Durable Functions Workflow
+// Engine. Additive only — reuses the existing managedIdentity, appInsights, and Key Vault; does
+// not modify Container Apps, Cosmos, AI Search, Azure OpenAI, or networking.
+module functionAppStorage 'modules/storage-account.bicep' = {
+  name: 'function-app-storage-deployment'
+  params: {
+    location: location
+    name: storageAccountName
+    tags: tags
+    functionAppPrincipalId: managedIdentity.outputs.principalId
+    enablePublicNetworkAccess: !enablePrivateNetworking
+  }
+}
+
+module claimsToolsFunctionApp 'modules/function-app.bicep' = {
+  name: 'claims-tools-function-app-deployment'
+  params: {
+    location: location
+    name: functionAppName
+    appServicePlanName: functionAppServicePlanName
+    tags: tags
+    storageAccountName: functionAppStorage.outputs.name
+    userAssignedIdentityId: managedIdentity.outputs.id
+    userAssignedIdentityClientId: managedIdentity.outputs.clientId
+    appInsightsConnectionStringSecretUri: appInsightsSecret.outputs.secretUri
+    appServicePlanSkuName: functionAppPlanSkuName
+  }
+}
+
 module containerAppsEnvironment 'modules/container-apps-environment.bicep' = {
   name: 'container-apps-environment-deployment'
   params: {
@@ -516,6 +564,14 @@ module apiContainerApp 'modules/container-app.bicep' = {
       { name: 'COSMOS_DB_ENDPOINT', value: cosmosDb.outputs.documentEndpoint }
       { name: 'COSMOS_DB_DATABASE', value: cosmosDb.outputs.databaseName }
       { name: 'COSMOS_DB_CONTAINER', value: cosmosDb.outputs.containerName }
+      // PBI-06-01: Claims Tool Layer / Durable Functions Workflow Engine provider selection.
+      // The Function App is always provisioned above regardless of these values — inprocess
+      // (the default for both) preserves pre-PBI-06-01 behavior exactly; flipping either to
+      // azure_functions/durable is a config-only change, no redeploy of application code.
+      { name: 'TOOL_PROVIDER', value: toolProvider }
+      { name: 'AZURE_FUNCTIONS_BASE_URL', value: 'https://${claimsToolsFunctionApp.outputs.defaultHostName}' }
+      { name: 'CLAIMS_WORKFLOW_PROVIDER', value: claimsWorkflowProvider }
+      { name: 'DURABLE_FUNCTIONS_BASE_URL', value: 'https://${claimsToolsFunctionApp.outputs.defaultHostName}' }
     ]
     secrets: [
       { name: appInsightsSecretName, keyVaultUrl: appInsightsSecret.outputs.secretUri }
@@ -609,6 +665,13 @@ output azureOpenAiName string = azureOpenAi.outputs.name
 output azureOpenAiEndpoint string = azureOpenAi.outputs.endpoint
 output azureOpenAiDeploymentName string = azureOpenAi.outputs.deploymentName
 output azureOpenAiId string = azureOpenAi.outputs.id
+
+output functionAppStorageAccountName string = functionAppStorage.outputs.name
+output functionAppStorageAccountId string = functionAppStorage.outputs.id
+
+output claimsToolsFunctionAppName string = claimsToolsFunctionApp.outputs.name
+output claimsToolsFunctionAppId string = claimsToolsFunctionApp.outputs.id
+output claimsToolsFunctionAppUrl string = 'https://${claimsToolsFunctionApp.outputs.defaultHostName}'
 
 output privateNetworkingEnabled bool = enablePrivateNetworking
 output vnetId string = virtualNetwork.?outputs.?id ?? ''

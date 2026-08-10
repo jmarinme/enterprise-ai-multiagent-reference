@@ -1,0 +1,10 @@
+# Azure Functions Claims Tool Layer + Durable Functions Claims Workflow (PBI-06-01).
+#
+# src.tools.*/src.services.tools.* (vendored into this package at build time — see build.ps1,
+# mirroring apps/api/Dockerfile's own repo-root src/ COPY convention) only need pydantic; no
+# FastAPI, no Azure SDKs, no LLM packages — this Function App has no LLM and no conversational
+# logic (CLAUDE.md §4.2 "Functions are responsible ONLY for deterministic business actions").
+azure-functions>=1.20,<2
+azure-functions-durable>=1.2,<2
+pydantic>=2.7,<3
+pydantic-settings>=2.3,<3

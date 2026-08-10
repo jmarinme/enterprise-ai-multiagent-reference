@@ -34,13 +34,15 @@ from src.agents.claims.state import (
 from src.agents.shared.conversational_policy import opening_acknowledgment
 from src.agents.shared.language import Language
 from src.agents.shared.messages import t
-from src.tools.executor import ToolExecutor
+from src.core.tool_provider.protocol import ToolProvider
+from src.core.workflow_provider.models import ClaimsWorkflowInput
+from src.core.workflow_provider.protocol import ClaimsWorkflowProvider
 from src.tools.models import ToolRequest
 
 _ToolContext = dict[str, str | None]
 _HandlerResult = tuple[ClaimsIntakeState, list[str], bool]
 _Handler = Callable[
-    [ClaimsIntakeState, ToolExecutor, _ToolContext, Language], Awaitable[_HandlerResult]
+    [ClaimsIntakeState, ToolProvider, _ToolContext, Language], Awaitable[_HandlerResult]
 ]
 
 _MESSAGES: dict[str, dict[Language, str]] = {
@@ -216,15 +218,24 @@ _COMBINED_PROMPTS: dict[str, dict[Language, str]] = {
 async def advance_claims_intake(
     state: ClaimsIntakeState,
     message: str,
-    tool_executor: ToolExecutor,
+    tool_provider: ToolProvider,
     language: Language,
     correlation_id: str | None = None,
     conversation_id: str | None = None,
     user_id: str | None = None,
+    workflow_provider: ClaimsWorkflowProvider | None = None,
 ) -> tuple[ClaimsIntakeState, list[str]]:
     """Extract any recognizable fields from message, then drive the state machine forward
     until it needs more information from the user. Returns the updated state and the ordered
-    list of user-facing notices produced this turn."""
+    list of user-facing notices produced this turn.
+
+    workflow_provider (PBI-06-01, default None): when supplied, READY_TO_REGISTER is handled by
+    _handle_ready_to_register_workflow instead of the default in-process
+    _handle_ready_to_register/_handle_registered pair — the caller's ClaimsWorkflowProvider
+    (in-process or Durable Functions) then owns claim registration + adjuster assignment as one
+    transaction, started only after the user has confirmed. Conversational state (this function,
+    ClaimsIntakeState) never moves into the workflow — only the already-collected, already-
+    confirmed fields do (see src.core.workflow_provider.models.ClaimsWorkflowInput)."""
     if state.status == ClaimsIntakeStatus.SELECTING_POLICY:
         selection = resolve_selection(message, state.candidates)
         if selection is not None:
@@ -245,10 +256,18 @@ async def advance_claims_intake(
     notices: list[str] = []
 
     while True:
-        handler = _HANDLERS[current_state.status]
-        current_state, new_notices, should_continue = await handler(
-            current_state, tool_executor, tool_context, language
-        )
+        if (
+            workflow_provider is not None
+            and current_state.status == ClaimsIntakeStatus.READY_TO_REGISTER
+        ):
+            current_state, new_notices, should_continue = await _handle_ready_to_register_workflow(
+                current_state, workflow_provider, tool_context, language
+            )
+        else:
+            handler = _HANDLERS[current_state.status]
+            current_state, new_notices, should_continue = await handler(
+                current_state, tool_provider, tool_context, language
+            )
         notices.extend(new_notices)
         if not should_continue:
             break
@@ -257,13 +276,13 @@ async def advance_claims_intake(
 
 
 async def _handle_new(
-    state: ClaimsIntakeState, _tool_executor: ToolExecutor, _ctx: _ToolContext, _language: Language
+    state: ClaimsIntakeState, _tool_provider: ToolProvider, _ctx: _ToolContext, _language: Language
 ) -> _HandlerResult:
     return state.model_copy(update={"status": ClaimsIntakeStatus.COLLECTING_INFORMATION}), [], True
 
 
 async def _handle_collecting_information(
-    state: ClaimsIntakeState, tool_executor: ToolExecutor, ctx: _ToolContext, language: Language
+    state: ClaimsIntakeState, tool_provider: ToolProvider, ctx: _ToolContext, language: Language
 ) -> _HandlerResult:
     # Customer discovery is a priority step, not just another required field: the caller's
     # name is asked for first, and looked up immediately once given — before any incident
@@ -296,7 +315,7 @@ async def _handle_collecting_information(
     # Customer-discovery paths already set this from the selected PolicyCandidate; only a
     # direct policy number needs this extra (cheap, synthetic, in-memory) lookup.
     if state.line_of_business is None:
-        policy_result = await tool_executor.execute(
+        policy_result = await tool_provider.execute(
             ToolRequest(
                 tool_name="policy_lookup", tool_input={"policy_number": state.policy_number}, **ctx
             )
@@ -336,9 +355,9 @@ def _prompt_for_group(group: list[str], language: Language) -> str:
 
 
 async def _handle_looking_up_customer(
-    state: ClaimsIntakeState, tool_executor: ToolExecutor, ctx: _ToolContext, language: Language
+    state: ClaimsIntakeState, tool_provider: ToolProvider, ctx: _ToolContext, language: Language
 ) -> _HandlerResult:
-    result = await tool_executor.execute(
+    result = await tool_provider.execute(
         ToolRequest(
             tool_name="customer_lookup", tool_input={"full_name": state.customer_name}, **ctx
         )
@@ -413,7 +432,7 @@ def _format_candidates(candidates: list[PolicyCandidate]) -> str:
 
 
 async def _handle_selecting_policy(
-    state: ClaimsIntakeState, _tool_executor: ToolExecutor, _ctx: _ToolContext, language: Language
+    state: ClaimsIntakeState, _tool_provider: ToolProvider, _ctx: _ToolContext, language: Language
 ) -> _HandlerResult:
     # Reached only if extract_fields/advance_claims_intake's own selection resolution (at the
     # top of advance_claims_intake) did not already resolve a candidate this turn.
@@ -427,9 +446,9 @@ async def _handle_selecting_policy(
 
 
 async def _handle_validating_policy(
-    state: ClaimsIntakeState, tool_executor: ToolExecutor, ctx: _ToolContext, language: Language
+    state: ClaimsIntakeState, tool_provider: ToolProvider, ctx: _ToolContext, language: Language
 ) -> _HandlerResult:
-    policy_result = await tool_executor.execute(
+    policy_result = await tool_provider.execute(
         ToolRequest(
             tool_name="policy_lookup", tool_input={"policy_number": state.policy_number}, **ctx
         )
@@ -440,7 +459,7 @@ async def _handle_validating_policy(
 
     policy_active = policy_result.data.status == "active"
 
-    payment_result = await tool_executor.execute(
+    payment_result = await tool_provider.execute(
         ToolRequest(
             tool_name="payment_status", tool_input={"policy_number": state.policy_number}, **ctx
         )
@@ -451,7 +470,7 @@ async def _handle_validating_policy(
         else None
     )
 
-    coverage_result = await tool_executor.execute(
+    coverage_result = await tool_provider.execute(
         ToolRequest(
             tool_name="coverage_lookup", tool_input={"policy_number": state.policy_number}, **ctx
         )
@@ -516,7 +535,7 @@ def _confirmation_lob_detail(state: ClaimsIntakeState, language: Language) -> st
 
 
 async def _handle_confirming(
-    state: ClaimsIntakeState, _tool_executor: ToolExecutor, _ctx: _ToolContext, language: Language
+    state: ClaimsIntakeState, _tool_provider: ToolProvider, _ctx: _ToolContext, language: Language
 ) -> _HandlerResult:
     if state.confirmed is None:
         notice = t(
@@ -564,10 +583,14 @@ async def _handle_confirming(
 
 
 async def _handle_ready_to_register(
-    state: ClaimsIntakeState, tool_executor: ToolExecutor, ctx: _ToolContext, language: Language
+    state: ClaimsIntakeState, tool_provider: ToolProvider, ctx: _ToolContext, language: Language
 ) -> _HandlerResult:
+    """Default (CLAIMS_WORKFLOW_PROVIDER=inprocess) path: registers the claim as a plain
+    in-process Tool call. See _handle_ready_to_register_workflow for the WorkflowProvider path,
+    used instead of this handler (and _handle_registered) when a workflow_provider is supplied
+    to advance_claims_intake."""
     contact_name = state.customer_name or state.holder_name or t(_MESSAGES, "customer_default_name", language)
-    result = await tool_executor.execute(
+    result = await tool_provider.execute(
         ToolRequest(
             tool_name="claim_registration",
             tool_input={
@@ -601,9 +624,9 @@ async def _handle_ready_to_register(
 
 
 async def _handle_registered(
-    state: ClaimsIntakeState, tool_executor: ToolExecutor, ctx: _ToolContext, language: Language
+    state: ClaimsIntakeState, tool_provider: ToolProvider, ctx: _ToolContext, language: Language
 ) -> _HandlerResult:
-    result = await tool_executor.execute(
+    result = await tool_provider.execute(
         ToolRequest(
             tool_name="adjuster_assignment", tool_input={"claim_reference": state.claim_reference}, **ctx
         )
@@ -629,7 +652,7 @@ async def _handle_registered(
 
 
 async def _handle_adjuster_assigned(
-    state: ClaimsIntakeState, _tool_executor: ToolExecutor, _ctx: _ToolContext, language: Language
+    state: ClaimsIntakeState, _tool_provider: ToolProvider, _ctx: _ToolContext, language: Language
 ) -> _HandlerResult:
     notice = t(
         _MESSAGES,
@@ -639,6 +662,68 @@ async def _handle_adjuster_assigned(
         adjuster_name=state.adjuster_assigned,
     )
     return state, [notice], False
+
+
+async def _handle_ready_to_register_workflow(
+    state: ClaimsIntakeState,
+    workflow_provider: ClaimsWorkflowProvider,
+    ctx: _ToolContext,
+    language: Language,
+) -> _HandlerResult:
+    """CLAIMS_WORKFLOW_PROVIDER=durable (or any other ClaimsWorkflowProvider) path: registers
+    the claim and assigns an adjuster as a single ClaimsWorkflowProvider.run() call, replacing
+    what _handle_ready_to_register + _handle_registered do across two dict-dispatched statuses
+    in the default in-process path. Produces the exact same notice text/ordering
+    (registration_success, then adjuster_assigned or adjuster_pending) so the two
+    CLAIMS_WORKFLOW_PROVIDER modes are conversationally indistinguishable to the caller."""
+    contact_name = state.customer_name or state.holder_name or t(_MESSAGES, "customer_default_name", language)
+    result = await workflow_provider.run(
+        ClaimsWorkflowInput(
+            correlation_id=ctx["correlation_id"],
+            conversation_id=ctx["conversation_id"],
+            user_id=ctx["user_id"],
+            policy_number=state.policy_number or "",
+            event_date=state.event_date,
+            event_time=state.event_time,
+            event_location=state.event_location,
+            loss_type=state.loss_type,
+            loss_description=state.loss_description,
+            contact_name=contact_name,
+            contact_phone=state.contact_phone,
+            contact_email=state.contact_email,
+            injuries_reported=bool(state.injuries_reported),
+            third_parties_involved=bool(state.third_parties_involved),
+        )
+    )
+    if not result.success or result.claim_reference is None:
+        notice = t(_MESSAGES, "registration_failed", language)
+        return state, [notice], False
+
+    notices = [t(_MESSAGES, "registration_success", language, claim_reference=result.claim_reference)]
+    if result.adjuster_name:
+        new_state = state.model_copy(
+            update={
+                "claim_reference": result.claim_reference,
+                "adjuster_assigned": result.adjuster_name,
+                "status": ClaimsIntakeStatus.ADJUSTER_ASSIGNED,
+            }
+        )
+        notices.append(
+            t(
+                _MESSAGES,
+                "adjuster_assigned",
+                language,
+                adjuster_name=result.adjuster_name,
+                claim_reference=result.claim_reference,
+            )
+        )
+        return new_state, notices, False
+
+    new_state = state.model_copy(
+        update={"claim_reference": result.claim_reference, "status": ClaimsIntakeStatus.REGISTERED}
+    )
+    notices.append(t(_MESSAGES, "adjuster_pending", language, claim_reference=result.claim_reference))
+    return new_state, notices, False
 
 
 _HANDLERS: dict[ClaimsIntakeStatus, _Handler] = {

@@ -65,3 +65,17 @@ param webCpuCores = '0.25'
 param webMemory = '0.5Gi'
 param webMinReplicas = 1
 param webMaxReplicas = 1
+
+// PBI-06-01: Claims Tool Layer / Durable Functions Function App. P0v4 (Premium v4), not Y1
+// (Consumption) or B1 (Basic): real deployment attempts on 2026-08-09/10 reported
+// SubscriptionIsOverQuotaForSku (0 quota, "Total Regional VMs" limit 0) for BOTH Y1 and B1 —
+// this subscription has 0 quota across every classic App Service compute family (Free, Shared,
+// Basic, Standard, PremiumV2/V3, Isolated v2, Elastic Premium) in every region checked. A live
+// requery of Microsoft.Web/locations/{region}/usages (PBI-06-01A) found nonzero quota (30) for
+// the newer Premium v4 family (P0v4-P3v4) in eastus2/eastus specifically. P0v4 is a DEV-ONLY
+// workaround approved for PBI-06-01A, not the production hosting recommendation — see
+// docs/Architecture/adr/0003-azure-functions-tool-and-workflow-layer.md and
+// docs/sprint_06/decisions.md.
+param functionAppPlanSkuName = 'P0v4'
+param toolProvider = 'inprocess'
+param claimsWorkflowProvider = 'inprocess'

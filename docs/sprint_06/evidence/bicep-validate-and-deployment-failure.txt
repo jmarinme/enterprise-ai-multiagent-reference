@@ -1,0 +1,50 @@
+$ az deployment group validate --resource-group rg-tmx-agent-platform-dev \
+    --template-file ops/bicep/main.bicep --parameters ops/bicep/parameters/dev.bicepparam
+...
+"provisioningState": "Succeeded",
+...
+"validatedResources": [
+  ...
+  { "id": ".../Microsoft.Resources/deployments/claims-tools-function-app-deployment" },
+  { "id": ".../Microsoft.Resources/deployments/function-app-storage-deployment" },
+  ...
+]
+
+$ az deployment group create --resource-group rg-tmx-agent-platform-dev \
+    --name pbi-06-01-serverless-20260809190414 \
+    --template-file ops/bicep/main.bicep --parameters ops/bicep/parameters/dev.bicepparam
+    (functionAppPlanSkuName=Y1)
+ERROR: {"status":"Failed","error":{"code":"DeploymentFailed", ...
+  "message":"At least one resource deployment operation failed. ...",
+  "details":[{"code":"InvalidTemplateDeployment",
+    "message":"The template deployment 'claims-tools-function-app-deployment' is not valid ...
+    'Microsoft.Web/serverFarms (2023-01-01)' reported preflight validation errors. ...",
+    "details":[{"code":"ValidationForResourceFailed", ...
+      "details":[{"code":"SubscriptionIsOverQuotaForSku",
+        "message":"Operation cannot be completed without additional quota. \r\n
+          Additional details - Location:  \r\n
+          Current Limit (Total VMs): 0 \r\n
+          Current Usage: 0\r\n
+          Amount required for this deployment (Total VMs): 1 \r\n
+          (Minimum) New Limit that you should request to enable this deployment: 1."
+      }]
+    }]
+  }]
+}}
+
+$ az deployment group create --resource-group rg-tmx-agent-platform-dev \
+    --name pbi-06-01-serverless-b1-20260809190734 \
+    --template-file ops/bicep/main.bicep --parameters ops/bicep/parameters/dev.bicepparam
+    (functionAppPlanSkuName=B1)
+ERROR: (identical SubscriptionIsOverQuotaForSku / Current Limit (Total VMs): 0)
+
+$ curl -H "Authorization: Bearer $TOKEN" \
+  "https://management.azure.com/subscriptions/{id}/providers/Microsoft.Web/locations/eastus2/usages?api-version=2023-01-01"
+  -> 0 entries
+$ ... locations/eastus/usages ...   -> 0 entries
+$ ... locations/westus2/usages ...  -> 0 entries
+$ ... locations/centralus/usages ... -> 0 entries
+
+Conclusion: subscription-wide 0 Microsoft.Web App Service quota, not region- or SKU-specific.
+Requires an Azure Support quota-increase request (subscription owner action) before actual
+deployment can succeed. See docs/sprint_06/decisions.md (D-04).
