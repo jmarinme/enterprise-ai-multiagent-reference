@@ -270,7 +270,7 @@ async def test_api_key_auth_uses_secret_provider_not_environment(mock_client_cls
 
     class _StubSecretProvider:
         async def get_secret(self, secret_name: str) -> str:
-            assert secret_name == "azure-ai-search-api-key"
+            assert secret_name == "azure-ai-search-api-key"  # pragma: allowlist secret -- Key Vault secret NAME, not a value
             return "mock-secret-value-not-a-real-key"
 
     mock_client_cls.return_value.search = AsyncMock(return_value=_async_iter([]))
@@ -278,7 +278,7 @@ async def test_api_key_auth_uses_secret_provider_not_environment(mock_client_cls
         endpoint="https://example.search.windows.net",
         index_name="knowledge-index",
         secret_provider=_StubSecretProvider(),
-        api_key_secret_name="azure-ai-search-api-key",
+        api_key_secret_name="azure-ai-search-api-key",  # pragma: allowlist secret -- Key Vault secret NAME, not a value
     )
 
     await provider.retrieve(KnowledgeQuery(text="claim procedure"))

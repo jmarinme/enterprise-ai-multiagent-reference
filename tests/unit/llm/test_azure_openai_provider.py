@@ -205,7 +205,7 @@ async def test_api_key_auth_uses_secret_provider_not_environment(
 
     class _StubSecretProvider:
         async def get_secret(self, secret_name: str) -> str:
-            assert secret_name == "azure-openai-api-key"
+            assert secret_name == "azure-openai-api-key"  # pragma: allowlist secret -- Key Vault secret NAME, not a value
             return "mock-secret-value-not-a-real-key"
 
     mock_client_cls.return_value.chat.completions.create = AsyncMock(
@@ -216,7 +216,7 @@ async def test_api_key_auth_uses_secret_provider_not_environment(
         deployment="gpt-4o-mini",
         api_version="2024-10-21",
         secret_provider=_StubSecretProvider(),
-        api_key_secret_name="azure-openai-api-key",
+        api_key_secret_name="azure-openai-api-key",  # pragma: allowlist secret -- Key Vault secret NAME, not a value
     )
 
     await provider.generate(
