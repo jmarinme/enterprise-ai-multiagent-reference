@@ -1,0 +1,8 @@
+$ python -c "... import function_app as fa; asyncio.run(main()) ..."
+status 200
+body {"tool_name":"policy_lookup","success":true,"data":{"policy_number":"SYN-POL-0001","status":"active","holder_name":"Synthetic Claimant One","line_of_business":"auto","vehicle_description":null,"property_description":null},"error":null,"correlation_id":"corr-smoke-1"}
+
+$ python -c "... chained policy -> claim_registration -> adjuster_assignment activities ..."
+policy: {'tool_name': 'policy_lookup', 'success': True, 'data': {'policy_number': 'SYN-POL-0001', 'status': 'active', 'holder_name': 'Synthetic Claimant One', 'line_of_business': 'auto', 'vehicle_description': None, 'property_description': None}, 'error': None, 'correlation_id': 'corr-2'}
+registration: {'tool_name': 'claim_registration', 'success': True, 'data': {'claim_reference': 'SYN-CLM-2026-0001', 'registered_at': '2026-08-10T00:57:42.525699+00:00'}, 'error': None, 'correlation_id': 'corr-2'}
+adjuster: {'tool_name': 'adjuster_assignment', 'success': True, 'data': {'adjuster_id': 'ADJ-SYN-02', 'adjuster_name': 'Synthetic Adjuster Chen', 'region': 'south'}, 'error': None, 'correlation_id': 'corr-2'}

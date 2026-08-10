@@ -46,6 +46,16 @@ CLAIMS_ALLOWED_TOOLS) through the controlled orchestration loop, with the outcom
 typed AgentResponse.tool_calls. It never feeds into ClaimsIntakeState or the deterministic
 business-fact text, and a configuration failure degrades gracefully exactly like a Knowledge/
 Prompt/LLM failure — it never blocks the turn.
+
+ToolProvider / ClaimsWorkflowProvider (PBI-06-01): this Agent never knows where a Tool executes
+or where the post-confirmation claims transaction runs. tool_provider replaces the concrete
+ToolExecutor this Agent previously depended on directly — structurally identical, selected by
+TOOL_PROVIDER (in-process Python, unchanged behavior, or an Azure Function call). workflow_
+provider, when configured (CLAIMS_WORKFLOW_PROVIDER=durable), takes over claim registration +
+adjuster assignment as a Durable Functions orchestration once the caller confirms; left None
+(the default), advance_claims_intake behaves exactly as it did before this PBI. See
+src.core.tool_provider / src.core.workflow_provider and
+docs/Architecture/adr/0003-azure-functions-tool-and-workflow-layer.md.
 """
 
 from __future__ import annotations
@@ -63,6 +73,8 @@ from src.core.tool_calling.models import (
 )
 from src.core.tool_calling.orchestrator import ToolCallingOrchestrator
 from src.core.tool_calling.policies import CLAIMS_ALLOWED_TOOLS
+from src.core.tool_provider.protocol import ToolProvider
+from src.core.workflow_provider.protocol import ClaimsWorkflowProvider
 from src.llm.models import LLMMessage, LLMMessageRole
 from src.llm.provider import LLMProvider
 from src.prompts.exceptions import PromptError
@@ -73,7 +85,6 @@ from src.rag.grounder import Grounder
 from src.rag.models import KnowledgeChunk, KnowledgeQuery
 from src.rag.retriever import KnowledgeRetriever
 from src.supervisor.models import AgentRequest, AgentResponse, ConversationContext, IntentCategory
-from src.tools.executor import ToolExecutor
 
 _STATE_METADATA_KEY = "claimsIntakeState"
 _SAFE_FALLBACK_MESSAGE = {
@@ -98,14 +109,21 @@ class ClaimsAgent:
 
     def __init__(
         self,
-        tool_executor: ToolExecutor,
+        tool_executor: ToolProvider,
         prompt_manager: PromptManager,
         llm_provider: LLMProvider,
         knowledge_retriever: KnowledgeRetriever,
         grounder: Grounder,
         tool_calling_orchestrator: ToolCallingOrchestrator,
         tool_calling_max_iterations: int = DEFAULT_MAX_TOOL_CALL_ITERATIONS,
+        workflow_provider: ClaimsWorkflowProvider | None = None,
     ) -> None:
+        # Parameter kept as `tool_executor` (PBI-06-01): a concrete ToolExecutor already
+        # structurally satisfies ToolProvider (Protocols are structural), and every existing
+        # caller/test constructs this Agent with the `tool_executor=` keyword — renaming it
+        # would be an unrelated, purely cosmetic breaking change (CLAUDE.md §7 "smallest
+        # viable change"). The type annotation is what actually changed: this Agent now
+        # depends on the ToolProvider abstraction, never a concrete ToolExecutor.
         self._tool_executor = tool_executor
         self._prompt_manager = prompt_manager
         self._llm_provider = llm_provider
@@ -113,6 +131,10 @@ class ClaimsAgent:
         self._grounder = grounder
         self._tool_calling_orchestrator = tool_calling_orchestrator
         self._tool_calling_max_iterations = tool_calling_max_iterations
+        # None (default, CLAIMS_WORKFLOW_PROVIDER=inprocess): advance_claims_intake behaves
+        # exactly as it did before PBI-06-01. Set (CLAIMS_WORKFLOW_PROVIDER=durable): claim
+        # registration + adjuster assignment run as a Durable Functions orchestration instead.
+        self._workflow_provider = workflow_provider
 
     async def handle(self, request: AgentRequest, context: ConversationContext) -> AgentResponse:
         state = load_agent_state(context.metadata, _STATE_METADATA_KEY, ClaimsIntakeState)
@@ -126,11 +148,12 @@ class ClaimsAgent:
             state, notices = await advance_claims_intake(
                 state=state,
                 message=request.message,
-                tool_executor=self._tool_executor,
+                tool_provider=self._tool_executor,
                 language=language,
                 correlation_id=request.correlation_id,
                 conversation_id=context.conversation_id,
                 user_id=request.user_id,
+                workflow_provider=self._workflow_provider,
             )
         except Exception:  # noqa: BLE001
             # Intentional broad catch: this is the boundary between the claims-intake state

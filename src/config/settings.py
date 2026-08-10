@@ -86,6 +86,45 @@ class ToolCallingSettings(BaseSettings):
     tool_calling_max_iterations: int = 3
 
 
+class ToolProviderSettings(BaseSettings):
+    """Selects and configures the ToolProvider implementation (src.core.tool_provider,
+    PBI-06-01 — resolves Architecture Review Finding A-03).
+
+    Defaults to the in-process provider so local development and unit tests never require
+    Azure Functions connectivity. azure_functions_use_key opts into Azure Functions key auth,
+    in which case the key is read via SecretProvider (see apps/api/src/api/dependencies.py),
+    never directly from the environment inside the provider itself.
+    """
+
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    tool_provider: Literal["inprocess", "azure_functions"] = "inprocess"
+    azure_functions_base_url: str | None = None
+    azure_functions_use_key: bool = False
+    azure_functions_key_secret_name: str = "azure-functions-tools-key"
+    azure_functions_timeout_seconds: float = 15.0
+
+
+class ClaimsWorkflowSettings(BaseSettings):
+    """Selects and configures the ClaimsWorkflowProvider implementation
+    (src.core.workflow_provider, PBI-06-01 — resolves Architecture Review Finding A-03).
+
+    Defaults to the in-process provider so local development and unit tests never require
+    Durable Functions connectivity. durable_functions_use_key opts into Azure Functions key
+    auth for the Durable starter/status endpoints, read via SecretProvider, same pattern as
+    ToolProviderSettings.azure_functions_use_key.
+    """
+
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    claims_workflow_provider: Literal["inprocess", "durable"] = "inprocess"
+    durable_functions_base_url: str | None = None
+    durable_functions_use_key: bool = False
+    durable_functions_key_secret_name: str = "azure-functions-durable-key"
+    durable_functions_poll_interval_seconds: float = 1.0
+    durable_functions_timeout_seconds: float = 60.0
+
+
 class KnowledgeSettings(BaseSettings):
     """Selects and configures the KnowledgeProvider implementation.
 

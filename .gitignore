@@ -39,6 +39,13 @@ ops/bicep/**/*.json
 bin/
 obj/
 
+# Azure Functions build output (PBI-06-01): build.ps1 vendors repo-root src/ into each
+# ops/functions/<app>/ directory so the deployment package can `import src.*` — never commit
+# the vendored copy, it would duplicate the one real src/ tree (CLAUDE.md §6).
+ops/functions/*/src/
+ops/functions/*/*.zip
+ops/functions/*/local.settings.json
+
 # Test and runtime output
 reports/*
 !reports/.gitkeep

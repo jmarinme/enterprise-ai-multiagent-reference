@@ -18,6 +18,12 @@ from src.agents.claims_agent import ClaimsAgent
 from src.agents.commercial_intake_agent import CommercialIntakeAgent
 from src.agents.fallback_agent import FallbackAgent
 from src.core.tool_calling.orchestrator import ToolCallingOrchestrator
+from src.core.tool_provider.factory import get_tool_provider as build_tool_provider
+from src.core.tool_provider.protocol import ToolProvider
+from src.core.workflow_provider.factory import (
+    get_claims_workflow_provider as build_claims_workflow_provider,
+)
+from src.core.workflow_provider.protocol import ClaimsWorkflowProvider
 from src.domain.conversation_repository import ConversationRepository
 from src.domain.secret_provider import SecretProvider
 from src.llm.factory import get_llm_provider as build_llm_provider
@@ -51,11 +57,13 @@ from src.tools.executor import ToolExecutor
 from src.tools.registry import InMemoryToolRegistry, ToolRegistry
 
 from src.config.settings import (
+    ClaimsWorkflowSettings,
     ConversationStoreSettings,
     KnowledgeSettings,
     LLMSettings,
     SecretProviderSettings,
     ToolCallingSettings,
+    ToolProviderSettings,
 )
 
 # Relative to the process's working directory (repo root locally, /app in the Docker image —
@@ -96,6 +104,47 @@ def get_tool_executor() -> ToolExecutor:
     """Build and cache the process-wide ToolExecutor. Agents depend on ToolExecutor alone —
     never on ToolRegistry directly."""
     return ToolExecutor(tool_registry=get_tool_registry())
+
+
+@lru_cache
+def get_tool_provider() -> ToolProvider:
+    """Build and cache the process-wide ToolProvider (PBI-06-01, resolves Architecture Review
+    Finding A-03).
+
+    In-process by default (TOOL_PROVIDER=inprocess) — wraps the exact same cached ToolExecutor/
+    ToolRegistry every other framework dependency already uses, so behavior is unchanged unless
+    TOOL_PROVIDER=azure_functions is explicitly configured. This is the only place any concrete
+    ToolProvider backend is chosen — Agents depend on the ToolProvider abstraction alone.
+    """
+    tool_provider_settings = ToolProviderSettings()
+    secret_provider: SecretProvider | None = None
+    if tool_provider_settings.azure_functions_use_key:
+        secret_provider = build_secret_provider(SecretProviderSettings())
+    return build_tool_provider(
+        tool_provider_settings, tool_executor=get_tool_executor(), secret_provider=secret_provider
+    )
+
+
+@lru_cache
+def get_claims_workflow_provider() -> ClaimsWorkflowProvider:
+    """Build and cache the process-wide ClaimsWorkflowProvider (PBI-06-01, resolves
+    Architecture Review Finding A-03).
+
+    In-process by default (CLAIMS_WORKFLOW_PROVIDER=inprocess) — reuses the same cached
+    ToolProvider get_tool_provider() builds, so behavior is unchanged unless
+    CLAIMS_WORKFLOW_PROVIDER=durable is explicitly configured. Only ClaimsAgent depends on
+    this today (PBI-06-01 scope: Claims is the first fully migrated vertical slice; Broker and
+    Commercial remain on their existing in-process implementation).
+    """
+    claims_workflow_settings = ClaimsWorkflowSettings()
+    secret_provider: SecretProvider | None = None
+    if claims_workflow_settings.durable_functions_use_key:
+        secret_provider = build_secret_provider(SecretProviderSettings())
+    return build_claims_workflow_provider(
+        claims_workflow_settings,
+        tool_provider=get_tool_provider(),
+        secret_provider=secret_provider,
+    )
 
 
 @lru_cache
@@ -205,13 +254,19 @@ def get_supervisor() -> SupervisorOrchestrator:
     registry.register(
         IntentCategory.CLAIMS,
         ClaimsAgent(
-            tool_executor=tool_executor,
+            # PBI-06-01: Claims is the first fully migrated vertical slice — it depends on the
+            # ToolProvider/ClaimsWorkflowProvider abstractions, not the concrete ToolExecutor
+            # Broker/Commercial (below) still use directly. Both default to their in-process
+            # backends, so behavior is unchanged unless TOOL_PROVIDER/CLAIMS_WORKFLOW_PROVIDER
+            # are explicitly set.
+            tool_executor=get_tool_provider(),
             prompt_manager=prompt_manager,
             llm_provider=llm_provider,
             knowledge_retriever=knowledge_retriever,
             grounder=grounder,
             tool_calling_orchestrator=tool_calling_orchestrator,
             tool_calling_max_iterations=tool_calling_settings.tool_calling_max_iterations,
+            workflow_provider=get_claims_workflow_provider(),
         ),
     )
     registry.register(
