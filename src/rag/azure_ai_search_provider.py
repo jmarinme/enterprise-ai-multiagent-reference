@@ -36,6 +36,7 @@ from azure.core.exceptions import (
 )
 from azure.search.documents.aio import SearchClient
 
+from src.core.resilience import CircuitBreaker, CircuitBreakerOpenError, retry_with_backoff
 from src.domain.secret_provider import SecretProvider
 from src.rag.exceptions import (
     KnowledgeConfigurationError,
@@ -59,6 +60,19 @@ _SELECT_FIELDS: Sequence[str] = (
     "section",
     "source_path",
 )
+
+# Resilience (Architecture Review Finding A-07, CLAUDE.md principle #9): ServiceRequestError is
+# a genuine transport-level failure (DNS, connection refused, connection reset) — retryable.
+# ClientAuthenticationError (bad credential/config) and the generic HttpResponseError (covers
+# both retryable 5xx and non-retryable 4xx without a distinguishing exception type) are
+# deliberately NOT retried here, matching the same conservative approach
+# src.llm.azure_openai_provider takes for its own ambiguous status-error case.
+_RETRYABLE_EXCEPTIONS: tuple[type[Exception], ...] = (ServiceRequestError,)
+_RETRY_MAX_ATTEMPTS = 3
+_RETRY_BASE_DELAY_SECONDS = 0.5
+_RETRY_MAX_DELAY_SECONDS = 8.0
+_CIRCUIT_BREAKER_FAILURE_THRESHOLD = 5
+_CIRCUIT_BREAKER_RESET_TIMEOUT_SECONDS = 30.0
 
 
 class AzureAISearchProvider:
@@ -86,6 +100,11 @@ class AzureAISearchProvider:
         self._api_key_secret_name = api_key_secret_name
         self._client: SearchClient | None = None
         self._credential_close: object | None = None
+        self._circuit_breaker = CircuitBreaker(
+            _PROVIDER_NAME,
+            failure_threshold=_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+            reset_timeout_seconds=_CIRCUIT_BREAKER_RESET_TIMEOUT_SECONDS,
+        )
 
     async def _get_client(self) -> SearchClient:
         if self._client is not None:
@@ -122,14 +141,29 @@ class AzureAISearchProvider:
         client = await self._get_client()
         filter_expression = f"category eq '{query.category}'" if query.category else None
 
-        try:
+        async def _search_and_collect() -> list[KnowledgeChunk]:
             pages = await client.search(
                 search_text=query.text,
                 top=query.top_k,
                 filter=filter_expression,
                 select=list(_SELECT_FIELDS),
             )
-            chunks = [self._to_chunk(item) async for item in pages]
+            return [self._to_chunk(item) async for item in pages]
+
+        async def _resilient_search() -> list[KnowledgeChunk]:
+            return await retry_with_backoff(
+                _search_and_collect,
+                retryable_exceptions=_RETRYABLE_EXCEPTIONS,
+                max_attempts=_RETRY_MAX_ATTEMPTS,
+                base_delay_seconds=_RETRY_BASE_DELAY_SECONDS,
+                max_delay_seconds=_RETRY_MAX_DELAY_SECONDS,
+                operation_name=f"{_PROVIDER_NAME} search",
+            )
+
+        try:
+            chunks = await self._circuit_breaker.call(_resilient_search)
+        except CircuitBreakerOpenError as exc:
+            raise KnowledgeProviderError(_PROVIDER_NAME, str(exc)) from exc
         except ClientAuthenticationError as exc:
             raise KnowledgeProviderError(_PROVIDER_NAME, f"authentication failed: {exc}") from exc
         except ServiceRequestError as exc:

@@ -74,3 +74,7 @@ class MockLLMProvider:
     def _matching_tool_calls(self, request: LLMRequest) -> list[ToolCallRequest]:
         offered_names = {tool_definition.name for tool_definition in request.tools}
         return [call for call in self._tool_call_plan if call.tool_name in offered_names]
+
+    async def health_check(self) -> bool:
+        """No external dependency — always reachable."""
+        return True

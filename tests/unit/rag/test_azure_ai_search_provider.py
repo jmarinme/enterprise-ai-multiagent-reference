@@ -286,3 +286,86 @@ async def test_api_key_auth_uses_secret_provider_not_environment(mock_client_cls
     _, client_kwargs = mock_client_cls.call_args
     credential = client_kwargs["credential"]
     assert credential.key == "mock-secret-value-not-a-real-key"
+
+
+# ---------------------------------------------------------------------------------------------
+# Resilience (Architecture Review Finding A-07): retry-with-backoff and circuit breaker,
+# integrated into AzureAISearchProvider.retrieve(). Delays monkeypatched to near-zero.
+# ---------------------------------------------------------------------------------------------
+
+
+@patch("src.rag.azure_ai_search_provider.SearchClient")
+@patch("azure.identity.aio.DefaultAzureCredential")
+async def test_retrieve_retries_a_transient_service_request_error_then_succeeds(
+    mock_credential_cls: MagicMock,
+    mock_client_cls: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.rag.azure_ai_search_provider as module
+
+    monkeypatch.setattr(module, "_RETRY_BASE_DELAY_SECONDS", 0.001)
+    monkeypatch.setattr(module, "_RETRY_MAX_DELAY_SECONDS", 0.002)
+
+    mock_client = mock_client_cls.return_value
+    mock_client.search = AsyncMock(
+        side_effect=[
+            ServiceRequestError("connection reset"),
+            _async_iter([_fake_item()]),
+        ]
+    )
+    provider = _build_provider()
+
+    result = await provider.retrieve(KnowledgeQuery(text="claim procedure"))
+
+    assert len(result.chunks) == 1
+    assert mock_client.search.await_count == 2
+
+
+@patch("src.rag.azure_ai_search_provider.SearchClient")
+@patch("azure.identity.aio.DefaultAzureCredential")
+async def test_retrieve_does_not_retry_authentication_failures(
+    mock_credential_cls: MagicMock,
+    mock_client_cls: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.rag.azure_ai_search_provider as module
+
+    monkeypatch.setattr(module, "_RETRY_BASE_DELAY_SECONDS", 0.001)
+
+    mock_client = mock_client_cls.return_value
+    mock_client.search = AsyncMock(side_effect=ClientAuthenticationError("bad credential"))
+    provider = _build_provider()
+
+    with pytest.raises(KnowledgeProviderError):
+        await provider.retrieve(KnowledgeQuery(text="claim procedure"))
+
+    assert mock_client.search.await_count == 1
+
+
+@patch("src.rag.azure_ai_search_provider.SearchClient")
+@patch("azure.identity.aio.DefaultAzureCredential")
+async def test_retrieve_circuit_breaker_opens_and_fails_fast_after_repeated_failures(
+    mock_credential_cls: MagicMock,
+    mock_client_cls: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.rag.azure_ai_search_provider as module
+
+    monkeypatch.setattr(module, "_RETRY_MAX_ATTEMPTS", 1)
+    monkeypatch.setattr(module, "_CIRCUIT_BREAKER_FAILURE_THRESHOLD", 2)
+    monkeypatch.setattr(module, "_CIRCUIT_BREAKER_RESET_TIMEOUT_SECONDS", 999.0)
+
+    mock_client = mock_client_cls.return_value
+    mock_client.search = AsyncMock(side_effect=ServiceRequestError("down"))
+    provider = _build_provider()
+    query = KnowledgeQuery(text="claim procedure")
+
+    with pytest.raises(KnowledgeTimeoutError):
+        await provider.retrieve(query)
+    with pytest.raises(KnowledgeTimeoutError):
+        await provider.retrieve(query)
+    assert mock_client.search.await_count == 2
+
+    with pytest.raises(KnowledgeProviderError):
+        await provider.retrieve(query)
+    assert mock_client.search.await_count == 2

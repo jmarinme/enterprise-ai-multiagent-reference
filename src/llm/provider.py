@@ -16,3 +16,10 @@ class LLMProvider(Protocol):
     """Contract for generating a completion from a request."""
 
     async def generate(self, request: LLMRequest) -> LLMResponse: ...
+
+    async def health_check(self) -> bool:
+        """Cheap reachability check for a readiness probe (Architecture Review Finding A-08) —
+        never a real completion (no token cost). Never raises: any failure is caught and
+        reported as False, since a broken health check must not itself break readiness
+        reporting."""
+        ...

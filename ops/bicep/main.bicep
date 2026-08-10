@@ -156,6 +156,12 @@ resource cicdInfrastructureContributorRoleAssignment 'Microsoft.Authorization/ro
 @description('Production network hardening (PBI-03-04): provisions a VNet, subnet separation, NSGs, Private Endpoints, and Private DNS Zones for Azure OpenAI/AI Search/Cosmos DB/Key Vault, and disables each one\'s public endpoint. false (the default, matching dev\'s conservative-cost posture) leaves every resource exactly as PBI-03-02 shipped it — publicly reachable, RBAC-gated only. NOTE: if aiSearchSkuName is "free", this MUST stay false — Azure AI Search\'s Free tier does not support Private Link.')
 param enablePrivateNetworking bool = false
 
+@description('PBI-08-01 (Architecture Review Finding A-11): email address notified by the Azure Monitor alert rules (elevated error rate, high latency, availability). Empty string (the default) creates the alert rules and action group with zero notification receivers — alerts still fire and are visible in the Azure Portal, but nobody is paged until a real operational email is set here. Never defaulted to a placeholder/invented address.')
+param alertEmailAddress string = ''
+
+@description('PBI-08-01 (Architecture Review Finding A-11): whether to create the Azure Monitor alert rules/action group at all. true by default so this finding is resolved out of the box.')
+param enableMonitoringAlerts bool = true
+
 @description('VNet address space. Never hardcoded — only read when enablePrivateNetworking is true.')
 param vnetAddressPrefix string = '10.0.0.0/16'
 
@@ -635,6 +641,22 @@ module webContainerApp 'modules/container-app.bicep' = {
   }
 }
 
+// PBI-08-01 (Architecture Review Finding A-11): minimal Azure Monitor alerting. Additive only
+// — references the already-deployed appInsights/apiContainerApp modules, creates no change to
+// either. See ops/bicep/modules/monitor-alerts.bicep for the full rationale (metric names
+// confirmed live, not guessed) and docs/sprint_08/decisions.md.
+module monitorAlerts 'modules/monitor-alerts.bicep' = {
+  name: 'monitor-alerts-deployment'
+  params: {
+    namePrefix: namePrefix
+    tags: tags
+    appInsightsId: appInsights.outputs.id
+    apiContainerAppId: apiContainerApp.outputs.id
+    alertEmailAddress: alertEmailAddress
+    enabled: enableMonitoringAlerts
+  }
+}
+
 output containerRegistryName string = containerRegistry.outputs.name
 output containerRegistryLoginServer string = containerRegistry.outputs.loginServer
 output containerRegistryId string = containerRegistry.outputs.id
@@ -666,6 +688,11 @@ output apiContainerAppFqdn string = apiContainerApp.outputs.fqdn
 output webContainerAppName string = webContainerApp.outputs.name
 output webContainerAppId string = webContainerApp.outputs.id
 output webContainerAppFqdn string = webContainerApp.outputs.fqdn
+
+output monitorAlertsActionGroupId string = monitorAlerts.outputs.actionGroupId
+output monitorAlertsErrorRateAlertId string = monitorAlerts.outputs.errorRateAlertId
+output monitorAlertsLatencyAlertId string = monitorAlerts.outputs.latencyAlertId
+output monitorAlertsAvailabilityAlertId string = monitorAlerts.outputs.availabilityAlertId
 
 output cosmosAccountName string = cosmosDb.outputs.accountName
 output cosmosDocumentEndpoint string = cosmosDb.outputs.documentEndpoint

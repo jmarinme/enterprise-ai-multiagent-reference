@@ -1,0 +1,50 @@
+PBI-08-01 — Dependency/security scan evidence (2026-08-10)
+================================================================
+
+Reuses Sprint 07's SecurityScan tooling exactly (pip-audit, npm audit, detect-secrets) — not
+reimplemented — re-run here to confirm the current repository state (including every file this
+PBI added/changed) is still clean.
+
+----- 1. detect-secrets, scoped exactly like the SecurityScan pipeline stage -----
+
+$ python -m detect_secrets scan src apps/api/src apps/web/src ops configs tests --all-files
+(exit 0) files flagged: 0
+
+----- 2. pip-audit, isolated venv matching the SecurityScan stage's exact dependency list
+          (same venv Sprint 07 created and validated; dependency set unchanged this PBI — no
+          new third-party package was added, only stdlib `asyncio` and already-installed
+          `azure.core.exceptions`) -----
+
+$ <venv>/python.exe -m pip_audit --progress-spinner off --format json -o <tmp> \
+    --ignore-vuln PYSEC-2026-1845
+No known vulnerabilities found, 1 ignored
+(exit 0)
+
+(PYSEC-2026-1845 is the same documented, justified pytest-8.x-only CVE from Sprint 07 —
+apps/api/pyproject.toml pins pytest<9 deliberately; see docs/sprint_07/decisions.md for the
+full justification, unchanged this PBI.)
+
+----- 3. npm audit, apps/web real package-lock.json (unchanged this PBI — no frontend file was
+          touched) -----
+
+$ cd apps/web && npm audit --omit=dev --audit-level=high
+found 0 vulnerabilities
+(exit 0)
+
+----- 4. Full backend quality gate (ruff + mypy), matching azure-pipelines.yml's exact
+          invocation -----
+
+$ python -m ruff check apps/api/src src tests ops/scripts
+All checks passed!
+
+$ python -m mypy apps/api/src
+Success: no issues found in 14 source files
+
+$ python -m mypy src
+Success: no issues found in 124 source files
+
+----- Conclusion -----
+
+Zero new secrets, zero new dependency vulnerabilities, zero lint/type errors introduced by
+PBI-08-01's changes (src/core/resilience/, provider resilience integration, /ready endpoint,
+LLMProvider.health_check(), ops/bicep/modules/monitor-alerts.bicep, and all new test files).
