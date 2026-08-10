@@ -246,3 +246,42 @@ whichever SKU the granted quota actually supports) — re-run `validate`/`what-i
 real `az deployment group create` via the Azure DevOps pipeline (CLAUDE.md §7.1), not a manual
 Claude Code action. No other file needs to change for the serverless architecture to actually
 deploy.
+
+## 2026-08-10 — PBI-08-02: Web `preview.allowedHosts` 403 — root cause was a stale deployed image, not missing/broken config
+
+**Decision:** DEV's `ca-tmxap-dev-web` returned HTTP 403 ("Blocked request... add to
+`preview.allowedHosts`") when accessed via its public FQDN. Investigation found
+`apps/web/vite.config.ts` already had the correct fix
+(`allowedHosts: [".azurecontainerapps.io"]`, a documented wildcard-suffix match) — added in
+commit `3876060` (2026-08-07, PBI-04-02's own frontend inspection). The live, failing revision
+(`ca-tmxap-dev-web--0000004`) ran image `tmx-web:pending-first-build` — an early placeholder
+tag that predates or never included this fix (confirmed: `dev-20260807205845-chat`, a real
+built image from later the same day, existed in ACR unused; the Container App had simply never
+been updated to run it or any later build). Verified empirically, not assumed: a local
+`vite preview` run with the current source, hit with `Host: <the real Azure FQDN>`, returned
+`200`; the same run with an unrelated random Host header still correctly returned `403`
+(proving the fix is properly scoped, not an unrestricted wildcard).
+
+**Fix applied:** `vite.config.ts`'s `allowedHosts` made environment-driven
+(`VITE_PREVIEW_ALLOWED_HOSTS`, comma-separated), defaulting to the exact same
+`[".azurecontainerapps.io"]` value — zero behavior change by default, only adds a future
+override option, per PBI-08-02's own "prefer an environment-driven allowlist" instruction. No
+Bicep/Container-App env var was wired for it yet (out of this PBI's explicit scope). A fresh
+image (`tmx-web:dev-20260809233659-pbi0802`, built via `az acr build` — no local Docker daemon
+available in this session) was deployed to `ca-tmxap-dev-web` only; `ca-tmxap-dev-api`, all
+Bicep-managed resources, and the monitoring alerts from PBI-08-01 were untouched.
+
+**Verified live, after deployment:** `GET /` → `200`; the deployed JS bundle contains real
+Spanish UI strings ("Nueva conversación", "Analizando", "Escribe un mensaje") and the correct,
+live API FQDN; a real CORS preflight from the deployed Web origin succeeded with the correct
+`Access-Control-Allow-Origin`; a real `POST /chat` sent with that Origin header initiated a
+live Claims conversation in Spanish. The previous revision (`ca-tmxap-dev-web--0000004`) was
+**not** deleted — still present, `active: true`, `0%` traffic, immediately available for
+rollback via `az containerapp ingress traffic set`.
+
+**How to apply:** If a future environment ever needs a different/additional preview host (e.g.
+a custom domain), set `VITE_PREVIEW_ALLOWED_HOSTS` as a build-time env var — no code change
+required. This finding is also a reminder for the eventual Azure DevOps pipeline: once
+operational, its own `ContainerBuildAndPush`/`DeployDev` stages (Sprint 07) always build+deploy
+the *current* source on every push to `main`, which structurally prevents this exact
+"fix committed but never actually deployed" gap from recurring.
