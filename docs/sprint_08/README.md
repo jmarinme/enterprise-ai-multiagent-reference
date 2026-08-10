@@ -13,6 +13,10 @@ frontend, or conversation flows.
 - [x] PBI-08-01: Architecture Review Remediation & Hardening (A-07, A-08, A-11, A-16, A-17;
       A-10/OpenTelemetry deliberately NOT implemented — documented recommendation only, per
       this PBI's own explicit "do not expand scope into A-10 unless trivial" instruction).
+- [x] PBI-08-01A: Gate Azure Functions/Durable Functions infrastructure behind a
+      `deployServerlessToolLayer` Bicep flag (default `false`) — preserves the serverless
+      architecture and code, disables its physical deployment in DEV until subscription quota
+      is available.
 
 ## Out of scope
 
@@ -112,6 +116,26 @@ instead of implementing it, per this PBI's own explicit scope boundary. Full reg
 scenarios; 2 load tests), see `validation.md` for the exact per-checkpoint counts. Ruff and mypy
 clean on every touched file. No commit, no push, no deployment — awaiting review. — 2026-08-10
 Evidence: `validation.md`, `decisions.md`, `evidence/`.
+
+PBI-08-01A: A pre-deployment review (same day, later turn) confirmed
+`ops/bicep/main.bicep` declared the Claims Tool Layer Function App and its Storage Account
+**unconditionally** — every deployment attempt, including ones only touching unrelated
+resources, would re-attempt and re-fail Function App creation against this subscription's
+confirmed-zero App Service quota. Added `deployServerlessToolLayer bool = false` to
+`main.bicep`, gating exactly `module functionAppStorage`/`module claimsToolsFunctionApp` (no
+other resource) — the Function App application code, Bicep module, and provider abstractions
+all remain fully in place; setting the flag to `true` once quota is granted is the only change
+needed to deploy them. Fixed 8 Bicep null-safety warnings (`BCP318`) this introduced, using
+safe-dereference (`.?outputs.?x ?? ''`) instead of a plain ternary. `dev.bicepparam` sets
+`deployServerlessToolLayer = false`; `toolProvider`/`claimsWorkflowProvider` remain `inprocess`,
+unchanged. Verified live: `az deployment group validate` against the real
+`rg-tmx-agent-platform-dev` succeeded, with `validatedResources` confirmed to exclude both
+gated resources while `monitor-alerts-deployment` (PBI-08-01's Action Group + 3 alert rules)
+remains included — a static inspection of the compiled ARM template independently confirmed the
+correct `condition` guard on each gated resource. `docs/Architecture/adr/0003-...md` amended
+with a new "Deployment feature gate" section. No application business logic touched. No
+deployment, no commit, no push. — 2026-08-10
+Evidence: `decisions.md`'s PBI-08-01A entry (live `az` command output quoted).
 
 ## Sprint validation
 

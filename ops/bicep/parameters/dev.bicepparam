@@ -66,16 +66,26 @@ param webMemory = '0.5Gi'
 param webMinReplicas = 1
 param webMaxReplicas = 1
 
-// PBI-06-01: Claims Tool Layer / Durable Functions Function App. P0v4 (Premium v4), not Y1
-// (Consumption) or B1 (Basic): real deployment attempts on 2026-08-09/10 reported
-// SubscriptionIsOverQuotaForSku (0 quota, "Total Regional VMs" limit 0) for BOTH Y1 and B1 —
-// this subscription has 0 quota across every classic App Service compute family (Free, Shared,
-// Basic, Standard, PremiumV2/V3, Isolated v2, Elastic Premium) in every region checked. A live
-// requery of Microsoft.Web/locations/{region}/usages (PBI-06-01A) found nonzero quota (30) for
-// the newer Premium v4 family (P0v4-P3v4) in eastus2/eastus specifically. P0v4 is a DEV-ONLY
-// workaround approved for PBI-06-01A, not the production hosting recommendation — see
+// PBI-08-01A: Claims Tool Layer / Durable Functions Function App deployment is DISABLED in DEV.
+// This subscription has 0 Microsoft.Web (App Service) quota in every region checked, for every
+// SKU tried — 3 independent real `az deployment group create` attempts (Y1/Consumption,
+// B1/Basic, P0v4/Premium v4) all failed with SubscriptionIsOverQuotaForSku (see
 // docs/Architecture/adr/0003-azure-functions-tool-and-workflow-layer.md and
-// docs/sprint_06/decisions.md.
+// docs/sprint_06/decisions.md D-07, docs/sprint_07/decisions.md PBI-07-01B). Rather than keep
+// attempting (and failing) a Function App deployment on every pipeline run, PBI-08-01A gated
+// the Function App/App Service Plan/dedicated Storage Account behind deployServerlessToolLayer
+// — false here means DEV deploys none of them at all. The application code, the Bicep module,
+// and the ToolProvider/ClaimsWorkflowProvider abstractions that would call it all remain fully
+// in place (CLAUDE.md §4.1/§4.2, ADR-0003 — serverless stays the target architecture); setting
+// this to true (once quota is granted) is the only change required to actually deploy it — no
+// redesign. functionAppPlanSkuName stays 'P0v4' as the value to use WHEN this is re-enabled
+// (still the best-evidenced SKU for this subscription's actual quota shape), not because it
+// does anything while deployServerlessToolLayer is false.
+param deployServerlessToolLayer = false
 param functionAppPlanSkuName = 'P0v4'
+// DEV's actual, current runtime configuration — unaffected by deployServerlessToolLayer, and
+// deliberately left at "inprocess" per PBI-08-01A's own explicit instruction. Flipping either
+// to azure_functions/durable only makes sense once deployServerlessToolLayer=true has actually
+// provisioned the Function App these would call.
 param toolProvider = 'inprocess'
 param claimsWorkflowProvider = 'inprocess'

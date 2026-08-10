@@ -178,3 +178,71 @@ Result: **612 passed, 2 skipped** (the 2 skipped are pre-existing, unrelated to 
   validated against fully mocked failures, matching this repository's existing testing
   convention throughout every prior sprint.
 - No commit, no push.
+
+## PBI-08-01A (feature-gate Azure Functions infrastructure) — 2026-08-10, later same-day session
+
+```
+az bicep build --file ops/bicep/main.bicep --stdout
+```
+Result (first pass): compiled with exit 0 but **8 `BCP318` warnings** ("may be null") on every
+reference to `functionAppStorage.outputs.*`/`claimsToolsFunctionApp.outputs.*` from outside
+their own now-conditional module blocks (a plain `deployServerlessToolLayer ? module.outputs.x
+: ''` ternary does not suppress this — Bicep's null-analysis doesn't correlate a ternary
+condition with a separate module's own `if()` condition, even when textually identical).
+
+```
+(same command, after converting every such reference to `.?outputs.?x ?? ''` safe-dereference,
+plus one shared `claimsFunctionAppHostName`/`claimsFunctionAppUrl` var computed once)
+```
+Result: **exit 0, zero warnings.**
+
+```
+az bicep build-params --file ops/bicep/parameters/dev.bicepparam --outfile <tmp>
+```
+Result: exit 0 — `dev.bicepparam` (with the new `deployServerlessToolLayer = false` line)
+resolves against `main.bicep`'s parameter contract.
+
+```
+az deployment group validate --resource-group rg-tmx-agent-platform-dev \
+  --template-file ops/bicep/main.bicep --parameters ops/bicep/parameters/dev.bicepparam
+```
+Result: **`provisioningState: "Succeeded"`**. `validatedResources` (15 entries):
+`id-tmxap-dev`, `log-tmxap-dev`, `ai-search-deployment`, `api-container-app-deployment`,
+`app-insights-deployment`, `app-insights-secret-deployment`, `azure-openai-deployment`,
+`container-apps-environment-deployment`, `container-registry-deployment`,
+`cosmos-db-deployment`, `key-vault-deployment`, `log-analytics-deployment`,
+`managed-identity-deployment`, **`monitor-alerts-deployment`**, `web-container-app-deployment`.
+**Confirmed absent: `function-app-storage-deployment`, `claims-tools-function-app-deployment`**
+— compared directly against the PBI-08-01 (pre-gating) `validate` run, whose
+`validatedResources` list included both.
+
+### Static deployment-plan inspection
+
+```
+az bicep build --file ops/bicep/main.bicep --outfile <tmp>/main_compiled.json
+python -c "... inspect resources[].condition for names containing 'function-app' ..."
+```
+Result:
+```
+name: function-app-storage-deployment
+condition: [parameters('deployServerlessToolLayer')]
+
+name: claims-tools-function-app-deployment
+condition: [parameters('deployServerlessToolLayer')]
+
+name: monitor-alerts-deployment
+condition: None
+```
+Confirms, independently of the live `validate` call, that both gated resources carry the
+correct condition expression, and `monitor-alerts-deployment` (whose own internal `enabled`
+param — default `true` — governs its 3 alert resources) is unaffected, gated at a different
+level entirely.
+
+## Not performed (explicitly, per this PBI's own scope)
+
+- No `az deployment group create` — "Do NOT deploy yet" per this PBI's own explicit instruction.
+- No `az deployment group what-if` — the pre-existing `NestedDeploymentShortCircuited`
+  limitation (documented since Sprint 06) already prevents it from itemizing individual nested
+  resources; `validate` (unaffected by that limitation) plus the static JSON inspection above
+  together provide stronger, more precise evidence than `what-if` could add here.
+- No commit, no push.

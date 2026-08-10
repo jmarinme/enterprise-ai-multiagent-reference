@@ -204,3 +204,45 @@ hand-wrapping each Azure SDK call site.
 **How to apply:** This is the concrete starting point for a future "PBI-0X-0X: OpenTelemetry
 Adoption" — do not attempt it inside a hardening/remediation PBI like this one again; it
 deserves its own scoped plan, dependency review, and live-validation pass.
+
+## 2026-08-10 — PBI-08-01A: Feature-gated the Function App/App Service Plan/Storage Account behind `deployServerlessToolLayer`, default `false`
+
+**Decision:** The pre-deployment review (a prior turn this same day) confirmed
+`ops/bicep/main.bicep` declared `module functionAppStorage`/`module claimsToolsFunctionApp`
+**unconditionally** — every deployment, even one only intended to touch unrelated resources
+(e.g. PBI-08-01's own new monitoring alerts), would also re-attempt and re-fail the Function App
+creation against a subscription with confirmed-zero App Service quota. Added
+`deployServerlessToolLayer bool = false` and gated exactly those two modules behind it — no
+other resource. `AZURE_FUNCTIONS_BASE_URL`/`DURABLE_FUNCTIONS_BASE_URL` (API Container App env
+vars) and every output referencing either module's properties were converted to safe-dereference
+(`.?outputs.?x ?? ''`) so the template still compiles and validates cleanly when the flag is
+`false` — `az bicep build` initially produced 8 `BCP318` ("may be null") warnings using a plain
+ternary (`flag ? module.outputs.x : ''`, which Bicep's null-analysis does not correlate with the
+module's own identical `if()` condition); switching to the safe-dereference operator plus a
+single shared `claimsFunctionAppUrl`/`claimsFunctionAppHostName` var (computed once, reused at
+every call site) resolved all 8 cleanly, confirmed by a second `az bicep build` showing zero
+warnings.
+
+**Deviation/status change:** None from PBI-08-01A's own instructions — implements exactly what
+was asked: preserve the architecture and code, make deployment optional, default off in DEV.
+
+**Verified live, not assumed:**
+```
+az deployment group validate --resource-group rg-tmx-agent-platform-dev \
+  --template-file ops/bicep/main.bicep --parameters ops/bicep/parameters/dev.bicepparam
+```
+Result: `provisioningState: "Succeeded"`. `validatedResources` (15 entries) does **not** include
+`function-app-storage-deployment` or `claims-tools-function-app-deployment` — confirmed absent,
+not merely expected to be absent. `monitor-alerts-deployment` **is** present, confirming
+PBI-08-01's monitoring work is unaffected. A static check of the compiled ARM template
+(`az bicep build --outfile`, then inspecting the JSON) independently confirms both gated
+resources carry `"condition": "[parameters('deployServerlessToolLayer')]"`, while
+`monitor-alerts-deployment` carries no condition at this level (its own internal `enabled` param,
+defaulting `true`, governs its three alert resources instead — unaffected by this change).
+
+**How to apply:** Once Azure App Service quota is granted for this subscription, set
+`deployServerlessToolLayer = true` in `dev.bicepparam` (leaving `functionAppPlanSkuName`
+whichever SKU the granted quota actually supports) — re-run `validate`/`what-if` first, then a
+real `az deployment group create` via the Azure DevOps pipeline (CLAUDE.md §7.1), not a manual
+Claude Code action. No other file needs to change for the serverless architecture to actually
+deploy.

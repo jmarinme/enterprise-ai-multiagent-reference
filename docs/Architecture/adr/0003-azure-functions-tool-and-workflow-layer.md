@@ -3,9 +3,14 @@
 ## Status
 
 Accepted — 2026-08-09/10 (PBI-06-01). Amended 2026-08-10 (PBI-06-01A) to document the `P0v4`
-DEV hosting workaround. Implemented for Claims only; Broker and Commercial Intake remain on the
-pre-existing in-process implementation, compatible with this architecture and migratable in a
-future PBI without further abstraction changes.
+DEV hosting workaround. Amended again 2026-08-10 (PBI-08-01A) to feature-gate the Function
+App/App Service Plan/Storage Account behind a new `deployServerlessToolLayer` Bicep parameter
+(default `false`) — **the serverless architecture below remains this platform's accepted target
+architecture**; only its *physical deployment to DEV* is currently disabled, because this
+subscription has zero deployable App Service quota in every region/SKU tried (3 independent
+real attempts — see the "DEV hosting workaround" section below). Implemented for Claims only;
+Broker and Commercial Intake remain on the pre-existing in-process implementation, compatible
+with this architecture and migratable in a future PBI without further abstraction changes.
 
 ## Context
 
@@ -250,6 +255,47 @@ logged — only tool name, activity name, correlation ID, and a boolean success 
   same-deployment key-generation ordering problem above; named as a follow-up, not silently
   dropped.
 
+### Deployment feature gate: `deployServerlessToolLayer` (PBI-08-01A)
+
+**Problem:** PBI-06-01/06-01A/07-01B's own evidence (see "DEV hosting workaround" above)
+established, beyond reasonable doubt, that this subscription has **zero deployable
+`Microsoft.Web` App Service quota** — 3 independent real `az deployment group create` attempts
+(`Y1` Consumption, `B1` Basic, `P0v4` Premium v4 — twice) all failed identically with
+`SubscriptionIsOverQuotaForSku`. Until this PBI, `ops/bicep/main.bicep` declared the Function
+App and its Storage Account **unconditionally** — every deployment attempt, including ones only
+intended to update unrelated resources (e.g. PBI-08-01's own monitoring alerts), would also
+re-attempt and re-fail the Function App creation.
+
+**Decision:** `ops/bicep/main.bicep` gained a new parameter, `deployServerlessToolLayer` (bool,
+default `false`), gating exactly the two resources exclusively used by this architecture:
+
+- `module functionAppStorage` (the Function App's dedicated Storage Account — used exclusively
+  for its `AzureWebJobsStorage`/Durable Task Hub, never shared with any other resource in this
+  template).
+- `module claimsToolsFunctionApp` (the Function App itself — `Microsoft.Web/serverfarms` +
+  `Microsoft.Web/sites`).
+
+No other resource was gated — the App Insights connection-string Key Vault secret, the shared
+Managed Identity, and every other module these two would otherwise consume remain unconditional,
+since they are genuinely shared with the Container Apps too. `AZURE_FUNCTIONS_BASE_URL`/
+`DURABLE_FUNCTIONS_BASE_URL` (the API Container App's own env vars) resolve to an empty string
+whenever the flag is `false` — harmless, since DEV's `toolProvider`/`claimsWorkflowProvider`
+stay `"inprocess"` and never read either URL.
+
+**This is a deployment-scope decision, not an architecture decision.** The Azure Functions
+application code (`ops/functions/claims_tools/`), the Bicep module
+(`ops/bicep/modules/function-app.bicep`), and the `ToolProvider`/`ClaimsWorkflowProvider`
+abstractions this whole ADR documents all remain fully in place, untouched, regardless of this
+flag's value. Setting `deployServerlessToolLayer = true` (once the subscription's App Service
+quota is granted) is the **only** change required to physically deploy the serverless
+architecture — no code change, no Bicep redesign, no abstraction rework.
+
+**Verified, not assumed:** with `deployServerlessToolLayer = false` (`dev.bicepparam`'s current
+value), `az deployment group validate` against the real `rg-tmx-agent-platform-dev` succeeds and
+its `validatedResources` list contains neither `function-app-storage-deployment` nor
+`claims-tools-function-app-deployment` — confirmed live, not inferred from the Bicep source
+alone (`docs/sprint_08/decisions.md` PBI-08-01A entry has the full command/output).
+
 ## Consequences
 
 - Positive: Finding A-03 is resolved for the Claims vertical — Azure Functions and Durable
@@ -274,8 +320,14 @@ logged — only tool name, activity name, correlation ID, and a boolean success 
   environment beyond DEV.
 - Before migrating Broker or Commercial Intake onto these same abstractions.
 - If the Azure App Service quota grant lands and `Y1` Consumption becomes viable — revisit
-  `functionAppPlanSkuName` back to its architectural default.
+  `functionAppPlanSkuName` back to its architectural default, and set
+  `deployServerlessToolLayer = true` in `dev.bicepparam` to actually deploy it.
 - Before this platform (or a derived one) is deployed to any environment beyond DEV — `P0v4` is
   an explicit DEV-only workaround; production must reevaluate hosting model (Flex Consumption /
   Elastic Premium / Consumption) against the workload and whatever quota is available at that
   time, not inherit `P0v4` by default.
+- Whenever `deployServerlessToolLayer` is flipped to `true` — re-run `az deployment group
+  validate`/`what-if` first (the last real attempt, PBI-07-01B, predates this flag and still hit
+  the quota block; there is no evidence yet that quota has changed), and only then a real
+  `az deployment group create`, per CLAUDE.md §7.1 (Azure DevOps owns deployment, not a manual
+  Claude Code action).
