@@ -34,6 +34,15 @@ def test_resolve_relative_date_returns_none_when_absent() -> None:
     assert resolve_relative_date("el vehículo puede circular", reference=_REF) is None
 
 
+def test_resolve_relative_date_la_semana_pasada() -> None:
+    """PBI-09-01 requirement 4."""
+    assert resolve_relative_date("se inundó la semana pasada", reference=_REF) == "2026-08-01"
+
+
+def test_resolve_relative_date_last_week() -> None:
+    assert resolve_relative_date("it happened last week", reference=_REF) == "2026-08-01"
+
+
 def test_resolve_commission_period_explicit_q_notation() -> None:
     assert resolve_commission_period("Q1 2026") == "2026-Q1"
     assert resolve_commission_period("2026-Q2") == "2026-Q2"

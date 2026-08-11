@@ -1,0 +1,630 @@
+
+====================================================================================================
+SCENARIO: 1. Broker(commission) -> Claims(full) -> back to Broker
+====================================================================================================
+
+  [TURN 1] USER: Quiero consultar mis comisiones.
+           AGENT: BrokerAgent  INTENT: BROKER
+           BOT: ¿Con qué broker trabajas, y qué período te gustaría revisar?
+           MEMORY: {'current_intent': 'BrokerAgent'}
+
+  [TURN 2] USER: Soy Synthetic Brokerage One y quiero el primer trimestre de 2026.
+           AGENT: BrokerAgent  INTENT: BROKER
+           BOT: Comisión de 2026-Q1: $1,250.00 (estado: available). ¿Te gustaría solicitar el pago de esta comisión? (sí/no)
+           MEMORY: {'broker_id': 'SYN-BRK-0001', 'broker_name': 'Synthetic Brokerage One', 'current_intent': 'BrokerAgent'}
+
+  [TURN 3] USER: no
+           AGENT: BrokerAgent  INTENT: BROKER
+           BOT: Gracias — continuemos.
+           MEMORY: {'broker_id': 'SYN-BRK-0001', 'broker_name': 'Synthetic Brokerage One', 'current_intent': 'BrokerAgent'}
+
+  [TURN 4] USER: Quiero reportar un accidente, tuve un choque.
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Claro. ¿A nombre de quién está la póliza?
+           MEMORY: {'broker_id': 'SYN-BRK-0001', 'broker_name': 'Synthetic Brokerage One', 'current_intent': 'ClaimsAgent', 'previous_intent': 'BrokerAgent'}
+
+  [TURN 5] USER: SYN-POL-0001
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Cuéntame sobre el incidente: ¿qué día ocurrió (AAAA-MM-DD), dónde fue, y qué tipo de siniestro es (colisión, robo, incendio, daño por agua, clima, vandalismo, otro)?
+           MEMORY: {'broker_id': 'SYN-BRK-0001', 'broker_name': 'Synthetic Brokerage One', 'policy_number': 'SYN-POL-0001', 'current_intent': 'ClaimsAgent', 'previous_intent': 'BrokerAgent'}
+
+  [TURN 6] USER: 2026-08-01, en Avenida Reforma
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Hasta ahora tengo:
+✔ póliza
+✔ fecha
+✔ ubicación
+Solo me falta: ¿Qué tipo de siniestro fue (colisión, robo, incendio, daño por agua, clima, vandalismo, otro)?
+           MEMORY: {'broker_id': 'SYN-BRK-0001', 'broker_name': 'Synthetic Brokerage One', 'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-01', 'location': 'Avenida Reforma', 'current_intent': 'ClaimsAgent', 'previous_intent': 'BrokerAgent'}
+
+  [TURN 7] USER: Otro carro me golpeo estando estacionado
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Hasta ahora tengo:
+✔ póliza
+✔ fecha
+✔ ubicación
+✔ tipo de siniestro
+Solo me falta: ¿Podrías describir brevemente qué sucedió?
+           MEMORY: {'broker_id': 'SYN-BRK-0001', 'broker_name': 'Synthetic Brokerage One', 'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-01', 'incident_type': 'Otro carro me golpeo estando estacionado', 'location': 'Avenida Reforma', 'current_intent': 'ClaimsAgent', 'previous_intent': 'BrokerAgent'}
+
+  [TURN 8] USER: 555-111-2222
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Hasta ahora tengo:
+✔ póliza
+✔ fecha
+✔ ubicación
+✔ tipo de siniestro
+Solo me falta: ¿Podrías describir brevemente qué sucedió?
+           MEMORY: {'broker_id': 'SYN-BRK-0001', 'broker_name': 'Synthetic Brokerage One', 'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-01', 'incident_type': 'Otro carro me golpeo estando estacionado', 'location': 'Avenida Reforma', 'current_intent': 'ClaimsAgent', 'previous_intent': 'BrokerAgent'}
+
+  [TURN 9] USER: no
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Hasta ahora tengo:
+✔ póliza
+✔ fecha
+✔ ubicación
+✔ tipo de siniestro
+Solo me falta: ¿Hubo personas lesionadas, y estuvieron involucrados terceros? (sí/no para cada una)
+           MEMORY: {'broker_id': 'SYN-BRK-0001', 'broker_name': 'Synthetic Brokerage One', 'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-01', 'incident_type': 'Otro carro me golpeo estando estacionado', 'location': 'Avenida Reforma', 'current_intent': 'ClaimsAgent', 'previous_intent': 'BrokerAgent'}
+
+  [TURN 10] USER: si
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Hasta ahora tengo:
+✔ póliza
+✔ fecha
+✔ ubicación
+✔ tipo de siniestro
+Solo me falta: ¿Estuvieron involucrados terceros? (sí/no)
+           MEMORY: {'broker_id': 'SYN-BRK-0001', 'broker_name': 'Synthetic Brokerage One', 'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-01', 'incident_type': 'Otro carro me golpeo estando estacionado', 'location': 'Avenida Reforma', 'current_intent': 'ClaimsAgent', 'previous_intent': 'BrokerAgent'}
+
+  [TURN 11] USER: si
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Hasta ahora tengo:
+✔ póliza
+✔ fecha
+✔ ubicación
+✔ tipo de siniestro
+Solo me falta: ¿El vehículo todavía puede circular?
+           MEMORY: {'broker_id': 'SYN-BRK-0001', 'broker_name': 'Synthetic Brokerage One', 'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-01', 'incident_type': 'Otro carro me golpeo estando estacionado', 'location': 'Avenida Reforma', 'current_intent': 'ClaimsAgent', 'previous_intent': 'BrokerAgent'}
+
+  [TURN 12] USER: Ahora quiero ver el estado de mis comisiones otra vez.
+           AGENT: BrokerAgent  INTENT: BROKER
+           BOT: Comisión de 2026-Q1: estado available. Esta solicitud está completa.
+           MEMORY: {'broker_id': 'SYN-BRK-0001', 'broker_name': 'Synthetic Brokerage One', 'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-01', 'incident_type': 'Otro carro me golpeo estando estacionado', 'location': 'Avenida Reforma', 'current_intent': 'BrokerAgent', 'previous_intent': 'ClaimsAgent'}
+
+====================================================================================================
+SCENARIO: 2. Claims -> policy inquiry -> back to Claims
+====================================================================================================
+
+  [TURN 1] USER: I need to report a claim, I had a collision.
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: I'm sorry to hear that. I'll help you register the notice. I understand this involves a collision. Whose name is the policy under?
+           MEMORY: {'incident_type': 'collision', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 2] USER: SYN-POL-0001
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: So far I have:
+✔ policy
+✔ loss type
+I just need: What date did the incident occur? (YYYY-MM-DD) Where did the incident take place?
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'incident_type': 'collision', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 3] USER: yesterday, in the parking lot
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: So far I have:
+✔ policy
+✔ date
+✔ loss type
+I just need: Where did the incident take place?
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-10', 'incident_type': 'collision', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 4] USER: I want to know the status of a policy.
+           AGENT: BrokerAgent  INTENT: BROKER
+           BOT: Policy SYN-POL-0001 status: active. Payments on this policy are up to date.
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-10', 'incident_type': 'collision', 'current_intent': 'BrokerAgent', 'previous_intent': 'ClaimsAgent'}
+
+  [TURN 5] USER: SYN-POL-0002
+           AGENT: BrokerAgent  INTENT: BROKER
+           BOT: Policy SYN-POL-0002 status: active. This request is complete.
+           MEMORY: {'policy_number': 'SYN-POL-0002', 'incident_date': '2026-08-10', 'incident_type': 'collision', 'current_intent': 'BrokerAgent', 'previous_intent': 'ClaimsAgent'}
+
+  [TURN 6] USER: Let's continue with my claim from before.
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: So far I have:
+✔ policy
+✔ date
+✔ loss type
+I just need: Where did the incident take place?
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-10', 'incident_type': 'collision', 'current_intent': 'ClaimsAgent', 'previous_intent': 'BrokerAgent'}
+
+====================================================================================================
+SCENARIO: 3. Commercial -> Claims -> back to Commercial (mid-flow reuse)
+====================================================================================================
+
+  [TURN 1] USER: I'd like a quote for new business coverage.
+           AGENT: CommercialIntakeAgent  INTENT: COMMERCIAL
+           BOT: What is your company or business name?
+           MEMORY: {'current_intent': 'CommercialIntakeAgent'}
+
+  [TURN 2] USER: Acme Consulting LLC
+           AGENT: CommercialIntakeAgent  INTENT: COMMERCIAL
+           BOT: What is the best contact person's full name?
+           MEMORY: {'business_name': 'Acme Consulting LLC', 'current_intent': 'CommercialIntakeAgent'}
+
+  [TURN 3] USER: Actually I need to report a claim, se inundo mi casa.
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: I'm sorry to hear that. I'll help you register the notice. I understand this involves water damage. Whose name is the policy under?
+           MEMORY: {'business_name': 'Acme Consulting LLC', 'incident_type': 'water damage', 'current_intent': 'ClaimsAgent', 'previous_intent': 'CommercialIntakeAgent'}
+
+  [TURN 4] USER: Ana Torres
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: So far I have:
+✔ customer
+✔ policy
+✔ loss type
+I just need: I found your policy (property). What date did the incident occur? (YYYY-MM-DD) Where did the incident take place?
+           MEMORY: {'customer_name': 'Ana Torres', 'policy_number': 'SYN-POL-1003', 'business_name': 'Acme Consulting LLC', 'incident_type': 'water damage', 'current_intent': 'ClaimsAgent', 'previous_intent': 'CommercialIntakeAgent'}
+
+  [TURN 5] USER: Now back to my business quote, please.
+           AGENT: CommercialIntakeAgent  INTENT: COMMERCIAL
+           BOT: Would you prefer to be contacted by email or phone?
+           MEMORY: {'customer_name': 'Ana Torres', 'policy_number': 'SYN-POL-1003', 'business_name': 'Acme Consulting LLC', 'incident_type': 'water damage', 'current_intent': 'CommercialIntakeAgent', 'previous_intent': 'ClaimsAgent'}
+
+====================================================================================================
+SCENARIO: 4. Policy number only
+====================================================================================================
+
+  [TURN 1] USER: SYN-POL-1001
+           AGENT: FallbackAgent  INTENT: UNKNOWN
+           BOT: No pude identificar cómo ayudarte con eso. Es posible que una persona deba asistirte.
+           MEMORY: {}
+
+====================================================================================================
+SCENARIO: 5. Customer name only
+====================================================================================================
+
+  [TURN 1] USER: Necesito reportar un siniestro.
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Claro. ¿A nombre de quién está la póliza?
+           MEMORY: {'current_intent': 'ClaimsAgent'}
+
+  [TURN 2] USER: Ana Torres
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Hasta ahora tengo:
+✔ cliente
+✔ póliza
+Solo me falta: Encontré tu póliza (property). Cuéntame sobre el incidente: ¿qué día ocurrió (AAAA-MM-DD), dónde fue, y qué tipo de siniestro es (colisión, robo, incendio, daño por agua, clima, vandalismo, otro)?
+           MEMORY: {'customer_name': 'Ana Torres', 'policy_number': 'SYN-POL-1003', 'current_intent': 'ClaimsAgent'}
+
+====================================================================================================
+SCENARIO: 6. Broker name only
+====================================================================================================
+
+  [TURN 1] USER: I need to check my commissions.
+           AGENT: BrokerAgent  INTENT: BROKER
+           BOT: What is the name of your brokerage, and which period would you like to review?
+           MEMORY: {'current_intent': 'BrokerAgent'}
+
+  [TURN 2] USER: Synthetic Brokerage Two
+           AGENT: BrokerAgent  INTENT: BROKER
+           BOT: Which commission period would you like to review (e.g., Q1 2026)?
+           MEMORY: {'broker_name': 'Synthetic Brokerage Two', 'current_intent': 'BrokerAgent'}
+
+====================================================================================================
+SCENARIO: 7a. Natural date: yesterday
+====================================================================================================
+
+  [TURN 1] USER: I need to report a claim
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Of course. Whose name is the policy under?
+           MEMORY: {'current_intent': 'ClaimsAgent'}
+
+  [TURN 2] USER: SYN-POL-0001
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Tell me about the incident: what date did it occur (YYYY-MM-DD), where did it happen, and what type of loss is it (collision, theft, fire, water damage, weather, vandalism, other)?
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 3] USER: yesterday
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: So far I have:
+✔ policy
+✔ date
+I just need: Where did the incident take place? What type of loss is this (e.g., collision, theft, fire, water damage, weather, vandalism, other)?
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-10', 'current_intent': 'ClaimsAgent'}
+
+====================================================================================================
+SCENARIO: 7b. Natural date: last week
+====================================================================================================
+
+  [TURN 1] USER: I need to report a claim
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Of course. Whose name is the policy under?
+           MEMORY: {'current_intent': 'ClaimsAgent'}
+
+  [TURN 2] USER: SYN-POL-0001
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Tell me about the incident: what date did it occur (YYYY-MM-DD), where did it happen, and what type of loss is it (collision, theft, fire, water damage, weather, vandalism, other)?
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 3] USER: last week
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: So far I have:
+✔ policy
+✔ date
+I just need: Where did the incident take place? What type of loss is this (e.g., collision, theft, fire, water damage, weather, vandalism, other)?
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-04', 'current_intent': 'ClaimsAgent'}
+
+====================================================================================================
+SCENARIO: 7c. Natural date: two days ago
+====================================================================================================
+
+  [TURN 1] USER: I need to report a claim
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Of course. Whose name is the policy under?
+           MEMORY: {'current_intent': 'ClaimsAgent'}
+
+  [TURN 2] USER: SYN-POL-0001
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Tell me about the incident: what date did it occur (YYYY-MM-DD), where did it happen, and what type of loss is it (collision, theft, fire, water damage, weather, vandalism, other)?
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 3] USER: two days ago
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: So far I have:
+✔ policy
+✔ date
+I just need: Where did the incident take place? What type of loss is this (e.g., collision, theft, fire, water damage, weather, vandalism, other)?
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-09', 'current_intent': 'ClaimsAgent'}
+
+====================================================================================================
+SCENARIO: 8. User provides several facts in one sentence
+====================================================================================================
+
+  [TURN 1] USER: Quiero reportar un accidente. Mi poliza es SYN-POL-0001, chocamos ayer en Avenida Reforma, Ciudad de Mexico, no hubo lesionados ni terceros involucrados.
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Hasta ahora tengo:
+✔ póliza
+✔ fecha
+✔ ubicación
+✔ tipo de siniestro
+Solo me falta: ¿Podrías describir brevemente qué sucedió?
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-10', 'incident_type': 'collision', 'location': 'Avenida Reforma, Ciudad de Mexico', 'current_intent': 'ClaimsAgent'}
+
+====================================================================================================
+SCENARIO: 9. User corrects a previously provided fact
+====================================================================================================
+
+  [TURN 1] USER: I need to report a claim
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Of course. Whose name is the policy under?
+           MEMORY: {'current_intent': 'ClaimsAgent'}
+
+  [TURN 2] USER: SYN-POL-0001
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Tell me about the incident: what date did it occur (YYYY-MM-DD), where did it happen, and what type of loss is it (collision, theft, fire, water damage, weather, vandalism, other)?
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 3] USER: 2026-08-01
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: So far I have:
+✔ policy
+✔ date
+I just need: Where did the incident take place? What type of loss is this (e.g., collision, theft, fire, water damage, weather, vandalism, other)?
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-01', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 4] USER: In my driveway
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: So far I have:
+✔ policy
+✔ date
+✔ location
+I just need: What type of loss is this (e.g., collision, theft, fire, water damage, weather, vandalism, other)?
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-01', 'location': 'In my driveway', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 5] USER: It was a collision
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: So far I have:
+✔ policy
+✔ date
+✔ location
+✔ loss type
+I just need: Could you briefly describe what happened?
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-01', 'incident_type': 'collision', 'location': 'In my driveway', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 6] USER: Another car hit me while parked
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: So far I have:
+✔ policy
+✔ date
+✔ location
+✔ loss type
+I just need: What is the best phone number to reach you?
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-01', 'incident_type': 'collision', 'location': 'In my driveway', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 7] USER: 555-123-4567
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: So far I have:
+✔ policy
+✔ date
+✔ location
+✔ loss type
+I just need: Were there any injuries, and were any third parties involved? (yes/no for each)
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-01', 'incident_type': 'collision', 'location': 'In my driveway', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 8] USER: no
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: So far I have:
+✔ policy
+✔ date
+✔ location
+✔ loss type
+I just need: Is the vehicle still drivable?
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-01', 'incident_type': 'collision', 'location': 'In my driveway', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 9] USER: yes
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Your policy is active. Payments on this policy are up to date. Your coverage is 'Cobertura amplia', with a limit of $250,000.00 and a deductible of $5,000.00. Before registering your claim, let's confirm the details: policy SYN-POL-0001, incident on 2026-08-01 at In my driveway, type 'collision'. The vehicle is drivable. Shall I go ahead and register your claim with this information? (yes/no)
+           MEMORY: {'customer_name': 'Synthetic Claimant One', 'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-01', 'incident_type': 'collision', 'location': 'In my driveway', 'coverage': 'Cobertura amplia', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 10] USER: no
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Understood, I won't register it yet. What would you like to correct?
+           MEMORY: {'customer_name': 'Synthetic Claimant One', 'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-01', 'incident_type': 'collision', 'location': 'In my driveway', 'coverage': 'Cobertura amplia', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 11] USER: 2026-08-02
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: So far I have:
+✔ policy
+✔ date
+I just need: Where did the incident take place? What type of loss is this (e.g., collision, theft, fire, water damage, weather, vandalism, other)?
+           MEMORY: {'customer_name': 'Synthetic Claimant One', 'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-02', 'incident_type': 'collision', 'location': 'In my driveway', 'coverage': 'Cobertura amplia', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 12] USER: In my driveway
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: So far I have:
+✔ policy
+✔ date
+✔ location
+I just need: What type of loss is this (e.g., collision, theft, fire, water damage, weather, vandalism, other)?
+           MEMORY: {'customer_name': 'Synthetic Claimant One', 'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-02', 'incident_type': 'collision', 'location': 'In my driveway', 'coverage': 'Cobertura amplia', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 13] USER: collision
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: So far I have:
+✔ policy
+✔ date
+✔ location
+✔ loss type
+I just need: Could you briefly describe what happened?
+           MEMORY: {'customer_name': 'Synthetic Claimant One', 'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-02', 'incident_type': 'collision', 'location': 'In my driveway', 'coverage': 'Cobertura amplia', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 14] USER: yes
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: So far I have:
+✔ policy
+✔ date
+✔ location
+✔ loss type
+I just need: What is the best phone number to reach you?
+           MEMORY: {'customer_name': 'Synthetic Claimant One', 'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-02', 'incident_type': 'collision', 'location': 'In my driveway', 'coverage': 'Cobertura amplia', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 15] USER: yes
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: So far I have:
+✔ policy
+✔ date
+✔ location
+✔ loss type
+I just need: What is the best phone number to reach you?
+           MEMORY: {'customer_name': 'Synthetic Claimant One', 'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-02', 'incident_type': 'collision', 'location': 'In my driveway', 'coverage': 'Cobertura amplia', 'current_intent': 'ClaimsAgent'}
+
+====================================================================================================
+SCENARIO: 10. User switches intent multiple times
+====================================================================================================
+
+  [TURN 1] USER: Quiero reportar un accidente.
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Claro. ¿A nombre de quién está la póliza?
+           MEMORY: {'current_intent': 'ClaimsAgent'}
+
+  [TURN 2] USER: Ahora quiero consultar mis comisiones.
+           AGENT: BrokerAgent  INTENT: BROKER
+           BOT: ¿Con qué broker trabajas, y qué período te gustaría revisar?
+           MEMORY: {'current_intent': 'BrokerAgent', 'previous_intent': 'ClaimsAgent'}
+
+  [TURN 3] USER: Mejor necesito una cotizacion para mi empresa.
+           AGENT: CommercialIntakeAgent  INTENT: COMMERCIAL
+           BOT: ¿Cuál es el nombre de tu empresa o negocio?
+           MEMORY: {'current_intent': 'CommercialIntakeAgent', 'previous_intent': 'BrokerAgent'}
+
+  [TURN 4] USER: En realidad, volvamos a mi accidente.
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: ¿A nombre de quién está la póliza?
+           MEMORY: {'current_intent': 'ClaimsAgent', 'previous_intent': 'CommercialIntakeAgent'}
+
+  [TURN 5] USER: Y ahora si, mis comisiones.
+           AGENT: BrokerAgent  INTENT: BROKER
+           BOT: ¿Con qué broker trabajas, y qué período te gustaría revisar?
+           MEMORY: {'current_intent': 'BrokerAgent', 'previous_intent': 'ClaimsAgent'}
+
+====================================================================================================
+SCENARIO: 11. Long conversation (12-15 turns)
+====================================================================================================
+
+  [TURN 1] USER: I need to report a claim
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Of course. Whose name is the policy under?
+           MEMORY: {'current_intent': 'ClaimsAgent'}
+
+  [TURN 2] USER: SYN-POL-0001
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Tell me about the incident: what date did it occur (YYYY-MM-DD), where did it happen, and what type of loss is it (collision, theft, fire, water damage, weather, vandalism, other)?
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 3] USER: 2026-08-01
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: So far I have:
+✔ policy
+✔ date
+I just need: Where did the incident take place? What type of loss is this (e.g., collision, theft, fire, water damage, weather, vandalism, other)?
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-01', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 4] USER: In my driveway
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: So far I have:
+✔ policy
+✔ date
+✔ location
+I just need: What type of loss is this (e.g., collision, theft, fire, water damage, weather, vandalism, other)?
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-01', 'location': 'In my driveway', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 5] USER: It was a collision
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: So far I have:
+✔ policy
+✔ date
+✔ location
+✔ loss type
+I just need: Could you briefly describe what happened?
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-01', 'incident_type': 'collision', 'location': 'In my driveway', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 6] USER: Another car hit me while parked and drove off
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: So far I have:
+✔ policy
+✔ date
+✔ location
+✔ loss type
+I just need: What is the best phone number to reach you?
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-01', 'incident_type': 'collision', 'location': 'In my driveway', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 7] USER: 555-123-4567
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: So far I have:
+✔ policy
+✔ date
+✔ location
+✔ loss type
+I just need: Were there any injuries, and were any third parties involved? (yes/no for each)
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-01', 'incident_type': 'collision', 'location': 'In my driveway', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 8] USER: no
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: So far I have:
+✔ policy
+✔ date
+✔ location
+✔ loss type
+I just need: Is the vehicle still drivable?
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-01', 'incident_type': 'collision', 'location': 'In my driveway', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 9] USER: no
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Your policy is active. Payments on this policy are up to date. Your coverage is 'Cobertura amplia', with a limit of $250,000.00 and a deductible of $5,000.00. Before registering your claim, let's confirm the details: policy SYN-POL-0001, incident on 2026-08-01 at In my driveway, type 'collision'. The vehicle is not drivable. Shall I go ahead and register your claim with this information? (yes/no)
+           MEMORY: {'customer_name': 'Synthetic Claimant One', 'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-01', 'incident_type': 'collision', 'location': 'In my driveway', 'coverage': 'Cobertura amplia', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 10] USER: yes
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Your claim notice has been registered. Your claim reference is SYN-CLM-2026-0001. Synthetic Adjuster Chen has been assigned to your claim SYN-CLM-2026-0001 and will contact you soon.
+           MEMORY: {'customer_name': 'Synthetic Claimant One', 'policy_number': 'SYN-POL-0001', 'claim_number': 'SYN-CLM-2026-0001', 'incident_date': '2026-08-01', 'incident_type': 'collision', 'location': 'In my driveway', 'coverage': 'Cobertura amplia', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 11] USER: yes
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Your claim SYN-CLM-2026-0001 is already registered and assigned to Synthetic Adjuster Chen. No further action is needed from you right now.
+           MEMORY: {'customer_name': 'Synthetic Claimant One', 'policy_number': 'SYN-POL-0001', 'claim_number': 'SYN-CLM-2026-0001', 'incident_date': '2026-08-01', 'incident_type': 'collision', 'location': 'In my driveway', 'coverage': 'Cobertura amplia', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 12] USER: I want to know the status of a policy.
+           AGENT: BrokerAgent  INTENT: BROKER
+           BOT: Policy SYN-POL-0001 status: active. Payments on this policy are up to date.
+           MEMORY: {'customer_name': 'Synthetic Claimant One', 'policy_number': 'SYN-POL-0001', 'claim_number': 'SYN-CLM-2026-0001', 'incident_date': '2026-08-01', 'incident_type': 'collision', 'location': 'In my driveway', 'coverage': 'Cobertura amplia', 'current_intent': 'BrokerAgent', 'previous_intent': 'ClaimsAgent'}
+
+  [TURN 13] USER: SYN-POL-0002
+           AGENT: BrokerAgent  INTENT: BROKER
+           BOT: Policy SYN-POL-0002 status: active. This request is complete.
+           MEMORY: {'customer_name': 'Synthetic Claimant One', 'policy_number': 'SYN-POL-0002', 'claim_number': 'SYN-CLM-2026-0001', 'incident_date': '2026-08-01', 'incident_type': 'collision', 'location': 'In my driveway', 'coverage': 'Cobertura amplia', 'current_intent': 'BrokerAgent', 'previous_intent': 'ClaimsAgent'}
+
+  [TURN 14] USER: thank you
+           AGENT: BrokerAgent  INTENT: BROKER
+           BOT: Policy SYN-POL-0002 status: active. This request is complete.
+           MEMORY: {'customer_name': 'Synthetic Claimant One', 'policy_number': 'SYN-POL-0002', 'claim_number': 'SYN-CLM-2026-0001', 'incident_date': '2026-08-01', 'incident_type': 'collision', 'location': 'In my driveway', 'coverage': 'Cobertura amplia', 'current_intent': 'BrokerAgent', 'previous_intent': 'ClaimsAgent'}
+
+====================================================================================================
+SCENARIO: 12. Ambiguous entity lookup with clarification
+====================================================================================================
+
+  [TURN 1] USER: I need to report a claim
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Of course. Whose name is the policy under?
+           MEMORY: {'current_intent': 'ClaimsAgent'}
+
+  [TURN 2] USER: Juan Perez
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: I found these policies under your name: la primera (Nissan Sentra 2022); la segunda (Toyota Hilux 2021). Which one is this claim about?
+           MEMORY: {'customer_name': 'Juan Perez', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 3] USER: la Hilux
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: So far I have:
+✔ customer
+✔ policy
+I just need: Tell me about the incident: what date did it occur (YYYY-MM-DD), where did it happen, and what type of loss is it (collision, theft, fire, water damage, weather, vandalism, other)?
+           MEMORY: {'customer_name': 'Juan Perez', 'policy_number': 'SYN-POL-1002', 'current_intent': 'ClaimsAgent'}
+
+====================================================================================================
+SCENARIO: 13. Already-known data reused across agents
+====================================================================================================
+
+  [TURN 1] USER: I want to know the status of a policy.
+           AGENT: BrokerAgent  INTENT: BROKER
+           BOT: Please provide the synthetic policy number.
+           MEMORY: {'current_intent': 'BrokerAgent'}
+
+  [TURN 2] USER: SYN-POL-0001
+           AGENT: BrokerAgent  INTENT: BROKER
+           BOT: Policy SYN-POL-0001 status: active. Payments on this policy are up to date.
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'current_intent': 'BrokerAgent'}
+
+  [TURN 3] USER: I need to report a claim
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Tell me about the incident: what date did it occur (YYYY-MM-DD), where did it happen, and what type of loss is it (collision, theft, fire, water damage, weather, vandalism, other)?
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'current_intent': 'ClaimsAgent', 'previous_intent': 'BrokerAgent'}
+
+====================================================================================================
+SCENARIO: 14. Resume a previous intent without restarting
+====================================================================================================
+
+  [TURN 1] USER: I need to report a claim
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Of course. Whose name is the policy under?
+           MEMORY: {'current_intent': 'ClaimsAgent'}
+
+  [TURN 2] USER: SYN-POL-0001
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: Tell me about the incident: what date did it occur (YYYY-MM-DD), where did it happen, and what type of loss is it (collision, theft, fire, water damage, weather, vandalism, other)?
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 3] USER: 2026-08-01
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: So far I have:
+✔ policy
+✔ date
+I just need: Where did the incident take place? What type of loss is this (e.g., collision, theft, fire, water damage, weather, vandalism, other)?
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-01', 'current_intent': 'ClaimsAgent'}
+
+  [TURN 4] USER: I want to know the status of a policy.
+           AGENT: BrokerAgent  INTENT: BROKER
+           BOT: Policy SYN-POL-0001 status: active. Payments on this policy are up to date.
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-01', 'current_intent': 'BrokerAgent', 'previous_intent': 'ClaimsAgent'}
+
+  [TURN 5] USER: SYN-POL-0002
+           AGENT: BrokerAgent  INTENT: BROKER
+           BOT: Policy SYN-POL-0002 status: active. This request is complete.
+           MEMORY: {'policy_number': 'SYN-POL-0002', 'incident_date': '2026-08-01', 'current_intent': 'BrokerAgent', 'previous_intent': 'ClaimsAgent'}
+
+  [TURN 6] USER: Let's continue my claim from before.
+           AGENT: ClaimsAgent  INTENT: CLAIMS
+           BOT: So far I have:
+✔ policy
+✔ date
+I just need: Where did the incident take place? What type of loss is this (e.g., collision, theft, fire, water damage, weather, vandalism, other)?
+           MEMORY: {'policy_number': 'SYN-POL-0001', 'incident_date': '2026-08-01', 'current_intent': 'ClaimsAgent', 'previous_intent': 'BrokerAgent'}

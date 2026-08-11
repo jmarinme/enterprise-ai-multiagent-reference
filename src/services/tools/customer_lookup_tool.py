@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
+from src.common.text_normalization import normalize_for_search
 from src.services.tools.synthetic.provider import SYNTHETIC_CUSTOMERS, SYNTHETIC_POLICIES
 from src.tools.models import ToolExecutionContext, ToolResult
 
@@ -48,7 +49,9 @@ class CustomerLookupTool:
     async def execute(
         self, tool_input: CustomerLookupInput, context: ToolExecutionContext
     ) -> ToolResult[CustomerSearchResult]:
-        query = tool_input.full_name.strip().lower()
+        # PBI-09-01 final validation: accent-insensitive ("Juan Perez" must still find "Juan
+        # Pérez") — a live conversational test surfaced this as a real, common-case defect.
+        query = normalize_for_search(tool_input.full_name.strip())
         matches = [
             CustomerMatch(
                 customer_id=record.customer_id,
@@ -64,7 +67,7 @@ class CustomerLookupTool:
                 ],
             )
             for record in SYNTHETIC_CUSTOMERS.values()
-            if query and query in record.full_name.lower()
+            if query and query in normalize_for_search(record.full_name)
         ]
 
         if not matches:

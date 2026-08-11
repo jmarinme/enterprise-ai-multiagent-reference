@@ -27,6 +27,13 @@ from src.agents.commercial.state import CommercialIntakeState
 from src.agents.commercial.workflow import advance_commercial_intake
 from src.agents.shared.annotation import annotate_with_prompt_and_llm
 from src.agents.shared.language import LANGUAGE_METADATA_KEY, resolve_language
+from src.agents.shared.memory import (
+    GLOBAL_MEMORY_METADATA_KEY,
+    ConversationMemory,
+    load_memory,
+    save_memory,
+    update_memory,
+)
 from src.agents.shared.state_persistence import carry_forward_other_agent_state, load_agent_state
 from src.llm.provider import LLMProvider
 from src.prompts.manager import PromptManager
@@ -48,6 +55,23 @@ _SAFE_FALLBACK_MESSAGE = {
 _NO_NOTICE_FALLBACK = {"es-MX": "Gracias — continuemos.", "en": "Thanks — please continue."}
 
 
+def _prefill_from_memory(
+    state: CommercialIntakeState, memory: ConversationMemory
+) -> CommercialIntakeState:
+    """Slot filling (PBI-09-01 requirement 2): reuse a business name or contact name already
+    established in a different domain this same conversation. Applied every turn — unlike
+    Claims/Broker, CommercialIntakeState has no field-clearing/decline transition anywhere in
+    its workflow, so there is no stale-value risk in adopting a fact resolved elsewhere even
+    after this Agent's own first turn (final validation: a caller who switches into Commercial
+    mid-flow, before reaching company_name/contact_name, must still get the reuse benefit)."""
+    updates: dict[str, str] = {}
+    if state.company_name is None and memory.business_name:
+        updates["company_name"] = memory.business_name
+    if state.contact_name is None and memory.customer_name:
+        updates["contact_name"] = memory.customer_name
+    return state.model_copy(update=updates) if updates else state
+
+
 class CommercialIntakeAgent:
     """Deterministic, multi-turn commercial-intake agent registered for the COMMERCIAL intent."""
 
@@ -62,9 +86,17 @@ class CommercialIntakeAgent:
 
     async def handle(self, request: AgentRequest, context: ConversationContext) -> AgentResponse:
         state = load_agent_state(context.metadata, _STATE_METADATA_KEY, CommercialIntakeState)
+        # PBI-09-01 final validation: see claims_agent.py's identical rationale — a domain
+        # re-entry message must never be blindly attributed to a stale last-asked question.
+        if context.current_agent is not None and context.current_agent != self.name:
+            state = state.model_copy(update={"last_asked_field": None})
         language = resolve_language(context.metadata, request.message)
         # PBI-05-01: preserve any other Agent's in-progress state across a cross-domain handoff.
         other_agent_state = carry_forward_other_agent_state(context.metadata, _STATE_METADATA_KEY)
+        # PBI-09-01: global cross-agent memory — see claims_agent.py's identical rationale.
+        # Applied every turn (see _prefill_from_memory's own docstring for why that is safe).
+        memory = load_memory(context.metadata)
+        state = _prefill_from_memory(state, memory)
 
         try:
             state, notices = await advance_commercial_intake(
@@ -89,8 +121,21 @@ class CommercialIntakeAgent:
                     **other_agent_state,
                     _STATE_METADATA_KEY: state.model_dump_json(),
                     LANGUAGE_METADATA_KEY: language,
+                    GLOBAL_MEMORY_METADATA_KEY: save_memory(memory),
                 },
             )
+
+        # PBI-09-01: feed every fact this turn actually learned/confirmed back into memory.
+        reference_numbers = list(memory.reference_numbers)
+        if state.lead_reference and state.lead_reference not in reference_numbers:
+            reference_numbers.append(state.lead_reference)
+        memory = update_memory(
+            memory,
+            agent_name=self.name,
+            business_name=state.company_name,
+            customer_name=state.contact_name,
+            reference_numbers=reference_numbers,
+        )
 
         response_text = " ".join(notices) if notices else _NO_NOTICE_FALLBACK[language]
         # PBI-04-04: diagnostic is metadata-only (technical detail end users must never see).
@@ -121,6 +166,7 @@ class CommercialIntakeAgent:
                 **other_agent_state,
                 _STATE_METADATA_KEY: state.model_dump_json(),
                 LANGUAGE_METADATA_KEY: language,
+                GLOBAL_MEMORY_METADATA_KEY: save_memory(memory),
                 "diagnostics": diagnostics,
             },
         )
