@@ -215,9 +215,19 @@ def test_chat_persists_and_reuses_the_conversation_id_across_turns() -> None:
 
 
 def test_chat_rejects_a_request_missing_required_fields() -> None:
-    response = client.post("/chat", json={"message": "hi"})
+    # PBI-11-01: userId is now deprecated/optional (identity comes from the authenticated
+    # token, not the request body) — message remains the one genuinely required field.
+    response = client.post("/chat", json={"userId": "user-1"})
 
     assert response.status_code == 422
+
+
+def test_chat_accepts_a_request_with_no_userid_at_all() -> None:
+    """PBI-11-01 regression guard: userId is deprecated — a client that stops sending it
+    entirely must still be accepted (identity comes from the Bearer token)."""
+    response = client.post("/chat", json={"message": "hello"})
+
+    assert response.status_code == 200
 
 
 def test_chat_hands_off_from_claims_to_broker_and_preserves_claims_state() -> None:

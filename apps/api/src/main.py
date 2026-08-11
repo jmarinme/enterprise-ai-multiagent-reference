@@ -26,7 +26,11 @@ def create_app() -> FastAPI:
         allow_origins=settings.cors_allowed_origins_list,
         allow_credentials=False,
         allow_methods=["GET", "POST"],
-        allow_headers=["Content-Type", CORRELATION_ID_HEADER],
+        # Authorization (PBI-11-01C): required so a browser preflight for a Bearer-token
+        # request (POST /chat, GET /conversations, GET /conversations/{id} — all now Entra
+        # ID-protected, PBI-11-01) succeeds. Explicit allow-list, never "*" — matches this
+        # middleware's existing origin/method posture (PBI-04-02, docs/sprint_04/decisions.md).
+        allow_headers=["Content-Type", CORRELATION_ID_HEADER, "Authorization"],
     )
     app.add_middleware(CorrelationIdMiddleware)
     app.include_router(health.router)

@@ -24,15 +24,19 @@ describe("sendChatMessage", () => {
     } as Response);
     globalThis.fetch = fetchMock;
 
-    await sendChatMessage({ userId: "user-1", message: "I want to report an accident." });
+    await sendChatMessage({ accessToken: "test-access-token", message: "I want to report an accident." });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toContain("/chat");
     expect(init.method).toBe("POST");
+    expect((init.headers as Record<string, string>).Authorization).toBe(
+      "Bearer test-access-token",
+    );
     const body = JSON.parse(init.body as string);
-    expect(body).toEqual({ userId: "user-1", message: "I want to report an accident." });
+    expect(body).toEqual({ message: "I want to report an accident." });
     expect(body).not.toHaveProperty("conversationId");
+    expect(body).not.toHaveProperty("userId");
   });
 
   it("includes conversationId in the request body for a follow-up turn", async () => {
@@ -51,7 +55,7 @@ describe("sendChatMessage", () => {
     globalThis.fetch = fetchMock;
 
     await sendChatMessage({
-      userId: "user-1",
+      accessToken: "test-access-token",
       message: "SYN-POL-0001",
       conversationId: "conv-1",
     });
@@ -59,7 +63,6 @@ describe("sendChatMessage", () => {
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string);
     expect(body).toEqual({
-      userId: "user-1",
       message: "SYN-POL-0001",
       conversationId: "conv-1",
     });
@@ -88,7 +91,7 @@ describe("sendChatMessage", () => {
       }),
     } as Response);
 
-    const result = await sendChatMessage({ userId: "user-1", message: "What documents do I need?" });
+    const result = await sendChatMessage({ accessToken: "test-access-token", message: "What documents do I need?" });
 
     expect(result.conversationId).toBe("conv-2");
     expect(result.citations).toHaveLength(1);
@@ -103,12 +106,12 @@ describe("sendChatMessage", () => {
       json: async () => ({ detail: "Internal Server Error: Traceback (most recent call last)..." }),
     } as Response);
 
-    await expect(sendChatMessage({ userId: "user-1", message: "hello" })).rejects.toBeInstanceOf(
+    await expect(sendChatMessage({ accessToken: "test-access-token", message: "hello" })).rejects.toBeInstanceOf(
       ChatRequestError,
     );
 
     try {
-      await sendChatMessage({ userId: "user-1", message: "hello" });
+      await sendChatMessage({ accessToken: "test-access-token", message: "hello" });
     } catch (error) {
       expect(error).toBeInstanceOf(ChatRequestError);
       expect((error as ChatRequestError).status).toBe(500);

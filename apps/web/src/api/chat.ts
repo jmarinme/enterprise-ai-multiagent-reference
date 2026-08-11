@@ -51,7 +51,10 @@ export interface ChatResponse {
 }
 
 export interface SendChatMessageOptions {
-  userId: string;
+  /** The caller's Entra ID access token (PBI-11-01) — sent as `Authorization: Bearer
+   * <accessToken>`. This is now the platform's sole source of authorization identity; no
+   * userId field is sent on the wire at all. */
+  accessToken: string;
   message: string;
   conversationId?: string | null;
 }
@@ -68,15 +71,17 @@ export class ChatRequestError extends Error {
 }
 
 export async function sendChatMessage({
-  userId,
+  accessToken,
   message,
   conversationId,
 }: SendChatMessageOptions): Promise<ChatResponse> {
   const response = await fetch(`${apiBaseUrl}/chat`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    },
     body: JSON.stringify({
-      userId,
       message,
       ...(conversationId ? { conversationId } : {}),
     }),

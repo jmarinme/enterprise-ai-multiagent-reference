@@ -9,7 +9,7 @@ describe("listConversations", () => {
     vi.restoreAllMocks();
   });
 
-  it("requests GET /conversations with the userId as a query parameter", async () => {
+  it("requests GET /conversations with the access token as a Bearer header", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => [
@@ -25,11 +25,15 @@ describe("listConversations", () => {
     } as Response);
     globalThis.fetch = fetchMock;
 
-    const result = await listConversations("web-user-123");
+    const result = await listConversations("test-access-token");
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url] = fetchMock.mock.calls[0] as [string];
-    expect(url).toContain("/conversations?userId=web-user-123");
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/conversations");
+    expect(url).not.toContain("userId");
+    expect((init.headers as Record<string, string>).Authorization).toBe(
+      "Bearer test-access-token",
+    );
     expect(result).toHaveLength(1);
     expect(result[0].title).toBe("Quiero reportar un accidente.");
   });
@@ -37,7 +41,9 @@ describe("listConversations", () => {
   it("throws a ConversationRequestError with only the status on a non-ok response", async () => {
     globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 } as Response);
 
-    await expect(listConversations("web-user-123")).rejects.toBeInstanceOf(ConversationRequestError);
+    await expect(listConversations("test-access-token")).rejects.toBeInstanceOf(
+      ConversationRequestError,
+    );
   });
 });
 
@@ -49,7 +55,7 @@ describe("getConversation", () => {
     vi.restoreAllMocks();
   });
 
-  it("requests GET /conversations/{id} with the userId as a query parameter", async () => {
+  it("requests GET /conversations/{id} with the access token as a Bearer header", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -66,10 +72,14 @@ describe("getConversation", () => {
     } as Response);
     globalThis.fetch = fetchMock;
 
-    const result = await getConversation("web-user-123", "conv-1");
+    const result = await getConversation("test-access-token", "conv-1");
 
-    const [url] = fetchMock.mock.calls[0] as [string];
-    expect(url).toContain("/conversations/conv-1?userId=web-user-123");
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/conversations/conv-1");
+    expect(url).not.toContain("userId");
+    expect((init.headers as Record<string, string>).Authorization).toBe(
+      "Bearer test-access-token",
+    );
     expect(result.messages).toHaveLength(1);
     expect(result.messages[0].role).toBe("user");
   });
@@ -78,7 +88,7 @@ describe("getConversation", () => {
     globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 404 } as Response);
 
     try {
-      await getConversation("web-user-123", "missing-conv");
+      await getConversation("test-access-token", "missing-conv");
       throw new Error("expected getConversation to reject");
     } catch (error) {
       expect(error).toBeInstanceOf(ConversationRequestError);

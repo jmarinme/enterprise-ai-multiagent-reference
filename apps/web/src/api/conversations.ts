@@ -41,8 +41,16 @@ export class ConversationRequestError extends Error {
   }
 }
 
-export async function listConversations(userId: string): Promise<ConversationSummary[]> {
-  const response = await fetch(`${apiBaseUrl}/conversations?userId=${encodeURIComponent(userId)}`);
+function authHeaders(accessToken: string): HeadersInit {
+  return { Authorization: `Bearer ${accessToken}` };
+}
+
+/** PBI-11-01: scoped exclusively to the authenticated caller (via `accessToken`) — no userId
+ * parameter is sent on the wire at all; identity comes from the validated Entra ID token. */
+export async function listConversations(accessToken: string): Promise<ConversationSummary[]> {
+  const response = await fetch(`${apiBaseUrl}/conversations`, {
+    headers: authHeaders(accessToken),
+  });
   if (!response.ok) {
     throw new ConversationRequestError(response.status);
   }
@@ -50,11 +58,12 @@ export async function listConversations(userId: string): Promise<ConversationSum
 }
 
 export async function getConversation(
-  userId: string,
+  accessToken: string,
   conversationId: string,
 ): Promise<ConversationDetail> {
   const response = await fetch(
-    `${apiBaseUrl}/conversations/${encodeURIComponent(conversationId)}?userId=${encodeURIComponent(userId)}`,
+    `${apiBaseUrl}/conversations/${encodeURIComponent(conversationId)}`,
+    { headers: authHeaders(accessToken) },
   );
   if (!response.ok) {
     throw new ConversationRequestError(response.status);

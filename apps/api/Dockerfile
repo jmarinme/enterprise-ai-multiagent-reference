@@ -26,6 +26,11 @@
 # azure-search-documents and azure-keyvault-secrets remain NOT installed: knowledgeProvider stays
 # 'local' (PBI-03-02's decision) and no SECRET_PROVIDER=key_vault env var is set on this
 # Container App, so neither is exercised at runtime yet — see docs/sprint_03/decisions.md.
+#
+# httpx and PyJWT[crypto] (PBI-11-01): required unconditionally at runtime, not just for tests
+# — api.auth.jwks fetches Microsoft Entra ID's signing keys via httpx, and api.auth.validator
+# verifies RS256 token signatures via PyJWT's cryptography backend, on every protected request
+# (POST /chat, GET /conversations, GET /conversations/{id}).
 
 FROM python:3.12-slim
 
@@ -41,7 +46,9 @@ RUN pip install --no-cache-dir \
     "aiohttp>=3.9,<4" \
     "openai>=1.40,<2" \
     "azure-identity>=1.17,<2" \
-    "azure-cosmos>=4.7,<5"
+    "azure-cosmos>=4.7,<5" \
+    "httpx>=0.27,<1" \
+    "PyJWT[crypto]>=2.9,<3"
 
 COPY apps/api/src ./app_src
 COPY src ./src

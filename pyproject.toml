@@ -54,3 +54,6 @@ no_implicit_optional = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["."]
+markers = [
+    "no_auth_override: exempts a test module from the tests/unit/api, tests/conversational, and tests/e2e convenience auth-override fixture (see tests/conftest.py) — used only by tests/unit/api/test_auth.py, which must exercise the real Entra ID token-validation dependency, not a bypass.",
+]

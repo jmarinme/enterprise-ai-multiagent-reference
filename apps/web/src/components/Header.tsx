@@ -1,3 +1,4 @@
+import type { AccountInfo } from "@azure/msal-browser";
 import { useApiStatus } from "../hooks/useApiStatus";
 
 const CONNECTIVITY_LABEL: Record<string, string> = {
@@ -6,8 +7,16 @@ const CONNECTIVITY_LABEL: Record<string, string> = {
   disconnected: "Sin conexión",
 };
 
-export function Header() {
+interface HeaderProps {
+  /** The authenticated Entra ID account (PBI-11-01) — display only (name/email); never used
+   * as an authorization key. */
+  account: AccountInfo;
+  onSignOut: () => void;
+}
+
+export function Header({ account, onSignOut }: HeaderProps) {
   const { connectivity } = useApiStatus();
+  const displayName = account.name ?? account.username;
 
   return (
     <header className="app-header">
@@ -16,6 +25,12 @@ export function Header() {
         <span className={`status-badge status-badge--${connectivity}`} role="status">
           {CONNECTIVITY_LABEL[connectivity]}
         </span>
+        <span className="app-header__account" title={account.username}>
+          {displayName}
+        </span>
+        <button type="button" className="app-header__sign-out" onClick={onSignOut}>
+          Cerrar sesión
+        </button>
       </div>
     </header>
   );
