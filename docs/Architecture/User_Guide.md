@@ -9,7 +9,7 @@
 | | |
 |---|---|
 | **Document Title** | TMX Enterprise AI Reference Platform — User Guide |
-| **Version** | 1.0 |
+| **Version** | 1.1 (PBI-10-06: refreshed after Microsoft Entra ID integration) |
 | **Date** | 2026-08-11 |
 | **Project Name** | TMX Enterprise AI Reference Platform (academic reference implementation) |
 | **Intended Audience** | Business users: Claims Representatives, Brokers, Commercial Staff, and other internal users interacting with the conversational assistant |
@@ -61,18 +61,56 @@ self-service application.
 The platform is accessed through a standard web browser, at the address provided by your
 project/IT contact. No installation is required.
 
-**Authentication is not implemented in this version of the platform.** There is no login screen,
-username, or password. The application automatically assigns each browser a private, anonymous
-identifier the first time it is opened, so that a returning visit to the same browser shows the
-same conversation history. This identifier is not a user account and does not verify who is
-using the application — no credentials are exchanged, requested, or stored, and this guide does
-not include any because none exist.
+### 3.1 Sign in with Microsoft
 
-> **Note for administrators:** the absence of authentication is a known, explicitly deferred
-> capability of this academic build, not an oversight. See the platform's Administrator
-> documentation for the full statement of this limitation.
+The application requires signing in with a Microsoft account before it can be used. Opening the
+application shows a sign-in screen — not the chat interface — until sign-in completes.
 
-*Figure 1 – Insert screenshot of the application's landing/main screen (no login screen exists to capture).*
+1. Select **"Iniciar sesión con Microsoft"** ("Sign in with Microsoft").
+2. A Microsoft sign-in window (a popup) opens.
+
+*Figure 1a – Insert screenshot of the sign-in screen ("Iniciar sesión con Microsoft" button).*
+
+### 3.2 Selecting an account
+
+In the Microsoft sign-in popup, choose the Microsoft account to use (or enter your work,
+school, or personal Microsoft account credentials if none is already remembered by the browser).
+This screen is presented directly by Microsoft — the application itself never asks for or sees a
+password. Once the popup completes, it closes automatically and the chat interface loads.
+
+*Figure 1b – Insert screenshot of the Microsoft account-selection popup.*
+
+### 3.3 Authenticated session
+
+Once signed in, the header at the top of the application shows your account's display name and a
+connectivity status indicator. Every conversation created from this point on is associated with
+your signed-in identity — not with the browser you happen to be using (Section 3.5).
+
+*Figure 1c – Insert screenshot of the signed-in header showing the account name and "Cerrar sesión" button.*
+
+### 3.4 Session expiration
+
+Your sign-in is kept active automatically in the background — most of the time, you will never
+notice a token being renewed. If your session has been inactive long enough that it can no
+longer be renewed automatically, the application will prompt you to sign in again (a new
+Microsoft sign-in popup) the next time it needs to send a request. Simply complete the sign-in
+again as in Section 3.1–3.2; your prior conversations are not lost — they reappear in the
+sidebar's conversation history once you are signed in again (Section 3.5).
+
+### 3.5 Conversation history after login
+
+Conversation history is tied to your **signed-in identity**, not to the browser or device — a
+change from earlier versions of this platform. Signing in with the same Microsoft account from a
+different browser or computer shows the same conversation history; signing in with a
+**different** Microsoft account shows only that account's own conversations, never another
+user's. This is enforced by the platform itself, not merely by the interface — see the
+platform's Administrator documentation for the technical detail.
+
+### 3.6 Sign out
+
+Select **"Cerrar sesión"** ("Sign out") in the header to end your session. You are returned to
+the sign-in screen (Section 3.1). Signing out does not delete any conversation — signing back in
+with the same account shows the same conversation history as before.
 
 ---
 
@@ -401,8 +439,8 @@ claim, determines coverage, or issues a quote or premium. Those decisions are ma
 
 Only limitations that are actually present in this version of the platform are listed here.
 
-- **No user authentication.** There is no login, and no verification of who is using the
-  application (Section 3).
+- **A Microsoft account is required.** There is no anonymous or guest access — every use of the
+  application requires signing in with Microsoft (Section 3).
 - **Synthetic data only.** Every policy, claim, broker, customer, and commission referenced by the
   assistant is fabricated for demonstration purposes — there is no connection to any real
   business system or real customer data.
@@ -431,7 +469,9 @@ Only limitations that are actually present in this version of the platform are l
 | I got a message saying there was a problem connecting, with a "Reintentar" (Retry) button | A temporary connectivity issue occurred while sending the message | Select "Reintentar" to resend the same message; if the problem continues, try again shortly |
 | The assistant asked me for my policy/broker/transaction number again after I already gave it | The number provided was not found in the platform's synthetic records, so the assistant is asking you to verify and re-enter it | Double-check the number and provide it again exactly as issued (e.g., `SYN-POL-0001`) |
 | I switched topics and the assistant asked me something I already answered earlier | That specific detail is not one of the facts the platform automatically carries across topics (Section 12) | Provide the detail again for the new specialist area — this is expected behavior, not an error |
-| I don't see my previous conversation in the sidebar | You may be using a different browser/device, or browser storage was cleared | Conversation history is tied to this browser only; it cannot currently be transferred between browsers or devices |
+| I don't see my previous conversation in the sidebar | You may be signed in with a different Microsoft account than the one used to create that conversation | Conversation history is tied to your signed-in Microsoft account, not the browser (Section 3.5) — confirm you are signed in with the same account, using "Cerrar sesión" and signing in again if needed |
+| The sign-in popup did not appear, or closed without completing sign-in | The browser may have blocked the popup, or the sign-in was cancelled | Allow popups for this site and try "Iniciar sesión con Microsoft" again |
+| I was suddenly asked to sign in again in the middle of using the application | Your session had been inactive long enough that it could no longer be renewed automatically (Section 3.4) | Sign in again; your previous conversations are not lost and reappear once signed in |
 | The claim/lead reference number I received looks different from a prior example in this guide | Reference numbers include a sequence number that increases with each new record registered | This is expected — the exact number will vary; the format itself (e.g., `SYN-CLM-2026-000x`) is what matters |
 
 ---
@@ -455,11 +495,13 @@ Intake requests — no forms, no separate systems.
 
 **Common user actions**
 
+- Sign in with "Iniciar sesión con Microsoft" the first time you open the application.
 - Type your request in plain Spanish or English — no special commands needed.
 - Answer the assistant's follow-up questions one at a time.
 - Select "+ Nueva conversación" to start over.
 - Select any item in the conversation history to reopen it.
 - Select "Reintentar" if a message fails to send.
+- Select "Cerrar sesión" to sign out.
 
 **Typical conversation flow**
 

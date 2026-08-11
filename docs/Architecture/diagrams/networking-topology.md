@@ -70,6 +70,13 @@ flowchart TB
 
 ## Reading this diagram
 
+- **This is a network-layer diagram — it does not show application-layer authentication.** The
+  `Internet --> API` arrow above is unchanged since Microsoft Entra ID authentication was added
+  (PBI-11-01): every request over that arrow now additionally carries a Bearer token validated
+  inside the API Container App itself (`apps/api/src/api/auth/`) before reaching any business
+  logic — see `docs/Architecture/diagrams/authentication-request-flow.md` for that request-level
+  view and [ADR-0010](../adr/0010-enterprise-authentication-entra-id.md) for the decision.
+  Network-layer reachability (this diagram's actual scope) is unaffected by that change.
 - **Solid arrows** exist today when `enablePrivateNetworking = true`. **Dashed** elements
   (Azure Front Door) are explicitly deferred — see ADR-0002.
 - The API Container App reaches all four data-plane services exclusively through their Private

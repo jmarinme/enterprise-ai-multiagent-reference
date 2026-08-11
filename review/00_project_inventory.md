@@ -31,7 +31,7 @@ validated multiple times, most recently for this review's own immediate predeces
 | Test files (`test_*.py` under `tests/`) | 93 | 76 | +17 |
 | `tests/e2e/` real test files | 1 (`test_load.py`) | 0 | +1 |
 | `tests/conversational/` real test files | 3 | 0 | +3 |
-| ADRs | 3 | 2 | +1 (`0003-azure-functions-tool-and-workflow-layer.md`) |
+| ADRs | 10 (as of this PBI-10-06 documentation refresh; 3 at this table's original snapshot) | 2 | +1 since original snapshot (`0003-...`); +7 more since, most recently [ADR-0010](../docs/Architecture/adr/0010-enterprise-authentication-entra-id.md) (Microsoft Entra ID authentication) |
 | Bicep modules | 17 | 15 | +2 (`function-app.bicep`, `storage-account.bicep`, `monitor-alerts.bicep` — net +3 shown as +2 due to a rename/consolidation not investigated further) |
 | Sprints with a logged `README.md` | 9 (`sprint_00`–`sprint_09`) | 6 | +3 |
 
@@ -54,7 +54,7 @@ remediation, and this review's own immediate predecessor (conversation intellige
 | Container runtime | Azure Container Apps | 2 apps live in DEV (`ca-tmxap-dev-api`, `ca-tmxap-dev-web`), confirmed via `az containerapp show` during this review | Unchanged |
 | Registry | Azure Container Registry | `acrtmxapdevl3fgxt`, confirmed live, new API image tag present from this session's own deployment | Unchanged |
 | Secrets | Azure Key Vault | `kv-tmxap-dev-l3fgxt` provisioned; `EnvironmentSecretProvider` (default) / `AzureKeyVaultSecretProvider` (opt-in) | Unchanged |
-| Authentication | Microsoft Entra ID | **Still not implemented.** No token-validation middleware anywhere in `apps/api/src/`; `userId` remains a client-supplied, unauthenticated string on every endpoint | **Unchanged — still the single largest gap** |
+| Authentication | Microsoft Entra ID | **Implemented and live in DEV** (PBI-11-01 through PBI-11-01D). `apps/api/src/api/auth/` validates signature/expiry/audience/issuer on every request via MSAL Browser/React (OAuth2 Authorization Code + PKCE) on the frontend; identity is `f"{tid}:{oid}"`, never a client-supplied `userId`. See [ADR-0010](../docs/Architecture/adr/0010-enterprise-authentication-entra-id.md). | **Resolved — formerly the single largest gap; now closed and regression-tested** (`review/02_security_review.md` §3b, `review/04_risk_register.md` RISK-025/026) |
 | IaC | Azure Bicep | 17 modules + `main.bicep` + 3 `.bicepparam` files | +2 modules net (function-app, storage-account, monitor-alerts) |
 | CI/CD | Azure DevOps Pipelines | `azure-pipelines.yml`, now with a real `SecurityScan` stage (pip-audit, detect-secrets, npm audit) and a `ContainerBuildValidation` stage for feature branches | **Improved**: SCA/secret scanning added (was a MEDIUM gap before) |
 | Observability | OpenTelemetry, App Insights, Azure Monitor, Log Analytics | App Insights + Log Analytics provisioned; structured logging + correlation-ID propagation; **3 metric alerts + 1 action group now provisioned** (`monitor-alerts.bicep`, confirmed live via `az resource list`). OpenTelemetry SDK still not present | **Improved**: alerting added (was a MEDIUM/operational gap); OTel itself still absent |

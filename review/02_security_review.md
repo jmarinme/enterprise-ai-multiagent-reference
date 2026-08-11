@@ -22,63 +22,76 @@ allow-listed in CI with an inline justification (pytest-only CVE, fixed only in 
 finding should be handled — documented, scoped, not silent — and is noted here as a positive
 practice, not a risk.
 
-## 3b. Authentication & authorization — the platform's single largest gap
+## 3b. Authentication & authorization — RESOLVED (Microsoft Entra ID, PBI-11-01 through PBI-11-01D)
 
-- **No authentication mechanism exists anywhere in `apps/api/src/`.** Grepped for
-  JWT/OAuth/Entra/Bearer-token validation middleware — the only matches are unrelated (Azure SDK
-  client credentials for the app's *own* outbound calls to Azure OpenAI/AI Search, not inbound
-  request authentication).
-- Every endpoint (`POST /chat`, `GET /conversations`, `GET /conversations/{id}`) accepts a
-  client-supplied `userId` string with zero verification (`apps/api/src/api/routes/chat.py`:
-  `class ChatRequest(_CamelModel): ... user_id: str`; `conversations.py`:
-  `user_id: str = Query(alias="userId")`).
-- `GET /conversations/{conversationId}?userId=<any-string>` returns that user's full conversation
-  history to *any* caller who supplies (or guesses) their `userId` — a textbook IDOR
-  (`conversations.py::get_conversation`, no ownership check beyond the unauthenticated `userId`
-  value used as the query key itself). Verified by reading the handler: it passes
-  `user_id`/`conversation_id` straight to `repository.get_conversation(user_id, conversation_id)`
-  with no comparison against any authenticated caller identity, because none exists.
-- No admin/internal route exists to separately protect.
-- This is a known, **intentionally deferred** gap for the academic implementation scope
-  (CLAUDE.md §4.5 names Entra ID; `docs/sprint_00/security-baseline.md` §7 scopes it out for
-  early sprints) — not a surprise, and not an implementation oversight. "Intentionally deferred"
-  and "resolved" are different things: deferring the work does not change what the code currently
-  does at runtime, so this finding is reported at full severity below, not softened for being
-  planned.
+This section previously reported the platform's single largest gap: no authentication anywhere
+in `apps/api/src/`, and the resulting IDOR. Re-checked from scratch against the current
+repository, not against the prior review's conclusions, per this review's own instruction not to
+reuse them.
 
-**Severity: HIGH | Likelihood: HIGH** for both the missing authentication and the IDOR that
-results from it. This score reflects **application control** — what the code itself guarantees,
-independent of where it happens to be deployed today — and is the score that governs the
-production Go/No-Go decision (`05_executive_summary.md`).
+- **A real authentication mechanism now exists and is live in DEV.** `apps/api/src/api/auth/`
+  (`validator.py`'s `EntraTokenValidator`, `jwks.py`'s `JwksProvider`, `dependency.py`'s
+  `get_current_user`) validates, on every call to `POST /chat`, `GET /conversations`, and
+  `GET /conversations/{id}`: RS256 signature (against Microsoft's live JWKS,
+  `https://login.microsoftonline.com/common/discovery/v2.0/keys`), expiry, audience (exact match
+  against `ENTRA_API_AUDIENCE`, the bare API client ID GUID — confirmed correct against a real
+  live token, PBI-11-01D), and issuer (self-consistency check against the token's own `tid`,
+  correct for a `/common` multi-tenant authority). `get_current_user` is a required FastAPI
+  dependency on all three routes — confirmed by reading `apps/api/src/api/routes/chat.py` and
+  `conversations.py` directly, not inferred.
+- **`ChatRequest.user_id` and the `userId` query parameter are now deprecated, optional, and
+  never read for authorization.** Confirmed by reading the route handlers: identity passed to
+  `ConversationRepository` is exclusively `current_user.user_id` (derived from the validated
+  token as `f"{tid}:{oid}"`), never the request body/query value. The old, vulnerable code path
+  (`user_id: str` required field, used directly as the Cosmos partition key with no verification)
+  no longer exists.
+- **The IDOR is closed, and proven closed, not merely designed to be closed.**
+  `tests/unit/api/test_auth.py` includes dedicated regression tests that mint two genuinely
+  different Entra identities and confirm: (1) User B cannot read User A's conversation even when
+  supplying User A's own old `userId` and real `conversationId` (`404`, not `200`); (2) User B's
+  conversation list never includes User A's conversations; (3) two different authenticated
+  identities get fully independent conversation histories. This is the concrete evidence this
+  review requires — not a claim that the design should prevent IDOR, but a test that proves a
+  simulated attack against the real code fails.
+- **CORS was found broken for exactly this new authenticated flow during the same work
+  (PBI-11-01C) and is now fixed and regression-tested.** `apps/api/src/main.py`'s
+  `CORSMiddleware` `allow_headers` now explicitly includes `Authorization` (previously only
+  `Content-Type`/`X-Correlation-ID`) — confirmed by reading `main.py` directly, and by
+  `tests/unit/api/test_cors.py`'s dedicated preflight tests for both `/chat` and `/conversations`.
+  This was a real defect found and fixed while bringing the new authentication flow to a working
+  state, not a hypothetical.
+- **No client secret was introduced anywhere.** The frontend (`apps/web/src/auth/`) uses OAuth2
+  Authorization Code + PKCE via MSAL Browser/React — the standard, currently-recommended flow for
+  a public client that cannot hold a secret; confirmed no client secret exists in
+  `apps/web/`'s source or environment configuration (grepped, none found).
+- **What remains true, unchanged from before**: no rate limiting exists on the now-authenticated
+  endpoints (§3d) — a valid, authenticated caller can still send unlimited requests; no
+  security-event alerting exists for authentication failures specifically (a burst of `401`s is
+  not distinguished from any other error in the current alert rules, §3c A09). These are real,
+  separate, still-open gaps — closing authentication does not close them, and this review does
+  not claim it does.
 
-**Current-environment exposure, reported separately, does not change the score above.** The live
-DEV Container App runs inside the Tokio Marine Mexico corporate Azure tenant/subscription, but
-that tenant boundary governs *who can administer the Azure resources* (subscription RBAC), not
-*who can call the public HTTP endpoint* — `enablePrivateNetworking=false` (confirmed live) means
-the API's ingress is a normal public internet endpoint with no network ACL, IP allowlist, or
-gateway auth in front of it. Reachability is therefore not meaningfully reduced by the
-corporate-tenant framing, and likelihood of *technical* exploitation stays HIGH regardless of
-context. What genuinely differs in the current DEV/academic environment is the *consequence*:
-every record behind the API is synthetic demonstration data (`SYN-*`/`CUS-SYN-*` prefixes
-throughout `src/services/tools/synthetic/provider.py`) — there is no real customer, policy, or
-personal data to expose — and there is no real, indexed user base to make the endpoint an
-attractive target. This is why the same finding can simultaneously support **GO for continued
-DEV/academic use** and **NO-GO for production** (`05_executive_summary.md` §7): the underlying
-gap is identical in both settings; only what there is to lose differs.
+**Severity: RESOLVED** (previously HIGH/HIGH for both the missing authentication and the
+resulting IDOR). This reflects **application control** — what the code itself now guarantees,
+independent of where it is deployed — verified by reading the current authentication code
+directly and by the passing regression test suite cited above, not by re-asserting the prior
+review's unresolved status. See `04_risk_register.md` (RISK-001, RISK-002) for the full
+before/after evidence trail and [ADR-0010](../docs/Architecture/adr/0010-enterprise-authentication-entra-id.md)
+for the architectural decision record.
 
 ## 3c. OWASP Top 10 (2021) — systematic check
 
 | # | Category | Finding | Severity |
 |---|---|---|---|
-| A01 | Broken Access Control | Confirmed IDOR (§3b). CORS is configuration-driven, never `*` (`main.py`: `allow_origins=settings.cors_allowed_origins_list`) — good. | HIGH |
+| A01 | Broken Access Control | IDOR resolved (§3b) — regression-tested proof two authenticated identities cannot read each other's conversations. CORS is configuration-driven, never `*` (`main.py`: `allow_origins=settings.cors_allowed_origins_list`), and now correctly allows `Authorization` on preflight (PBI-11-01C fix, §3b) — good. | LOW (resolved; no rate-limiting-based access control exists — see A04) |
 | A02 | Cryptographic Failures | No plaintext-sensitive-data storage found (no PII exists). TLS is Azure Container Apps' own ingress default (not independently verified as enforced-only, no HSTS header set — see A05). No password hashing anywhere (no passwords exist — no local auth). | LOW |
 | A03 | Injection | No SQL/NoSQL/command/LDAP/template injection surface found — no raw SQL exists (Cosmos SDK, parameterized by design), no `eval`/`exec`/`os.system`/`subprocess` call anywhere in `src/`/`apps/api/src/` (grepped, zero real hits — the only "eval(" text matches are in docstrings explicitly stating none is used), Jinja2-free custom prompt renderer (`src/prompts/renderer.py`, explicitly documents "no third-party templating engine, no eval()"). | INFO (none found) |
 | A04 | Insecure Design | No rate limiting, no account lockout (no accounts exist), no password-reset flow (no passwords exist) — see A07/rate-limiting note below. | MEDIUM |
 | A05 | Security Misconfiguration | No security-headers middleware (`CSP`/`HSTS`/`X-Frame-Options`/`X-Content-Type-Options`) anywhere in `apps/api/src/` — grepped, zero hits. Both Dockerfiles run as root (no `USER` directive in `apps/api/Dockerfile` or `apps/web/Dockerfile`). `apps/web/Dockerfile`'s production `CMD` is `npm run preview`, which Vite's own documentation states is not intended for production serving. Cosmos/Key Vault/AI Search/OpenAI all have `publicNetworkAccess: Enabled` in DEV (`enablePrivateNetworking=false` in `dev.bicepparam`) — internet-reachable at the network layer, mitigated by RBAC + Managed-Identity-only auth (`disableLocalAuth: true` on Cosmos, RBAC-only Key Vault, admin user disabled on ACR — all independently confirmed in Bicep), with a documented production remediation path already written (`docs/Architecture/adr/0002-vnet-private-endpoints-hardening.md`). | MEDIUM |
 | A06 | Vulnerable & Outdated Components | `fastapi`, `pydantic`, `uvicorn`, React 18.3, TypeScript 5.5 are all current, actively-maintained major versions with no widely-known critical CVE at time of review. CI runs `pip-audit`/`npm audit` on every build (`SecurityScan` stage) with results published as build artifacts — a real, automated gate, not a point-in-time manual claim. No Python dependency lockfile exists (`pyproject.toml` uses `>=x,<y` ranges only), so the exact resolved version set is not reproducible build-to-build — a supply-chain reproducibility gap, not a known-vulnerability one. | LOW (current deps) / MEDIUM (no lockfile) |
-| A07 | Identification & Authentication Failures | N/A — no authentication exists to fail (see A02/§3b). No MFA (no auth). No session mechanism (stateless `userId` per request). | Subsumed by §3b |
+| A07 | Identification & Authentication Failures | Resolved (§3b) — `EntraTokenValidator` validates signature/expiry/audience/issuer on every request; identity is `tid:oid`, never derived from anything client-supplied. MFA is delegated to Microsoft Entra ID's own tenant policy (outside this codebase, not independently verified in this review — a scope gap, not a code defect). No local session/password mechanism exists to fail (token-based, stateless). | LOW |
 | A08 | Software & Data Integrity Failures | No deserialization of untrusted data found (Pydantic model validation only, strict typed parsing — not `pickle`/`yaml.load` on user input). Container images are built and pushed via `az acr build` in CI with commit/build-traceable tags (never `latest`, confirmed in `azure-pipelines.yml`'s own tagging convention and this session's own deployment, which used `dev-20260811024920-pbi0901`) — good image-integrity practice. No image signing/SBOM found. | LOW |
-| A09 | Security Logging & Monitoring Failures | Structured JSON logs with correlation IDs exist and were independently re-verified live in this review. No explicit "failed auth attempt" logging exists (there is nothing to fail — no auth). 3 metric alerts (error rate, latency, availability) are now live (`monitor-alerts.bicep`, confirmed via `az resource list`) — a real improvement since the prior review's "no alerting" finding, though these are infra-health alerts, not security-event alerts (no alert fires on, e.g., a burst of 404s on `/conversations/{id}` that might indicate ID-guessing). | MEDIUM |
+| A09 | Security Logging & Monitoring Failures | Structured JSON logs with correlation IDs exist and were independently re-verified live in this review. Authentication now exists (§3b), but a distinguishable "failed token validation" log signal / alert does not — `get_current_user` maps every validation failure to a generic `401` (correct, prevents information leakage to the caller) without a dedicated audit log line or metric, so a burst of `401`s (e.g., a credential-stuffing or token-tampering attempt) would not be distinguished from routine client errors in the current alert rules. 3 metric alerts (error rate, latency, availability) remain infra-health alerts, not security-event alerts. | MEDIUM |
 | A10 | SSRF | No user-controlled URL is ever fetched server-side — grepped for outbound HTTP calls keyed off request input, found none. Every outbound call target (Azure OpenAI endpoint, AI Search endpoint, Cosmos endpoint) is a fixed configuration value, never derived from a request. | INFO (none found) |
 
 ## 3d. Application-specific risks
@@ -128,10 +141,15 @@ gap is identical in both settings; only what there is to lose differs.
 
 ## Summary count (feeds `04_risk_register.md`)
 
+Updated after re-running this review against the current repository — authentication (§3b) is no
+longer a HIGH finding, resolved via Microsoft Entra ID (PBI-11-01 through PBI-11-01D). Every
+other finding below was independently re-checked, not carried forward unchanged.
+
 | Severity | Count |
 |---|---|
 | CRITICAL | 0 |
-| HIGH | 2 (no authentication; the resulting IDOR) |
-| MEDIUM | 5 (no rate limiting/message-length bound, security headers absent, root containers + non-production web server, no Python dependency lockfile, network isolation deferred-with-mitigation, security-event alerting absent) |
+| HIGH | 0 |
+| MEDIUM | 6 (no rate limiting/message-length bound — now applies to authenticated callers too, security headers absent, root containers + non-production web server, no Python dependency lockfile, network isolation deferred-with-mitigation, security-event/failed-auth alerting absent) |
 | LOW | 3 (TLS not independently re-verified, no image signing/SBOM, current-but-unpinned dependency versions) |
 | INFO | 3 (well-managed CVE suppression, no injection surface found, no SSRF surface found) |
+| RESOLVED (since prior review) | 2 (missing authentication; the resulting IDOR — §3b) |

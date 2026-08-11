@@ -1,7 +1,7 @@
 # TMX Enterprise AI Reference Platform — Deployment Guide
 
-**Document version:** 1.0 — 2026-08-11 (PBI-10-03)
-**Status:** Reflects the DEV environment as actually deployed and validated in this repository as of this date.
+**Document version:** 1.1 — 2026-08-11 (PBI-10-06: refreshed after Microsoft Entra ID integration)
+**Status:** Reflects the DEV environment as actually deployed and validated in this repository as of this date, including live Microsoft Entra ID authentication (PBI-11-01 through PBI-11-01D).
 
 ---
 
@@ -70,6 +70,7 @@ from two deployable applications and a set of managed Azure backing services.
 | **Azure AI Search** | Provisioned as infrastructure; **not currently used at runtime** — the deployed API uses the local `KnowledgeProvider` (see Section 8). | `ops/bicep/modules/ai-search.bicep`; `src/rag/azure_ai_search_provider.py` |
 | **Cosmos DB** | Conversation history persistence, partitioned by `userId`. | `ops/bicep/modules/cosmos-db.bicep`; see [ADR-0004](adr/0004-conversation-store-selection.md) |
 | **Azure Container Apps** | Hosting runtime for both the API and Web applications. | `ops/bicep/modules/container-app.bicep`; see [ADR-0005](adr/0005-application-hosting-strategy.md) |
+| **Microsoft Entra ID** | End-user authentication for the Web app (OAuth2 Authorization Code + PKCE via MSAL React) and Bearer-token JWT validation for the API (signature/expiry/audience/issuer via JWKS). | `apps/web/src/auth/`, `apps/api/src/api/auth/`; see [ADR-0010](adr/0010-enterprise-authentication-entra-id.md) |
 
 ### 2.1 High-level deployment flow
 
@@ -119,6 +120,7 @@ All resources below are declared in `ops/bicep/main.bicep` and its modules, and 
 | Web Container App | `modules/container-app.bicep` (instance `webContainerApp`) | Runs the React frontend; `activeRevisionsMode: 'Single'`. |
 | Action Group | `modules/monitor-alerts.bicep` (`actionGroup`) | Alert notification target (email, when `alertEmailAddress` is set). |
 | Metric Alerts | `modules/monitor-alerts.bicep` (`errorRateAlert`, `latencyAlert`, `availabilityAlert`) | Application Insights-backed alert rules on the API Container App. |
+| Microsoft Entra ID App Registration | Not a Bicep-managed resource (App Registrations are not an ARM resource type this template deploys) — configured directly in Entra ID, referenced by the API/Web Container Apps' environment variables (Section 7.7/8). | `apps/api/src/api/auth/`, `apps/web/src/auth/`; see [ADR-0010](adr/0010-enterprise-authentication-entra-id.md) |
 
 ### 3.2 Provisioned but not exercised at runtime in DEV
 
@@ -141,10 +143,11 @@ All resources below are declared in `ops/bicep/main.bicep` and its modules, and 
 - **Azure Front Door / Application Gateway / WAF**: not present anywhere in `ops/bicep/`. Both
   Container Apps remain directly, publicly reachable via their own
   `*.azurecontainerapps.io` ingress. See [ADR-0002](adr/0002-vnet-private-endpoints-hardening.md).
-- **User-facing Microsoft Entra ID authentication**: CLAUDE.md §4.5 specifies Entra ID/OAuth2/OIDC
-  for the frontend. No such implementation exists in `apps/web/` (no MSAL/OIDC library in
-  `package.json`) or `apps/api/` (no auth middleware/JWT validation in `apps/api/src/api/`). See
-  Section 12 for the explicit deferral statement.
+
+> **User-facing Microsoft Entra ID authentication is now implemented and live in DEV** (PBI-11-01
+> through PBI-11-01D) — it is no longer a deferred item. See Section 3.1's Entra ID App
+> Registration row, Section 7.7, Section 8's `ENTRA_*`/`VITE_ENTRA_*` runtime configuration, and
+> [ADR-0010](adr/0010-enterprise-authentication-entra-id.md).
 
 ---
 
@@ -328,6 +331,98 @@ Apps' `Multiple` revision mode, which supports weighted traffic splits across co
 revisions, is **not** configured anywhere in this repository.) A prior, deactivated revision
 remains present (not deleted) and has been directly observed in practice — see Section 10.
 
+### 7.7 Microsoft Entra ID configuration
+
+Unlike every other resource in this guide, the Entra ID **App Registration itself is not managed
+by `ops/bicep/`** — App Registrations are not an ARM resource type this template deploys; they are
+configured directly in the Microsoft Entra admin center and referenced by the API/Web Container
+Apps' environment variables (Section 8). This subsection documents what must exist in the App
+Registration for a deployment to work, and the exact variables that connect it to the deployed
+Container Apps. See [ADR-0010](adr/0010-enterprise-authentication-entra-id.md) for the full
+architectural decision.
+
+**App Registration** (single App Registration, used by both the SPA and as the API's own
+audience):
+
+- **Authority**: `https://login.microsoftonline.com/common` — deliberately the multi-tenant
+  `/common` endpoint, not a fixed tenant, so both internal and external users can sign in. No
+  tenant ID is hardcoded anywhere in this platform's configuration.
+- **Application (client) ID**: `67d95215-5a31-416a-99ab-5fe203fb7c32` in the confirmed DEV
+  registration — not a secret; the same value is used as `ENTRA_CLIENT_ID` (API),
+  `VITE_ENTRA_CLIENT_ID` (Web), and as the bare-GUID audience the API validates against
+  (`ENTRA_API_AUDIENCE`).
+- **Platform type**: Single-page application (SPA) — required for the Authorization Code + PKCE
+  flow without a client secret.
+
+**Redirect URIs** (both must be registered as **SPA** redirect URIs — not "Web"):
+
+- The SPA root, e.g. `https://<web-app-fqdn>/` — used for the app's own load/session-restore.
+- The dedicated **redirect-bridge page**, e.g. `https://<web-app-fqdn>/auth-bridge.html` — MSAL
+  Browser 5.x's `loginPopup()`/silent-token-renewal flows complete via a `BroadcastChannel`-based
+  bridge page (`apps/web/auth-bridge.html` + `apps/web/src/auth-bridge.ts`), not the SPA root
+  (see [ADR-0010](adr/0010-enterprise-authentication-entra-id.md)'s "Frontend: dedicated
+  redirect-bridge page" decision, PBI-11-01B). **Both** URIs must be registered before a
+  deployment to a new hostname (e.g. a new DEV environment) will complete sign-in successfully —
+  see the troubleshooting entry in Section 13.
+
+**API scope** ("Expose an API"):
+
+- Application ID URI: `api://67d95215-5a31-416a-99ab-5fe203fb7c32` (in the confirmed DEV
+  registration).
+- Scope: `access_as_user` (delegated) — the frontend requests
+  `api://67d95215-5a31-416a-99ab-5fe203fb7c32/access_as_user` as `VITE_ENTRA_API_SCOPE`.
+
+**API environment variables** (`apps/api/`, see `.env.example` and Section 8):
+
+| Variable | Confirmed DEV value | Purpose |
+|---|---|---|
+| `ENTRA_AUTHORITY` | `https://login.microsoftonline.com/common` | Base authority `EntraTokenValidator`/`JwksProvider` derive the JWKS discovery URL from. |
+| `ENTRA_CLIENT_ID` | `67d95215-5a31-416a-99ab-5fe203fb7c32` | The App Registration's client ID. |
+| `ENTRA_API_AUDIENCE` | `67d95215-5a31-416a-99ab-5fe203fb7c32` | **The bare API client ID GUID — not the Application ID URI.** A real Entra v2.0 access token's `aud` claim is the bare GUID, confirmed against a live token (PBI-11-01D); the `api://...` form is only the frontend's requested scope, never the token's actual audience. See the troubleshooting entry in Section 13. |
+
+**Web build variables** (`apps/web/`, baked in at `docker build` time — see Section 5's note
+that Vite inlines `VITE_*` vars at build, not container runtime):
+
+| Variable | Confirmed DEV value | Purpose |
+|---|---|---|
+| `VITE_ENTRA_AUTHORITY` | `https://login.microsoftonline.com/common` | MSAL instance authority. |
+| `VITE_ENTRA_CLIENT_ID` | `67d95215-5a31-416a-99ab-5fe203fb7c32` | MSAL instance client ID. |
+| `VITE_ENTRA_API_SCOPE` | `api://67d95215-5a31-416a-99ab-5fe203fb7c32/access_as_user` | The delegated scope requested on every token acquisition (`loginRequest.ts`). |
+| `VITE_ENTRA_REDIRECT_URI` | unset → defaults to `<this deployment's own origin>/auth-bridge.html` | Must resolve to the redirect-bridge page registered above, not the SPA root. Only set explicitly if the registered bridge URI differs from the app's own origin. |
+| `VITE_ENTRA_POST_LOGOUT_REDIRECT_URI` | unset → defaults to `<this deployment's own origin>` | Where the user lands after sign-out — the SPA root, never the bridge page (which has no UI). |
+
+**None of the above are secrets** — a SPA client ID, an authority URL, and a token
+audience/scope are all meant to be public; the API never holds a client secret for this flow
+(Authorization Code + PKCE, [ADR-0010](adr/0010-enterprise-authentication-entra-id.md)).
+
+**Authentication smoke test** (manual — not yet part of the automated `SmokeTests` pipeline
+stage, see Section 9):
+
+1. Load the deployed Web app; confirm the sign-in screen (not the chat UI) renders for an
+   unauthenticated visitor.
+2. Sign in with a real Microsoft account via the "Sign in with Microsoft" popup; confirm the
+   popup completes (does not hang or silently fail — the historical symptom of the missing
+   redirect-bridge defect, PBI-11-01B) and the chat UI loads with the signed-in account's name
+   displayed (`Header.tsx`).
+3. Send a chat message; confirm the request succeeds (not a CORS-preflight `400` — PBI-11-01C's
+   defect — and not a `401` — PBI-11-01D's defect).
+4. Sign out; confirm the session ends and the sign-in screen reappears.
+5. Sign in again as a **different** Microsoft account (or inspect via `az containerapp logs`)
+   and confirm the first account's conversation history is not visible to the second — the IDOR
+   regression this authentication work closes
+   (`tests/unit/api/test_auth.py`'s IDOR tests are the unit-level proof; this step is the live
+   confirmation).
+
+**Common deployment issues** (see Section 13 for the full troubleshooting table):
+
+- CORS preflight `400` on any request carrying `Authorization` — the API's `allow_headers` must
+  explicitly include `Authorization` (PBI-11-01C).
+- `401` on every request despite a successful sign-in — `ENTRA_API_AUDIENCE` set to the
+  Application ID URI (`api://...`) instead of the bare client ID GUID (PBI-11-01D).
+- Sign-in popup opens but never completes — the redirect-bridge page (`/auth-bridge.html`) is
+  either not deployed (Web image missing the multi-page Vite build output) or not registered as
+  a redirect URI in the App Registration (PBI-11-01B).
+
 ---
 
 ## 8. Runtime Configuration
@@ -344,6 +439,9 @@ The following is DEV's actual, currently validated runtime configuration
 | `knowledgeProvider` | `local` | Azure AI Search is provisioned (Section 3.2) but no index has been built/populated — selecting `azure_ai_search` here would make `AzureAISearchProvider` fail at startup. The API instead serves RAG content from `configs/knowledge_base/` on disk. |
 | `conversationStoreProvider` | `cosmos` | The deployed API persists real conversation history to the live Cosmos DB account. |
 | `enablePrivateNetworking` | `false` | Conservative-cost DEV posture — every data-plane resource remains publicly reachable, RBAC-gated only. See [ADR-0001](adr/0001-networking-posture-and-vnet-deferral.md)/[ADR-0002](adr/0002-vnet-private-endpoints-hardening.md). |
+| `ENTRA_AUTHORITY` / `VITE_ENTRA_AUTHORITY` | `https://login.microsoftonline.com/common` | Multi-tenant authority — no fixed tenant ID, supports internal and external users. See Section 7.7. |
+| `ENTRA_CLIENT_ID` / `VITE_ENTRA_CLIENT_ID` | `67d95215-5a31-416a-99ab-5fe203fb7c32` | The confirmed DEV App Registration's client ID. |
+| `ENTRA_API_AUDIENCE` | `67d95215-5a31-416a-99ab-5fe203fb7c32` | The bare API client ID GUID a real v2.0 access token's `aud` claim actually carries — **not** the Application ID URI. See Section 7.7's troubleshooting note (PBI-11-01D). |
 
 Every one of these settings is a **configuration value, not a code path** — flipping any of them
 (once its prerequisite exists, e.g. quota for `deployServerlessToolLayer`) requires a Container
@@ -363,6 +461,7 @@ pipeline's `SmokeTests` stage plus additional manual validation recorded in spri
 | API liveness | `curl -sf --max-time 30 https://<api-fqdn>/health` → expects `200 {"status":"ok"}` | `azure-pipelines.yml` check 2/4; `docs/sprint_04/validation.md` |
 | API readiness (dependency-aware) | `GET /ready` → `200 {"status":"ready", "checks": {...}}` when Cosmos/Azure OpenAI/AI Search (whichever are configured) are reachable, else `503 {"status":"degraded", ...}` | `apps/api/src/api/routes/health.py` (implemented; **not yet wired into the pipeline's own `SmokeTests` stage**, which currently checks `/health` only — see Section 14) |
 | Web validation | Manual live validation: correct Spanish UI strings, correct live API FQDN, CORS preflight against the deployed Web origin succeeds | `docs/sprint_08/decisions.md` |
+| Authentication smoke test | Manual: sign-in popup completes, chat request succeeds (no CORS `400`/JWT `401`), sign-out returns to the sign-in screen, a second identity cannot see the first identity's conversations — full procedure in Section 7.7 | `apps/api/src/api/auth/`, `apps/web/src/auth/`, `apps/web/auth-bridge.html` (implementation); `tests/unit/api/test_auth.py`, `tests/unit/api/test_cors.py` (unit-level proof); **not yet wired into the pipeline's own automated `SmokeTests` stage** — see Section 14 |
 | `POST /chat` — Claims scenario + correlation ID | `curl -X POST https://<api-fqdn>/chat -H "X-Correlation-ID: <id>" -d '{"userId":"...","message":"I need to report a claim for policy SYN-POL-0001."}'` — asserts `agent == "ClaimsAgent"` and the correlation ID is echoed back unchanged | `azure-pipelines.yml` check 3/4 |
 | Cross-domain / conversation continuity | A second `POST /chat` reusing the same `conversationId` — asserts the `conversationId` is preserved | `azure-pipelines.yml` check 4/4 |
 | Broker scenario | Manually validated during live DEV sessions (not part of the automated pipeline smoke tests today) | `docs/sprint_09/validation.md` (PBI-09-01 controlled release) |
@@ -518,7 +617,8 @@ Only constraints with direct repository evidence of having actually occurred.
 | **Azure Functions Tool Layer is disabled in DEV** as a direct consequence of the above (`deployServerlessToolLayer=false`). Application code and Bicep modules for it exist and are tested; only physical deployment is disabled. | `ops/bicep/parameters/dev.bicepparam`; [ADR-0003](adr/0003-azure-functions-tool-and-workflow-layer.md) |
 | **Azure DevOps Hosted Parallelism is currently unavailable** for this pipeline. | Reported by the project team; not independently verifiable from repository files — see Section 11.8. |
 | **Synthetic data environment.** No real customer, policy, claim, broker, or commission data exists anywhere in this platform — every Tool operates against synthetic datasets (`src/services/tools/synthetic/`). | CLAUDE.md §1/§2; `src/services/tools/synthetic/provider.py` |
-| **Microsoft Entra ID user-facing authentication is intentionally deferred for this academic version.** CLAUDE.md §4.5 specifies it as target architecture; no MSAL/OIDC client exists in `apps/web/`, and no JWT/token validation middleware exists in `apps/api/src/api/`. Every resource-to-resource identity in this platform (Managed Identity, RBAC) is implemented; **end-user login is not.** | `apps/web/package.json` (no auth library present); `apps/api/src/api/` (no auth middleware present); CLAUDE.md §4.5 target vs. Section 3.3 of this guide |
+| **Microsoft Entra ID user-facing authentication is implemented and live in DEV.** CLAUDE.md §4.5's target architecture (Entra ID/OAuth2/OIDC on the frontend, token validation on the backend) is realized via MSAL React (Authorization Code + PKCE) and API-side JWT/JWKS validation. Two real deployment defects were found and fixed while first bringing this live (CORS `Authorization` header; token audience — see the troubleshooting entries below) — both are resolved, tested, and confirmed against a real DEV deployment. | `apps/web/src/auth/`, `apps/api/src/api/auth/`; [ADR-0010](adr/0010-enterprise-authentication-entra-id.md); Section 7.7 |
+| **No sprint-folder evidence (`docs/sprint_NN/`) exists yet for the Entra ID authentication work (PBI-11-01 through PBI-11-01D).** The implementation, tests, and live DEV deployment are real and verified directly against the code/tests cited throughout this guide, but CLAUDE.md §12's per-PBI sprint documentation (README checklist entry, deliverable log, `validation.md` entry) has not yet been created for these PBIs. | Absent `docs/sprint_NN/` folder for PBI-11-01 — flagged here as a documentation gap, not a functional one |
 | **Azure AI Search region moved from `eastus2` to `eastus`** during initial deployment due to a real, transient regional capacity shortage (`InsufficientResourcesAvailable`, encountered twice). | `docs/sprint_03/decisions.md` |
 | **Azure OpenAI model changed from `gpt-4o-mini` to `gpt-5-mini`** during initial deployment: `gpt-4o-mini:2024-07-18` was rejected as `"Deprecating"`/`ServiceModelDeprecating` for new deployments in the live model catalog. | `docs/sprint_03/decisions.md` |
 | **VNet/Private Endpoints are deferred in DEV** (`enablePrivateNetworking=false`) — a deliberate, documented, conservative-cost posture for a synthetic-data academic environment, not an oversight. | [ADR-0001](adr/0001-networking-posture-and-vnet-deferral.md); [ADR-0002](adr/0002-vnet-private-endpoints-hardening.md) |
@@ -538,6 +638,9 @@ Only issues with direct repository evidence of having actually been encountered.
 | `docker build`/local Docker unavailable during a deployment session | Local Docker daemon not running/available in the working environment | Use `az acr build --registry <acr-name> --image <name>:<tag> --file <dockerfile> <context>` as a remote-build fallback — builds inside ACR itself, no local Docker daemon required. |
 | A generic (`UNKNOWN`-intent) `POST /chat` smoke-test message returns `FallbackAgent` instead of a domain agent | Expected behavior, not a defect — `RuleBasedIntentResolver` correctly classifies a message with no domain keyword match as `UNKNOWN` | No action required; confirm the smoke-test message intentionally targets a specific domain (e.g., mentions a policy/claim) if a domain-agent response is expected. See [ADR-0007](adr/0007-ai-governance-boundary.md). |
 | `apps/api/Dockerfile`-built image fails to import `AzureOpenAIProvider`/`CosmosConversationRepository` at container startup | The relevant Azure SDK package (`openai`, `azure-identity`, `azure-cosmos`) was not installed in the image, even though `llmProvider=azure_openai`/`conversationStoreProvider=cosmos` were selected at the infrastructure level | Ensure `apps/api/Dockerfile`'s `pip install` list includes every SDK package required by the providers actually selected in the target environment's runtime configuration (Section 8). |
+| Browser CORS preflight (`OPTIONS`) fails with `400` for any authenticated request (`fetch` with an `Authorization: Bearer ...` header) | `CORSMiddleware`'s `allow_headers` did not include `Authorization` — a real, encountered defect (PBI-11-01C) | Add `"Authorization"` to `allow_headers` in `apps/api/src/main.py`'s `CORSMiddleware` configuration. Regression-guarded by `tests/unit/api/test_cors.py::test_cors_preflight_for_chat_allows_the_authorization_header` and the equivalent `/conversations` test. |
+| Every authenticated API request returns `401` even though sign-in completed successfully and a token is being sent | `ENTRA_API_AUDIENCE` set to the Application ID URI (`api://67d95215-.../`) instead of the bare API client ID GUID — a real, encountered defect (PBI-11-01D), confirmed against a live token's actual `aud` claim | Set `ENTRA_API_AUDIENCE` to the bare GUID (Section 7.7/8). Regression-guarded by `tests/unit/api/test_auth.py::test_validator_rejects_the_legacy_application_id_uri_as_audience`. |
+| The "Sign in with Microsoft" popup opens but never completes (no error shown, UI never progresses past the sign-in screen) | MSAL Browser 5.x's popup flow requires a dedicated `BroadcastChannel`-based redirect-bridge page at `redirectUri` — a real, encountered defect (PBI-11-01B) before `auth-bridge.html` existed | Confirm the Web image's build actually includes `auth-bridge.html`/the bridge script (Vite multi-page build, `vite.config.ts`), and that the bridge URL (`<origin>/auth-bridge.html`) is registered as an **SPA** redirect URI in the App Registration (Section 7.7). |
 
 ---
 
@@ -570,6 +673,9 @@ actually implemented in this repository. Items marked **(manual)** are not curre
       state correctly — see [ADR-0009](adr/0009-conversation-memory-strategy.md).
 - [ ] **(manual)** Confirm the Web frontend loads, displays correctly, and successfully calls the
       just-deployed API (CORS, correct FQDN).
+- [ ] **(manual)** Run the Authentication smoke test (Section 7.7): sign-in popup completes, an
+      authenticated chat request succeeds, sign-out works, and a second identity cannot see the
+      first identity's conversation history.
 - [ ] Confirm the previous image tag/revision is known and recorded, in case rollback (Section 10)
       is needed.
 - [ ] Update the relevant `docs/sprint_NN/` evidence and `validation.md` with the commands
@@ -588,3 +694,4 @@ actually implemented in this repository. Items marked **(manual)** are not curre
 - [ADR-0007](adr/0007-ai-governance-boundary.md) — AI governance boundary
 - [ADR-0008](adr/0008-resilience-strategy.md) — Resilience strategy
 - [ADR-0009](adr/0009-conversation-memory-strategy.md) — Conversation memory strategy
+- [ADR-0010](adr/0010-enterprise-authentication-entra-id.md) — Enterprise authentication using Microsoft Entra ID

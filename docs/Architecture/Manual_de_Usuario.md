@@ -10,7 +10,7 @@
 |---|---|
 | **Nombre del proyecto** | TMX Enterprise AI Reference Platform (plataforma de referencia académica) |
 | **Documento** | Manual de Usuario |
-| **Versión** | 1.0 |
+| **Versión** | 1.1 (PBI-10-06: actualizado tras la integración de Microsoft Entra ID) |
 | **Fecha** | 2026-08-11 |
 | **Autor** | Miguel Marin |
 
@@ -69,19 +69,62 @@ una aplicación de autoservicio dirigida al público general.
 Se accede a la plataforma desde un navegador web estándar, en la dirección proporcionada por el
 responsable del proyecto o del área de sistemas. No requiere instalación alguna.
 
-**Esta versión del sistema no cuenta con autenticación de usuarios.** No existe pantalla de
-inicio de sesión, usuario ni contraseña. La aplicación asigna automáticamente, la primera vez que
-se abre, un identificador anónimo y privado al navegador utilizado, de modo que una visita
-posterior desde el mismo navegador muestre el mismo historial de conversaciones. Este
-identificador no constituye una cuenta de usuario y no verifica la identidad de quien lo utiliza
-— no se solicita, intercambia ni almacena ninguna credencial, y por ello este manual no incluye
-ninguna, ya que no existen.
+### 3.1 Iniciar sesión con Microsoft
 
-> **Nota:** la ausencia de autenticación es una limitación conocida y explícitamente definida
-> para esta versión académica de la plataforma, no un descuido. Para más información, consulte la
-> documentación dirigida al administrador del sistema.
+La aplicación requiere iniciar sesión con una cuenta de Microsoft antes de poder utilizarse. Al
+abrir la aplicación se muestra una pantalla de inicio de sesión — no la interfaz de conversación
+— hasta que el inicio de sesión se completa.
 
-*Figura 1. Pantalla principal (no existe una pantalla de inicio de sesión que capturar).*
+1. Selecciona **"Iniciar sesión con Microsoft"**.
+2. Se abre una ventana emergente de inicio de sesión de Microsoft.
+
+*Figura 1a. Pantalla de inicio de sesión (botón "Iniciar sesión con Microsoft").*
+
+### 3.2 Seleccionar cuenta
+
+En la ventana emergente de Microsoft, elige la cuenta de Microsoft que deseas utilizar (o
+escribe las credenciales de tu cuenta de Microsoft laboral, escolar o personal si el navegador
+aún no recuerda ninguna). Esta pantalla la presenta directamente Microsoft — la aplicación nunca
+solicita ni conoce tu contraseña. Una vez completado el inicio de sesión, la ventana emergente se
+cierra automáticamente y se carga la interfaz de conversación.
+
+*Figura 1b. Ventana emergente de selección de cuenta de Microsoft.*
+
+### 3.3 Sesión autenticada
+
+Una vez iniciada la sesión, el encabezado en la parte superior de la aplicación muestra el
+nombre de tu cuenta y un indicador de estado de conexión. A partir de ese momento, cada
+conversación queda asociada a tu identidad autenticada — no al navegador que estés utilizando
+(ver Sección 3.5).
+
+*Figura 1c. Encabezado con sesión iniciada, mostrando el nombre de la cuenta y el botón "Cerrar sesión".*
+
+### 3.4 Expiración de la sesión
+
+Tu sesión se mantiene activa automáticamente en segundo plano — la mayoría de las veces no
+notarás que un token se está renovando. Si la sesión ha estado inactiva el tiempo suficiente
+como para que ya no pueda renovarse automáticamente, la aplicación te pedirá iniciar sesión de
+nuevo (una nueva ventana emergente de Microsoft) la próxima vez que necesite enviar una
+solicitud. Basta con completar el inicio de sesión de nuevo como en las Secciones 3.1–3.2; tus
+conversaciones anteriores no se pierden — vuelven a aparecer en el historial del panel lateral en
+cuanto inicias sesión nuevamente (ver Sección 3.5).
+
+### 3.5 Historial de conversaciones después de iniciar sesión
+
+El historial de conversaciones está asociado a tu **identidad autenticada**, no al navegador ni
+al dispositivo — un cambio respecto a versiones anteriores de esta plataforma. Iniciar sesión con
+la misma cuenta de Microsoft desde un navegador o equipo distinto muestra el mismo historial de
+conversaciones; iniciar sesión con una cuenta de Microsoft **diferente** muestra únicamente las
+conversaciones de esa cuenta, nunca las de otro usuario. Esto lo garantiza la propia plataforma,
+no solo la interfaz — consulta la documentación dirigida al administrador del sistema para el
+detalle técnico.
+
+### 3.6 Cerrar sesión
+
+Selecciona **"Cerrar sesión"** en el encabezado para finalizar tu sesión. Serás dirigido de
+vuelta a la pantalla de inicio de sesión (Sección 3.1). Cerrar sesión no elimina ninguna
+conversación — al volver a iniciar sesión con la misma cuenta verás el mismo historial de
+conversaciones de antes.
 
 ---
 
@@ -449,8 +492,8 @@ toma una persona.
 
 Se documentan únicamente las limitaciones que realmente existen en esta versión de la plataforma.
 
-- **No existe autenticación de usuarios.** No hay inicio de sesión ni verificación de identidad de
-  quien utiliza la aplicación (ver Sección 3).
+- **Se requiere una cuenta de Microsoft.** No existe acceso anónimo ni de invitado — toda
+  utilización de la aplicación requiere iniciar sesión con Microsoft (ver Sección 3).
 - **Solo se utilizan datos sintéticos.** Toda póliza, siniestro, broker, cliente y comisión que
   menciona el asistente es ficticia, con fines demostrativos — no existe conexión con ningún
   sistema de negocio real ni con datos reales de clientes.
@@ -481,7 +524,9 @@ Se documentan únicamente las limitaciones que realmente existen en esta versió
 | Apareció un mensaje indicando un problema de conexión, con un botón "Reintentar" | Ocurrió un problema temporal de conectividad al enviar el mensaje | Seleccionar "Reintentar" para reenviar el mismo mensaje; si el problema continúa, intentarlo de nuevo en unos minutos |
 | El asistente volvió a pedirme el número de póliza, broker o transacción después de haberlo proporcionado | El número proporcionado no se encontró en los registros sintéticos de la plataforma, por lo que el asistente solicita verificarlo y volver a ingresarlo | Verificar el número y proporcionarlo nuevamente tal como fue emitido (por ejemplo, `SYN-POL-0001`) |
 | Cambié de tema y el asistente volvió a preguntarme algo que ya había respondido | Ese dato en particular no forma parte del conjunto de información que la plataforma reutiliza automáticamente entre temas (ver Sección 12) | Proporcionar nuevamente el dato solicitado — este comportamiento es esperado, no un error |
-| No veo una conversación anterior en el historial | Es posible que se esté utilizando un navegador o dispositivo distinto, o que se haya borrado el almacenamiento del navegador | El historial de conversaciones está asociado únicamente a ese navegador; actualmente no puede transferirse entre navegadores o dispositivos |
+| No veo una conversación anterior en el historial | Es posible que la sesión esté iniciada con una cuenta de Microsoft distinta a la utilizada para crear esa conversación | El historial de conversaciones está asociado a la cuenta de Microsoft con la que se inició sesión, no al navegador (ver Sección 3.5) — verifica que sea la misma cuenta, cerrando sesión y volviendo a iniciarla si es necesario |
+| La ventana emergente de inicio de sesión no apareció, o se cerró sin completarse | Es posible que el navegador haya bloqueado la ventana emergente, o que el inicio de sesión se haya cancelado | Permitir ventanas emergentes para este sitio e intentar "Iniciar sesión con Microsoft" nuevamente |
+| Se me pidió iniciar sesión de nuevo en medio del uso de la aplicación | La sesión había estado inactiva el tiempo suficiente como para que ya no pudiera renovarse automáticamente (ver Sección 3.4) | Inicia sesión nuevamente; tus conversaciones anteriores no se pierden y vuelven a aparecer al iniciar sesión |
 | El número de referencia del siniestro/solicitud que recibí es distinto al de un ejemplo de este manual | Los números de referencia incluyen un consecutivo que aumenta con cada nuevo registro | Esto es normal — el número exacto puede variar; lo importante es que el formato (por ejemplo, `SYN-CLM-2026-000x`) sea el correcto |
 
 ---
@@ -505,12 +550,14 @@ Servicios a Corredores y Nuevos Negocios — sin formularios, sin sistemas separ
 
 **Acciones más comunes**
 
+- Iniciar sesión con "Iniciar sesión con Microsoft" la primera vez que se abre la aplicación.
 - Escribir la solicitud en español o inglés, con lenguaje natural — no se requieren comandos
   especiales.
 - Responder una a una las preguntas del asistente.
 - Seleccionar "+ Nueva conversación" para comenzar de nuevo.
 - Seleccionar cualquier conversación del historial para reabrirla.
 - Seleccionar "Reintentar" si un mensaje no se envía correctamente.
+- Seleccionar "Cerrar sesión" para salir de la aplicación.
 
 **Flujo típico de uso**
 

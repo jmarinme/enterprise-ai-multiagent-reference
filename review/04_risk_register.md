@@ -6,57 +6,10 @@ underlying issue is more consequential despite low likelihood, 1 otherwise).
 
 ## Open findings
 
-### RISK-001
-- **Category**: Security
-- **Title**: No authentication exists on any API endpoint
-- **Description**: `POST /chat`, `GET /conversations`, `GET /conversations/{id}` all trust an
-  unauthenticated, client-supplied `userId`. Any caller can act as, or read the history of, any
-  other `userId` they can guess or observe. This is a known, intentionally-deferred gap for the
-  academic implementation scope (CLAUDE.md §4.5 names Entra ID as deferred), not an oversight —
-  but deferring the work does not change what the code currently does at runtime, so it is
-  reported here at full severity.
-- **Evidence**: `apps/api/src/api/routes/chat.py` (`ChatRequest.user_id: str`, no auth
-  dependency); `apps/api/src/api/routes/conversations.py` (`Query(alias="userId")`, no auth
-  dependency); no JWT/OAuth/Entra middleware found anywhere in `apps/api/src/`.
-- **Severity**: HIGH | **Likelihood**: HIGH | **Risk Score**: 8 — this is the
-  application-control score: what the code itself guarantees, independent of where it is
-  deployed. It is the score that governs the production Go/No-Go decision
-  (`05_executive_summary.md`).
-- **Current-environment context** (does not reduce the score above): the live DEV Container App
-  sits inside the Tokio Marine Mexico corporate Azure tenant/subscription, but that tenant
-  boundary governs *who can administer the Azure resources*, not *who can call the public HTTP
-  endpoint* — `enablePrivateNetworking=false` (confirmed live, see RISK-010) means the API's
-  ingress has no network ACL, IP allowlist, or gateway auth in front of it, so technical
-  reachability is unchanged by the corporate-tenant framing. What is genuinely lower in the
-  current environment is *consequence*: every record behind the API is synthetic demonstration
-  data (`SYN-*`/`CUS-SYN-*` prefixes, `src/services/tools/synthetic/provider.py`) and there is no
-  real, indexed user base to target. This is an impact difference specific to the current
-  DEV/academic deployment, not a change to the underlying application-control finding.
-- **Recommendation**: Implement Microsoft Entra ID token validation middleware (CLAUDE.md §4.5);
-  derive `userId` from the validated token, never from the request body/query.
-- **Effort to fix**: Weeks (2–3)
-- **Blocks production?**: YES | **Blocks continued DEV/academic use?**: NO
-
-### RISK-002
-- **Category**: Security
-- **Title**: IDOR — any caller can read another user's full conversation history
-- **Description**: Direct consequence of RISK-001's missing identity binding — not an
-  independent vulnerability with its own separate fix, but what "no authentication" concretely
-  looks like at one specific endpoint. `GET /conversations/{id}?userId=X` returns conversation
-  content for whichever `userId` is supplied, with no ownership check.
-- **Evidence**: `apps/api/src/api/routes/conversations.py::get_conversation` —
-  `repository.get_conversation(user_id, conversation_id)` called with no comparison to an
-  authenticated identity.
-- **Severity**: HIGH | **Likelihood**: HIGH | **Risk Score**: 8
-- **Current-environment context**: identical reasoning to RISK-001 — the data returned by a
-  successful exploitation is entirely synthetic demonstration content today, so realized impact
-  in the current DEV/academic environment is low, while the mechanism itself (an unauthenticated
-  ID-keyed lookup) is exactly as exploitable as it would be against real data. The underlying
-  finding is unaffected by this context.
-- **Recommendation**: Resolved automatically once RISK-001 is fixed (derive `userId` from the
-  token, not the query string) — no separate fix needed beyond that.
-- **Effort to fix**: Included in RISK-001
-- **Blocks production?**: YES | **Blocks continued DEV/academic use?**: NO
+RISK-001 ("No authentication exists on any API endpoint") and RISK-002 ("IDOR — any caller can
+read another user's full conversation history") — the two highest-scored findings in the prior
+version of this register — are **resolved**. See the Resolved findings section below
+(RISK-025, RISK-026) for the full before/after evidence trail.
 
 ### RISK-003
 - **Category**: Security
@@ -125,12 +78,19 @@ underlying issue is more consequential despite low likelihood, 1 otherwise).
 - **Category**: Architecture
 - **Title**: Per-process singleton wiring limits horizontal scaling
 - **Description**: `@lru_cache`-based dependency wiring and in-memory `CircuitBreaker` state do
-  not share across replicas; the app is currently pinned to `maxReplicas: 1`.
+  not share across replicas; the app is currently pinned to `maxReplicas: 1`. **Sharpened by
+  `review/06_enterprise_architecture_assessment.md` (PBI-10-07, NEW-002)**: it is not only that
+  `maxReplicas=1` today — `ops/bicep/modules/container-app.bicep`'s `scale:` block has no `rules`
+  array at all (no HTTP-concurrency/CPU scale trigger), so raising `maxReplicas` alone would not
+  cause the platform to actually scale under load; a scale rule would need to be added first, in
+  addition to resolving the state-sharing question below.
 - **Evidence**: `apps/api/src/api/dependencies.py` (12 `@lru_cache` sites); `az containerapp show`
-  confirms `scale.maxReplicas: 1` live in DEV.
+  confirms `scale.maxReplicas: 1` live in DEV; `ops/bicep/modules/container-app.bicep`'s `scale:`
+  block confirmed to contain only `minReplicas`/`maxReplicas`, no `rules:` key (PBI-10-07).
 - **Severity**: MEDIUM | **Likelihood**: LOW | **Risk Score**: 2
 - **Recommendation**: Not urgent at current scale; document the limitation in an ADR before ever
-  raising `maxReplicas` above 1, or move circuit-breaker/cache state to a shared store first.
+  raising `maxReplicas` above 1, add an explicit scale rule, and move circuit-breaker/cache state
+  to a shared store first.
 - **Effort to fix**: Days (design work, not urgent)
 - **Blocks production?**: NO (conditional only on a future scale-out decision)
 
@@ -164,13 +124,18 @@ underlying issue is more consequential despite low likelihood, 1 otherwise).
 - **Category**: Security / Operational
 - **Title**: No security-event alerting (only infra-health metric alerts exist)
 - **Description**: The 3 live metric alerts cover error rate/latency/availability, not
-  security-relevant signals (e.g. a burst of 401/404s that might indicate ID-guessing once auth
-  exists).
+  security-relevant signals. This is now directly actionable: Microsoft Entra ID authentication
+  is implemented (RISK-025, resolved) and every validation failure maps to a generic `401`
+  (`get_current_user`) — a real, meaningful signal now exists (e.g. a burst of `401`s might
+  indicate credential-stuffing or token tampering) that did not before authentication existed.
 - **Evidence**: `ops/bicep/modules/monitor-alerts.bicep`; `az resource list` confirms only
-  `alert-tmxap-dev-error-rate`/`-high-latency`/`-availability` exist.
+  `alert-tmxap-dev-error-rate`/`-high-latency`/`-availability` exist; `apps/api/src/api/auth/dependency.py`'s
+  `get_current_user` maps every validation failure to `401` with no dedicated log/metric today.
 - **Severity**: MEDIUM | **Likelihood**: LOW | **Risk Score**: 2
-- **Recommendation**: Revisit once RISK-001 (auth) lands — add an alert on abnormal 401/403 rate.
-- **Effort to fix**: Hours (once auth exists)
+- **Recommendation**: Add an alert on an abnormal `401` rate on the now-authenticated endpoints —
+  no longer blocked on authentication landing (it has), only on the alert rule itself being
+  written.
+- **Effort to fix**: Hours
 - **Blocks production?**: NO
 
 ### RISK-012
@@ -289,11 +254,76 @@ underlying issue is more consequential despite low likelihood, 1 otherwise).
 - **Description**: Retry/circuit-breaker logic exists, but this review did not independently
   confirm each Azure SDK client call has an explicitly-tuned timeout distinct from the SDK's own
   default.
-- **Evidence**: `src/core/resilience/` (retry/circuit-breaker present); no explicit `timeout=`
-  parameter audit performed.
+- **Evidence**: `src/core/resilience/` (retry/circuit-breaker present). **Updated by
+  `review/06_enterprise_architecture_assessment.md` (PBI-10-07)**: the audit has now been
+  performed — `AzureOpenAIProvider`, `AzureAISearchProvider`, and `CosmosConversationRepository`
+  each construct their Azure SDK client with no explicit `timeout=`, relying entirely on the
+  SDK's own default. By contrast, `OllamaLLMProvider`, `DurableWorkflowProvider`, and
+  `AzureFunctionToolProvider` in the same codebase all pass an explicit
+  `aiohttp.ClientSession(timeout=...)`. The finding is now confirmed, not merely suspected —
+  severity unchanged, evidentiary status upgraded.
 - **Severity**: LOW | **Likelihood**: LOW | **Risk Score**: 1
-- **Recommendation**: A short, targeted audit of each provider's client construction to confirm
-  or set explicit timeouts.
+- **Recommendation**: Add an explicit `timeout=` to the three named client constructors, matching
+  the pattern already used by the other three providers in this codebase.
+- **Effort to fix**: Hours
+- **Blocks production?**: NO
+
+### RISK-027
+- **Category**: Architecture / AI Governance
+- **Title**: No confidence-threshold-based human escalation exists
+- **Description**: CLAUDE.md §3 ("Human-in-the-Loop — sensitive, ambiguous, low-confidence,
+  legal, financial, or coverage-related decisions must escalate to a person") and §4.1 (the
+  Supervisor Agent "escalates below the confidence threshold") name a mechanism that does not
+  exist in the code. `Intent.confidence` is only ever the literal constant `1.0` (keyword match)
+  or `0.0` (no match) — never a graded score — and no threshold comparison or escalation branch
+  exists anywhere in `src/supervisor/` or `src/agents/`. Identified in
+  `review/06_enterprise_architecture_assessment.md` (PBI-10-07, NEW-001).
+- **Evidence**: `src/supervisor/intent.py:59,62,65,67` (constants `1.0`/`0.0`);
+  `src/supervisor/models.py:31` (`confidence: float = 1.0` default); grep of
+  `confidence|escalat` across `src/supervisor/**`/`src/agents/**` (case-insensitive) — no
+  escalation branch found; grep of `ESCALATED` across every `.py` file in the repository —
+  `src/domain/conversation.py:39`'s `ConversationStatus.ESCALATED` definition is the *only* match,
+  confirming the enum value is never set anywhere.
+- **Severity**: MEDIUM | **Likelihood**: HIGH (structurally absent for every conversation, not an
+  edge case) | **Risk Score**: 5
+- **Recommendation**: Implement a real confidence signal and wire it to
+  `ConversationStatus.ESCALATED`, or correct CLAUDE.md §3/§4.1 to describe current
+  keyword-routing-only behavior accurately. Either closes the gap between documented and actual
+  architecture.
+- **Effort to fix**: Days (if implementing) / Hours (if correcting the documentation instead)
+- **Blocks production?**: CONDITIONAL — not a security vulnerability, but a real gap against this
+  platform's own stated governance principle in a domain (insurance) where ambiguous/
+  low-confidence/coverage-related cases are not hypothetical.
+
+### RISK-028
+- **Category**: Architecture / Operational
+- **Title**: No autoscale rule configured on either Container App
+- **Description**: See RISK-008 above, which this finding extends with the specific,
+  independently-verified fact that `container-app.bicep`'s `scale:` block defines no `rules`
+  array at all — not merely that `maxReplicas=1` today. Tracked as its own entry per
+  `review/06_enterprise_architecture_assessment.md` (PBI-10-07, NEW-002) since it is a distinct,
+  independently actionable fact from RISK-008's state-sharing concern.
+- **Evidence**: `ops/bicep/modules/container-app.bicep` — `scale: { minReplicas: minReplicas,
+  maxReplicas: maxReplicas }`, no `rules:` key present (confirmed via direct read, PBI-10-07).
+- **Severity**: MEDIUM | **Likelihood**: LOW | **Risk Score**: 3
+- **Recommendation**: Add an explicit HTTP-concurrency (or CPU-based) scale rule before ever
+  raising `maxReplicas` above 1 — in addition to, not instead of, RISK-008's state-sharing fix.
+- **Effort to fix**: Hours (once the state-sharing design question in RISK-008 is resolved)
+- **Blocks production?**: NO (current single-replica DEV/academic scope does not require this)
+
+### RISK-029
+- **Category**: Code Quality
+- **Title**: Resilience threshold constants duplicated across three provider files
+- **Description**: `_CIRCUIT_BREAKER_FAILURE_THRESHOLD`, `_CIRCUIT_BREAKER_RESET_TIMEOUT_SECONDS`,
+  `_RETRY_MAX_ATTEMPTS` are declared independently and identically in
+  `azure_openai_provider.py`, `cosmos.py`, and `azure_ai_search_provider.py` rather than as a
+  single shared constant. Identified in `review/06_enterprise_architecture_assessment.md`
+  (PBI-10-07, NEW-003).
+- **Evidence**: Same constant names/values confirmed declared locally in each of the three files.
+- **Severity**: LOW | **Likelihood**: LOW | **Risk Score**: 1
+- **Recommendation**: Extract to a shared resilience-defaults module if/when a fourth
+  resilience-wrapped provider is added — not urgent today with only three consumers, consistent
+  with CLAUDE.md §7's "no premature abstraction" preference.
 - **Effort to fix**: Hours
 - **Blocks production?**: NO
 
@@ -356,15 +386,68 @@ Carried in this register for audit-trail purposes — each was investigated agai
 - **Severity/Likelihood at time of finding**: MEDIUM/MEDIUM | **Status**: Substance resolved;
   "dashboards" and automated cost telemetry remain open (LOW/LOW, informational).
 
+### RISK-025 — RESOLVED
+- **Category**: Security
+- **Title**: No authentication existed on any API endpoint
+- **Description**: `POST /chat`, `GET /conversations`, `GET /conversations/{id}` trusted an
+  unauthenticated, client-supplied `userId` — any caller could act as, or read the history of,
+  any other `userId` they could guess or observe. Formerly RISK-001 in this register.
+- **Evidence of resolution**: Microsoft Entra ID authentication is implemented and live in DEV
+  (PBI-11-01 through PBI-11-01D). `apps/api/src/api/auth/` (`EntraTokenValidator`, `JwksProvider`,
+  `get_current_user`) validates signature (RS256 via live JWKS), expiry, audience (exact-match
+  against the bare API client ID GUID — corrected from an initial Application ID URI
+  misconfiguration, PBI-11-01D), and issuer (tenant-self-consistency check, correct for the
+  `/common` multi-tenant authority) on every call to all three business routes, confirmed by
+  direct read of `apps/api/src/api/routes/chat.py` and `conversations.py`
+  (`Depends(get_current_user)` on each). `ChatRequest.user_id`/the `userId` query parameter are
+  now optional, deprecated, and never read for authorization — identity is derived exclusively
+  from the validated token as `f"{tid}:{oid}"`. 24 dedicated tests
+  (`tests/unit/api/test_auth.py`) cover signature/expiry/audience/issuer rejection paths and pass.
+  Frontend (`apps/web/src/auth/`) uses OAuth2 Authorization Code + PKCE via MSAL Browser/React —
+  no client secret introduced anywhere (grepped, none found). Full record:
+  [ADR-0010](../docs/Architecture/adr/0010-enterprise-authentication-entra-id.md).
+- **Severity/Likelihood at time of finding**: HIGH/HIGH (Risk Score 8) | **Status**: Fully
+  resolved for the authentication mechanism itself. Two genuinely new, narrower gaps surfaced
+  while doing this work and are tracked separately, not folded back into this finding: no rate
+  limiting exists for authenticated callers (RISK-003, pre-existing, now confirmed to still apply
+  post-auth) and no security-event alert distinguishes a burst of `401`s from routine errors
+  (extends RISK-011).
+
+### RISK-026 — RESOLVED
+- **Category**: Security
+- **Title**: IDOR — any caller could read another user's full conversation history
+- **Description**: Direct consequence of RISK-025/RISK-001's missing identity binding —
+  `GET /conversations/{id}?userId=X` returned conversation content for whichever `userId` was
+  supplied, with no ownership check. Formerly RISK-002 in this register.
+- **Evidence of resolution**: Resolved as a direct consequence of RISK-025's fix — identity is
+  now server-derived from the validated token, never from a client-supplied value, so there is no
+  longer a caller-controlled key to substitute. Proven, not just designed: three dedicated
+  regression tests in `tests/unit/api/test_auth.py`
+  (`test_user_b_cannot_read_user_as_conversation_even_supplying_user_as_old_userid`,
+  `test_user_b_conversation_list_never_includes_user_as_conversations`,
+  `test_two_different_authenticated_identities_get_independent_conversation_histories`) mint two
+  genuinely different Entra identities and confirm neither can read, list, or infer the other's
+  conversation data (`404`, not `200`, even when the attacker supplies the victim's real old
+  `userId` and real `conversationId`) — all passing.
+- **Severity/Likelihood at time of finding**: HIGH/HIGH (Risk Score 8) | **Status**: Fully
+  resolved, no caveat — this finding had no independent fix separate from RISK-025's, and both
+  are now closed together.
+
 ---
 
 ## Risk Score Summary
 
+Updated after re-running this review against the current repository (PBI-10-06), then again after
+the 10-dimension enterprise architecture reassessment (PBI-10-07, `06_enterprise_architecture_
+assessment.md`). RISK-001/RISK-002 (score 8 each, the two highest-scored open findings in the
+original version of this register) are resolved — see RISK-025/RISK-026. Three new findings
+(RISK-027/028/029) were added by PBI-10-07's independent reassessment.
+
 | Score | Count | Risk IDs |
 |---|---|---|
-| 8 | 2 | RISK-001, RISK-002 |
-| 3 | 5 | RISK-003, RISK-004, RISK-005, RISK-006, RISK-007 |
+| 5 | 1 | RISK-027 |
+| 3 | 6 | RISK-003, RISK-004, RISK-005, RISK-006, RISK-007, RISK-028 |
 | 2 | 4 | RISK-008, RISK-009, RISK-010, RISK-011 |
-| 1 | 10 | RISK-012 – RISK-021 |
-| **Total open** | **21** | |
-| — | 3 | RISK-022 (resolved), RISK-023 (resolved), RISK-024 (partially resolved) |
+| 1 | 11 | RISK-012 – RISK-021, RISK-029 |
+| **Total open** | **22** | |
+| — | 5 | RISK-022 (resolved), RISK-023 (resolved), RISK-024 (partially resolved), RISK-025 (resolved), RISK-026 (resolved) |

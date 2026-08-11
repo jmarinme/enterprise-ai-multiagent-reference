@@ -1,7 +1,7 @@
 # TMX Enterprise AI Reference Platform — Administrator Guide
 
-**Document version:** 1.0 — 2026-08-11 (PBI-10-04)
-**Status:** Reflects the DEV environment as actually deployed and operated in this repository as of this date.
+**Document version:** 1.1 — 2026-08-11 (PBI-10-06: refreshed after Microsoft Entra ID integration)
+**Status:** Reflects the DEV environment as actually deployed and operated in this repository as of this date, including live Microsoft Entra ID authentication (PBI-11-01 through PBI-11-01D).
 
 ---
 
@@ -59,7 +59,8 @@ of the same components, and the ADRs cited below for design rationale.
 | Component | Operational role |
 |---|---|
 | **Web Application** | The only end-user-facing surface. An administrator's concern here is reachability and correct API connectivity (CORS), not application logic. |
-| **API (FastAPI)** | The single operational entry point for everything else — every Agent, Tool, and provider is reached through it. Its `/health` and `/ready` endpoints (Section 5) are the administrator's primary health signal. |
+| **API (FastAPI)** | The single operational entry point for everything else — every Agent, Tool, and provider is reached through it. Its `/health` and `/ready` endpoints (Section 5) are the administrator's primary health signal. Every business endpoint requires a valid Microsoft Entra ID Bearer token (Section 4.5). |
+| **Microsoft Entra ID** | End-user identity provider for the Web app; the API validates every request's token against it. An administrator's concern is App Registration configuration (redirect URIs, audience) — Section 4.5. |
 | **Supervisor Agent** | Routes every request to a domain Agent. Operationally invisible (no separate process/endpoint) — its behavior surfaces only through which Agent name appears in a `/chat` response and in logs. See [ADR-0007](adr/0007-ai-governance-boundary.md). |
 | **Claims Agent** | Handles the synthetic after-hours claim flow. Operationally relevant because it is the one Agent with an alternate execution mode (`TOOL_PROVIDER`/`CLAIMS_WORKFLOW_PROVIDER`, Section 4) an administrator can select. |
 | **Broker Services Agent** | Handles synthetic broker/commission queries. No administrator-facing configuration beyond the shared providers every Agent uses. |
@@ -110,6 +111,7 @@ Set directly on `apiContainerApp` (`ops/bicep/main.bicep`), visible via
 | `AZURE_AI_SEARCH_ENDPOINT`, `AZURE_AI_SEARCH_INDEX_NAME`, `AZURE_AI_SEARCH_USE_API_KEY` | Azure AI Search connection target — set even though `KNOWLEDGE_PROVIDER=local` means it is not currently read at runtime (Section 2). |
 | `COSMOS_DB_ENDPOINT`, `COSMOS_DB_DATABASE`, `COSMOS_DB_CONTAINER` | Cosmos DB connection target. No connection string exists anywhere — `disableLocalAuth: true` on the account means key-based auth is impossible regardless (`ops/bicep/modules/cosmos-db.bicep`). |
 | `AZURE_FUNCTIONS_BASE_URL`, `DURABLE_FUNCTIONS_BASE_URL` | The Claims Tool Layer/Durable Functions endpoint. Empty strings in DEV today (`deployServerlessToolLayer=false` — see [ADR-0003](adr/0003-azure-functions-tool-and-workflow-layer.md)); harmless because `TOOL_PROVIDER`/`CLAIMS_WORKFLOW_PROVIDER` are both `inprocess` and never read them. |
+| `ENTRA_AUTHORITY`, `ENTRA_CLIENT_ID`, `ENTRA_API_AUDIENCE` | Microsoft Entra ID JWT validation configuration — see Section 4.5. None are secrets. |
 
 ### 4.2 Managed Identity usage
 
@@ -153,6 +155,98 @@ from the image-update `az containerapp update --image` deployment operation desc
 | `KNOWLEDGE_PROVIDER` | `local` | Not without also provisioning an AI Search index first — switching to `azure_ai_search` today would make `AzureAISearchProvider` fail at startup (`docs/sprint_03/decisions.md`), since no index has been built. |
 | `TOOL_PROVIDER` / `CLAIMS_WORKFLOW_PROVIDER` | `inprocess` / `inprocess` | Not to `azure_functions`/`durable` — the Azure Functions Tool Layer is not deployed in DEV (`deployServerlessToolLayer=false`); flipping these without it would leave `AZURE_FUNCTIONS_BASE_URL` pointed at nothing. |
 | `CONVERSATION_STORE_PROVIDER` | `cosmos` | No — switching to `in_memory` in a live environment would silently discard every future conversation on the next restart; this is a design-time choice, not an operational toggle. |
+
+### 4.5 Enterprise Authentication Administration
+
+Microsoft Entra ID authentication (PBI-11-01 through PBI-11-01D) is live in DEV. Full
+architectural rationale is in [ADR-0010](adr/0010-enterprise-authentication-entra-id.md); this
+subsection covers what an administrator specifically needs to operate and troubleshoot it.
+
+#### 4.5.1 App Registration
+
+A single Entra ID App Registration backs both the Web app's sign-in and the API's token
+audience. It is **not** a Bicep-managed resource — it is configured directly in the Microsoft
+Entra admin center, and referenced only via the Container App environment/build variables below.
+Confirmed DEV values:
+
+- **Authority**: `https://login.microsoftonline.com/common` (multi-tenant — no fixed tenant ID).
+- **Application (client) ID**: `67d95215-5a31-416a-99ab-5fe203fb7c32`.
+- None of these values are secrets.
+
+#### 4.5.2 SPA configuration and redirect URIs
+
+The App Registration's platform type is **Single-page application (SPA)** — required for the
+Authorization Code + PKCE flow the Web app uses (no client secret). Two **SPA** redirect URIs
+must be registered:
+
+- The Web app's own root, e.g. `https://<web-app-fqdn>/`.
+- The dedicated redirect-bridge page, `https://<web-app-fqdn>/auth-bridge.html`
+  (`apps/web/auth-bridge.html` / `apps/web/src/auth-bridge.ts`) — MSAL Browser 5.x's popup and
+  silent-token-renewal flows complete through this page via a `BroadcastChannel`, not the SPA
+  root (PBI-11-01B). **If either URI is missing** for a given deployed hostname, sign-in will
+  either be rejected outright by Entra ID or the sign-in popup will open and silently never
+  complete (Section 4.5.5).
+
+#### 4.5.3 Expose an API — `access_as_user` scope
+
+The App Registration exposes itself as an API:
+
+- Application ID URI: `api://67d95215-5a31-416a-99ab-5fe203fb7c32`.
+- Delegated scope: `access_as_user` — the Web app requests
+  `api://67d95215-5a31-416a-99ab-5fe203fb7c32/access_as_user` on every token acquisition
+  (`VITE_ENTRA_API_SCOPE`, `apps/web/src/auth/loginRequest.ts`).
+
+#### 4.5.4 JWT validation overview
+
+`EntraTokenValidator` (`apps/api/src/api/auth/validator.py`), invoked on every request to
+`POST /chat`, `GET /conversations`, and `GET /conversations/{id}` via the `get_current_user`
+FastAPI dependency, validates on every request:
+
+1. **Signature** — RS256, against Microsoft's published JWKS
+   (`https://login.microsoftonline.com/common/discovery/v2.0/keys`, fetched and cached by
+   `JwksProvider`, refreshed automatically on an unrecognized `kid` to tolerate real key
+   rotation).
+2. **Expiry** (`exp`, with a 60-second leeway).
+3. **Audience** (`aud`) — must exactly equal `ENTRA_API_AUDIENCE`, the **bare API client ID
+   GUID** (`67d95215-5a31-416a-99ab-5fe203fb7c32`), never the Application ID URI (Section 4.1 /
+   ADR-0010's audience correction, PBI-11-01D).
+4. **Issuer** (`iss`) — must equal `https://login.microsoftonline.com/{tid}/v2.0` for the
+   token's own `tid` claim (a self-consistency check appropriate for a `/common` multi-tenant
+   authority, not a single fixed issuer string).
+
+Any failure at any step maps to a generic `401` — the API never reveals which specific check
+failed to the caller. Identity is derived exclusively from the validated token as
+`f"{tid}:{oid}"` (never email, never a client-supplied `userId`) — this is also the Cosmos DB
+partition key, so it is the mechanism that keeps one user's conversation history from ever being
+readable by another (the IDOR closure in [ADR-0010](adr/0010-enterprise-authentication-entra-id.md)).
+
+#### 4.5.5 Troubleshooting
+
+| Symptom | Cause | Resolution |
+|---|---|---|
+| Sign-in popup opens but never completes | The redirect-bridge page is missing from the deployed Web image, or `/auth-bridge.html` is not registered as an SPA redirect URI | Confirm the Web image actually includes `auth-bridge.html` (Vite multi-page build); confirm the redirect URI is registered (Section 4.5.2) |
+| Chat requests fail with a CORS preflight `400` before reaching the API's own logic | `CORS_ALLOWED_ORIGINS`/`allow_headers` on the API does not include `Authorization` | Confirm `apps/api/src/main.py`'s `CORSMiddleware` `allow_headers` includes `Authorization` (a real, fixed defect — PBI-11-01C) |
+| Every authenticated request returns `401` despite a successful sign-in | `ENTRA_API_AUDIENCE` set to the Application ID URI instead of the bare client ID GUID | Confirm `ENTRA_API_AUDIENCE` = `67d95215-5a31-416a-99ab-5fe203fb7c32` exactly (Section 4.1; a real, fixed defect — PBI-11-01D) |
+| A specific user reports they can no longer sign in | Their account may no longer exist in the tenant, or conditional access policies (configured in Entra ID directly, outside this repository) may be blocking them | Check the account status in the Entra admin center — this platform's own code has no separate user-disable mechanism; access control is entirely Entra ID's |
+
+#### 4.5.6 User onboarding
+
+There is no separate user-provisioning step in this platform — any account that can complete
+Microsoft sign-in against the `/common` authority (Section 4.5.1) is authenticated successfully;
+`AuthenticatedUser.user_id` (`tid:oid`) is derived automatically from the token on first sign-in,
+and that user's first `/chat` call creates their first conversation. There is no allow-list,
+invitation flow, or role-assignment step in this codebase — any authorization beyond "is this a
+validly signed Entra ID token" (e.g., restricting which tenants/users may sign in) would be
+enforced by Entra ID's own App Registration/tenant settings, not by application code.
+
+#### 4.5.7 External users
+
+Because the authority is `/common` rather than a single fixed tenant, users from **any** Entra ID
+tenant (not only the tenant that owns the App Registration) can complete sign-in — this was a
+deliberate choice (ADR-0010), not an oversight. An administrator restricting this to a specific
+set of organizations or to guest (B2B) users only would do so via the App Registration's own
+sign-in audience setting and/or conditional access policies in the Entra admin center — no such
+restriction exists in this repository's application code today.
 
 ---
 
@@ -309,6 +403,7 @@ guidance.
 | Restart a Container App (recover from a stuck/degraded instance without changing its image) | `az containerapp revision restart --name <app> --resource-group rg-tmx-agent-platform-dev --revision <revision-name>` — restarts the currently active revision in place; this is a distinct operation from redeploying a new image (`Deployment_Guide.md` Section 7.4/Section 10). |
 | Check monitoring resources exist and are enabled | `az monitor metrics alert show --name alert-tmxap-dev-error-rate --resource-group rg-tmx-agent-platform-dev` (and the `-high-latency`/`-availability` equivalents); `az monitor action-group show --name ag-tmxap-dev-ops --resource-group rg-tmx-agent-platform-dev` |
 | Confirm which Managed Identity role assignments exist | `az role assignment list --assignee <id-tmxap-dev-principal-id> --all` |
+| Confirm the API's Entra ID configuration matches the App Registration | `az containerapp show --name <api-app> --resource-group rg-tmx-agent-platform-dev --query "properties.template.containers[0].env[?name=='ENTRA_API_AUDIENCE' || name=='ENTRA_AUTHORITY' || name=='ENTRA_CLIENT_ID']"` (Section 4.5) |
 
 **Not implemented / not observed in this repository**: there is no documented procedure for
 scaling replicas beyond the current `minReplicas=1`/`maxReplicas=1` (`dev.bicepparam`) — DEV runs
@@ -469,6 +564,7 @@ repeated here; this table focuses on runtime/operational symptoms.
 | `AzureOpenAIProvider`/`CosmosConversationRepository` import errors at container startup | The corresponding Azure SDK package was not installed in the API image despite the relevant provider being selected | Not an operational fix — requires a `Deployment_Guide.md`-scoped image rebuild with the correct dependency; see `Deployment_Guide.md` Section 13 for the original occurrence |
 | A generic (non-domain) chat message routes to `FallbackAgent` instead of a specific Agent | Expected behavior — `RuleBasedIntentResolver` deterministically classifies messages with no recognized domain keyword as `UNKNOWN` | Not a defect; confirm the test/reported message actually contains a domain-relevant keyword if a specific Agent response was expected. See [ADR-0007](adr/0007-ai-governance-boundary.md) |
 | Alerts are visible as "fired" in the Azure Portal but no one was notified | `alertEmailAddress` was left at its default empty string — the Action Group has zero receivers | Set a real operational email address in the deployment parameters and redeploy the `monitorAlerts` module (an infrastructure change — see `Deployment_Guide.md`) |
+| Sign-in, CORS, or `401` issues after signing in with Microsoft | Entra ID App Registration/redirect URI/audience misconfiguration | See Section 4.5.5 for the full Entra ID troubleshooting table |
 
 ---
 
@@ -498,6 +594,11 @@ not generic industry advice unrelated to this codebase:
 - **Do not enable `TOOL_PROVIDER=azure_functions`/`CLAIMS_WORKFLOW_PROVIDER=durable` while
   `deployServerlessToolLayer=false`** — there is no Azure Functions endpoint deployed for either
   to call (Section 4.4; [ADR-0003](adr/0003-azure-functions-tool-and-workflow-layer.md)).
+- **Never treat a `401` on an authenticated endpoint as a bug to work around by loosening
+  validation** — check the specific, documented cause first (Section 4.5.5): a wrong audience
+  value, a missing redirect URI, or a genuinely expired/invalid token are all real,
+  previously-encountered causes with a known fix; weakening `EntraTokenValidator` is never the
+  right response.
 - **Before adapting this platform for a real production workload**, close the gaps this guide
   explicitly flags as not implemented: a tested Cosmos DB restore procedure, a broader incident
   notification channel than a single email Action Group, and (per
@@ -527,6 +628,11 @@ A concise, recurring operational checklist using only the mechanisms documented 
 - [ ] Cosmos DB's periodic backup policy is still `enabled`/unchanged (`az cosmosdb show`).
 - [ ] Recent pipeline runs (if any) show `SmokeTests`/`DeploymentSummary` succeeded — see
       `Deployment_Guide.md` Section 9 for what each smoke test actually validates.
+- [ ] `ENTRA_AUTHORITY`, `ENTRA_CLIENT_ID`, `ENTRA_API_AUDIENCE` on the API Container App match
+      the App Registration (Section 4.5.1/4.5.4); `ENTRA_API_AUDIENCE` is the bare client ID GUID,
+      not the Application ID URI.
+- [ ] Both SPA redirect URIs (root and `/auth-bridge.html`) are still registered in the App
+      Registration for the current deployed hostname (Section 4.5.2).
 
 ---
 
@@ -543,3 +649,4 @@ A concise, recurring operational checklist using only the mechanisms documented 
 - [ADR-0007](adr/0007-ai-governance-boundary.md) — AI governance boundary
 - [ADR-0008](adr/0008-resilience-strategy.md) — Resilience strategy
 - [ADR-0009](adr/0009-conversation-memory-strategy.md) — Conversation memory strategy
+- [ADR-0010](adr/0010-enterprise-authentication-entra-id.md) — Enterprise authentication using Microsoft Entra ID
