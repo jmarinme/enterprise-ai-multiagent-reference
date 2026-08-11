@@ -98,8 +98,9 @@ _MESSAGES: dict[str, dict[Language, str]] = {
         ),
     },
     "broker_name_not_found": {
+        # PBI-09-01 requirement 8: "broker" (not "correduría") is the natural Mexico-market term.
         "es-MX": (
-            "No encontré ninguna correduría con el nombre '{name}'. ¿Podrías verificar el "
+            "No encontré ningún broker con el nombre '{name}'. ¿Podrías verificar el "
             "nombre, o darme directamente tu ID de corredor?"
         ),
         "en": (
@@ -109,7 +110,7 @@ _MESSAGES: dict[str, dict[Language, str]] = {
     },
     "commission_not_found_no_periods": {
         "es-MX": (
-            "No encontramos comisiones para tu correduría en el período '{commission_period}', "
+            "No encontramos comisiones para tu broker en el período '{commission_period}', "
             "y no tenemos ningún período de demostración registrado para ti todavía."
         ),
         "en": (
@@ -119,7 +120,7 @@ _MESSAGES: dict[str, dict[Language, str]] = {
     },
     "commission_not_found_with_periods": {
         "es-MX": (
-            "No encontramos comisiones para tu correduría en el período '{commission_period}'. "
+            "No encontramos comisiones para tu broker en el período '{commission_period}'. "
             "Los períodos disponibles en esta demostración son: {periods}. ¿Te gustaría "
             "consultar alguno de estos?"
         ),
@@ -231,7 +232,15 @@ async def _handle_collecting_information(
 ) -> _HandlerResult:
     missing = missing_required_fields(state)
     if missing:
-        new_state = state.model_copy(update={"next_required_fields": missing})
+        # PBI-09-01 final validation: this never set last_asked_field, so a bare broker name
+        # answer with no "soy"/"somos" prefix (extraction's only other broker_name path) could
+        # never be captured via the free-text fallback in extraction.py, which is gated on
+        # last_asked_field — the identical combined question repeated verbatim instead of
+        # narrowing to whatever was still missing. missing[0] mirrors Claims'
+        # _handle_collecting_information, which already sets this correctly.
+        new_state = state.model_copy(
+            update={"next_required_fields": missing, "last_asked_field": missing[0]}
+        )
         return new_state, [prompt_for_missing(missing, language)], False
 
     # PBI-05-01: a commission inquiry whose broker was identified by name (not a typed ID)

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
+from src.common.text_normalization import normalize_for_search
 from src.services.tools.synthetic.provider import SYNTHETIC_BROKERS, SyntheticBrokerRecord
 from src.tools.models import ToolExecutionContext, ToolResult
 
@@ -36,11 +37,13 @@ class BrokerLookupTool:
     async def execute(
         self, tool_input: BrokerLookupInput, context: ToolExecutionContext
     ) -> ToolResult[BrokerSearchResult]:
-        query = tool_input.full_name.strip().lower()
+        # PBI-09-01 final validation: accent-insensitive, same fix and rationale as
+        # CustomerLookupTool.
+        query = normalize_for_search(tool_input.full_name.strip())
         matches = [
             record
             for record in SYNTHETIC_BROKERS.values()
-            if query and query in record.broker_name.lower()
+            if query and query in normalize_for_search(record.broker_name)
         ]
 
         if not matches:

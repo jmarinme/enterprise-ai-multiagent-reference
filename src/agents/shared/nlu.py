@@ -19,11 +19,44 @@ from datetime import UTC, date, datetime, timedelta
 
 _RELATIVE_DATE_WORDS: dict[str, int] = {
     "hoy": 0,
+    "today": 0,
     "ayer": -1,
+    "yesterday": -1,
     "anoche": -1,
     "anteayer": -2,
     "antier": -2,
 }
+
+# Checked before _RELATIVE_DATE_WORDS below (PBI-09-01 requirement 4: "la semana pasada" is a
+# common natural way to report an incident date but resolves to a *week* offset, not one of the
+# single-day words above). "la semana pasada" has no single canonical day, so it resolves to
+# exactly 7 days before `reference` — good enough for a synthetic demo's incident-date field,
+# which only needs *a* plausible date, never a precise one down to the day of week.
+_RELATIVE_WEEK_PATTERN = re.compile(r"\b(la semana pasada|last week)\b", re.IGNORECASE)
+
+# "two days ago" / "hace 2 días" / "hace dos días" (PBI-09-01 final validation — English relative
+# dates were entirely unsupported before this fix; only single Spanish day-words above existed).
+# Small bounded word->number maps (1-10) are enough for this synthetic demo's incident-date field
+# — never a general-purpose number parser.
+_NUMBER_WORDS: dict[str, int] = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "un": 1, "uno": 1, "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5,
+    "seis": 6, "siete": 7, "ocho": 8, "nueve": 9, "diez": 10,
+}
+_DAYS_AGO_EN_PATTERN = re.compile(
+    r"\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+days?\s+ago\b", re.IGNORECASE
+)
+_DAYS_AGO_ES_PATTERN = re.compile(
+    r"\bhace\s+(\d+|un|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\s+d[ií]as?\b",
+    re.IGNORECASE,
+)
+
+
+def _parse_day_count(token: str) -> int | None:
+    if token.isdigit():
+        return int(token)
+    return _NUMBER_WORDS.get(token.lower())
 
 _MONTH_NAMES: dict[str, int] = {
     "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
@@ -65,6 +98,13 @@ def resolve_relative_date(message: str, *, reference: date | None = None) -> str
     absolute-date regex first, since an explicit date always takes precedence."""
     today = reference or datetime.now(UTC).date()
     lowered = message.lower()
+    if _RELATIVE_WEEK_PATTERN.search(lowered):
+        return (today - timedelta(days=7)).isoformat()
+    days_ago_match = _DAYS_AGO_EN_PATTERN.search(lowered) or _DAYS_AGO_ES_PATTERN.search(lowered)
+    if days_ago_match:
+        count = _parse_day_count(days_ago_match.group(1))
+        if count is not None:
+            return (today - timedelta(days=count)).isoformat()
     for word, offset in _RELATIVE_DATE_WORDS.items():
         if re.search(rf"\b{word}\b", lowered):
             return (today + timedelta(days=offset)).isoformat()

@@ -57,6 +57,8 @@ _LOSS_TYPE_KEYWORDS: dict[str, str] = {
     "hail": "weather",
     "clima": "weather",
     "graniz": "weather",
+    "llov": "weather",
+    "lluvia": "weather",
     "glass": "glass",
     "cristal": "glass",
     "parabrisas": "glass",
@@ -85,6 +87,21 @@ _YES_NO_FIELDS = {
 # "2026-08-07, en Avenida Reforma, Ciudad de Mexico" (commas belong to the location itself, no
 # following sentence) still captures the whole remainder.
 _LOCATION_PHRASE_PATTERN = re.compile(r"\b(?:en|at)\s+([^.]+)", re.IGNORECASE)
+
+# PBI-09-01 final validation: "en"/"at" also start several extremely common discourse idioms
+# that are not locations at all ("en realidad" = "actually", "en fin" = "anyway") — a live test
+# surfaced "En realidad, volvamos a mi accidente." (a domain-switch-back message) silently
+# corrupting event_location with "realidad, volvamos a mi accidente" once opportunistic
+# extraction was made unconditional. Small, bounded denylist, same philosophy as every other
+# keyword map in this module — not a general discourse-marker detector.
+_NON_LOCATION_PREPOSITION_FOLLOWERS = (
+    "realidad", "efecto", "fin", "cambio", "general", "serio", "resumen", "conclusión", "conclusion",
+)
+
+# PBI-09-01 final validation: cuts a captured location off right before a comma-joined,
+# negation-led independent clause ("...Ciudad de Mexico, no hubo lesionados...") — see
+# _extract_location_phrase's own docstring.
+_LOCATION_TRAILING_CLAUSE_PATTERN = re.compile(r",\s*(?:no|sin|ni)\b", re.IGNORECASE)
 
 # "mi nombre es Juan Pérez" / "soy Juan Pérez" / "me llamo Juan Pérez" -> "Juan Pérez" (PBI-05-01
 # requirement 3) — checked before customer_name ever falls back to the whole raw message.
@@ -167,6 +184,19 @@ def extract_fields(message: str, state: ClaimsIntakeState) -> ClaimsIntakeState:
             updated.event_time = time_match.group(0).strip()
             matched_structured_field = True
 
+    # PBI-09-01 final validation: previously only ever attempted when a prior question had
+    # specifically been about location (last_asked_field/last_asked_group) — an opening message
+    # that packs several facts into one sentence ("...chocamos ayer en Avenida Reforma, Ciudad
+    # de Mexico...") never got its explicit "en <place>" location extracted at all, so a caller
+    # who volunteered it up front was asked for it again anyway. Safe to attempt unconditionally
+    # like policy_number/event_date/loss_type above: it only ever fires on an explicit "en"/"at"
+    # marker (see _extract_location_phrase), never a blind guess.
+    if updated.event_location is None:
+        opportunistic_location = _extract_location_phrase(normalized)
+        if opportunistic_location:
+            updated.event_location = opportunistic_location
+            matched_structured_field = True
+
     if updated.contact_email is None:
         email_match = _EMAIL_PATTERN.search(normalized)
         if email_match:
@@ -222,19 +252,14 @@ def extract_fields(message: str, state: ClaimsIntakeState) -> ClaimsIntakeState:
         if habitable is not None:
             updated.property_habitable = habitable
 
-    if state.last_asked_field in _YES_NO_FIELDS and getattr(updated, state.last_asked_field) is None:
-        first_word = lowered.split()[0].strip(",.!?") if lowered else ""
-        if first_word in _YES_WORDS:
-            setattr(updated, state.last_asked_field, True)
-            matched_structured_field = True
-        elif first_word in _NO_WORDS:
-            setattr(updated, state.last_asked_field, False)
-            matched_structured_field = True
-
     # A bare "no" answering the combined injuries+third-parties question, with no field-specific
     # keyword at all ("no, solo se dañaron los muebles"), safely implies both are negative —
     # this is the one case a genuinely ambiguous "no" is safe to expand to two fields, because
-    # the question that prompted it was specifically about both together.
+    # the question that prompted it was specifically about both together. Checked BEFORE the
+    # single-field yes/no fallback below (PBI-09-01 final validation: this used to run second,
+    # so the single-field check always claimed injuries_reported first and left
+    # third_parties_involved to redundantly re-ask on its own — exactly the "one answer should
+    # unlock both" defect requirement 5/9 exist to prevent).
     if (
         set(state.last_asked_group) == {"injuries_reported", "third_parties_involved"}
         and updated.injuries_reported is None
@@ -244,6 +269,15 @@ def extract_fields(message: str, state: ClaimsIntakeState) -> ClaimsIntakeState:
         updated.injuries_reported = False
         updated.third_parties_involved = False
         matched_structured_field = True
+
+    if state.last_asked_field in _YES_NO_FIELDS and getattr(updated, state.last_asked_field) is None:
+        first_word = lowered.split()[0].strip(",.!?") if lowered else ""
+        if first_word in _YES_WORDS:
+            setattr(updated, state.last_asked_field, True)
+            matched_structured_field = True
+        elif first_word in _NO_WORDS:
+            setattr(updated, state.last_asked_field, False)
+            matched_structured_field = True
 
     if (
         not matched_structured_field
@@ -295,6 +329,18 @@ def _extract_location_phrase(message: str) -> str | None:
         match = _LOCATION_PHRASE_PATTERN.search(clause)
         if match:
             candidate = match.group(1).strip(" ,.;:-")
+            first_word = candidate.split(" ", 1)[0].strip(" ,.;:-").lower() if candidate else ""
+            if first_word in _NON_LOCATION_PREPOSITION_FOLLOWERS:
+                continue
+            # PBI-09-01 final validation: a rich opening message ("...en Avenida Reforma, Ciudad
+            # de Mexico, no hubo lesionados ni terceros...") has no period separating the
+            # address from the next, unrelated clause — only a comma — so without this the
+            # negation clause was swept into the location verbatim. A real address never
+            # contains ", no "/ ", sin "/ ", ni " (this codebase's own existing negation
+            # markers, src.agents.shared.nlu), so cutting there is safe.
+            trailing_clause = _LOCATION_TRAILING_CLAUSE_PATTERN.search(candidate)
+            if trailing_clause:
+                candidate = candidate[: trailing_clause.start()].strip(" ,.;:-")
             if candidate:
                 return candidate
     return None

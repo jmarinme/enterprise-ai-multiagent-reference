@@ -60,11 +60,19 @@ docs/Architecture/adr/0003-azure-functions-tool-and-workflow-layer.md.
 
 from __future__ import annotations
 
-from src.agents.claims.state import ClaimsIntakeState
+from src.agents.claims.state import ClaimsIntakeState, ClaimsIntakeStatus
 from src.agents.claims.workflow import advance_claims_intake
 from src.agents.shared.annotation import annotate_with_prompt_and_llm
-from src.agents.shared.language import LANGUAGE_METADATA_KEY, resolve_language
+from src.agents.shared.language import LANGUAGE_METADATA_KEY, Language, resolve_language
+from src.agents.shared.memory import (
+    GLOBAL_MEMORY_METADATA_KEY,
+    ConversationMemory,
+    load_memory,
+    save_memory,
+    update_memory,
+)
 from src.agents.shared.state_persistence import carry_forward_other_agent_state, load_agent_state
+from src.agents.shared.summary import build_progress_summary
 from src.core.tool_calling.exceptions import ToolCallingError
 from src.core.tool_calling.models import (
     DEFAULT_MAX_TOOL_CALL_ITERATIONS,
@@ -100,6 +108,62 @@ _SAFE_FALLBACK_MESSAGE = {
 _NO_NOTICE_FALLBACK = {"es-MX": "Gracias — continuemos.", "en": "Thanks — please continue."}
 _KNOWLEDGE_TOP_K = 2
 _CITATION_TOP_K = 2
+
+# PBI-09-01 (global conversation memory / slot filling): display labels for the progress-summary
+# recap, in the same priority order _handle_collecting_information asks for them.
+_SUMMARY_FIELD_LABELS: dict[str, dict[Language, str]] = {
+    "customer_name": {"es-MX": "cliente", "en": "customer"},
+    "policy_number": {"es-MX": "póliza", "en": "policy"},
+    "event_date": {"es-MX": "fecha", "en": "date"},
+    "event_location": {"es-MX": "ubicación", "en": "location"},
+    "loss_type": {"es-MX": "tipo de siniestro", "en": "loss type"},
+}
+_SUMMARY_MIN_KNOWN_FIELDS = 2
+
+
+def _prefill_from_memory(state: ClaimsIntakeState, memory: ConversationMemory) -> ClaimsIntakeState:
+    """Slot filling (PBI-09-01 requirement 2): before ever asking the caller, adopt whatever
+    the shared global memory already resolved in a different domain this same conversation
+    (e.g. Broker already validated this caller's policy_number). Applied only once, on this
+    Agent's genuinely first turn in the conversation (state.status == NEW, checked by the
+    caller) — every later turn is governed exclusively by this Agent's own extraction/decline-
+    correction logic, so a caller correcting a field after CONFIRMING is declined is never
+    silently overwritten by a now-stale memory value."""
+    updates: dict[str, str] = {}
+    if state.customer_name is None and memory.customer_name:
+        updates["customer_name"] = memory.customer_name
+    if state.policy_number is None and memory.policy_number:
+        updates["policy_number"] = memory.policy_number
+    if state.event_date is None and memory.incident_date:
+        updates["event_date"] = memory.incident_date
+    if state.event_location is None and memory.location:
+        updates["event_location"] = memory.location
+    if state.loss_type is None and memory.incident_type:
+        updates["loss_type"] = memory.incident_type
+    return state.model_copy(update=updates) if updates else state
+
+
+def _maybe_add_progress_summary(
+    state: ClaimsIntakeState, response_text: str, language: Language
+) -> str:
+    """Conversation summarization (PBI-09-01 requirement 6): while still collecting the core
+    identifying/incident fields, recap what is already known before asking for what's still
+    missing — never shown before at least two fields are known, so a brand-new conversation's
+    very first question is not needlessly prefixed."""
+    if state.status != ClaimsIntakeStatus.COLLECTING_INFORMATION:
+        return response_text
+    known_fields = [
+        field
+        for field in ("customer_name", "policy_number", "event_date", "event_location", "loss_type")
+        if getattr(state, field) is not None
+    ]
+    if len(known_fields) < _SUMMARY_MIN_KNOWN_FIELDS:
+        return response_text
+    known_labels = [
+        _SUMMARY_FIELD_LABELS[field].get(language) or _SUMMARY_FIELD_LABELS[field]["es-MX"]
+        for field in known_fields
+    ]
+    return build_progress_summary(known_labels, language, remaining_prompt=response_text)
 
 
 class ClaimsAgent:
@@ -138,11 +202,27 @@ class ClaimsAgent:
 
     async def handle(self, request: AgentRequest, context: ConversationContext) -> AgentResponse:
         state = load_agent_state(context.metadata, _STATE_METADATA_KEY, ClaimsIntakeState)
+        # PBI-09-01 final validation: a message that switches the conversation back into this
+        # Agent from a different one (e.g. "Let's continue with my claim from before.") is a
+        # routing/resumption phrase, not an answer to whatever field this Agent last asked many
+        # turns ago — without this, the free-text fallback in claims/extraction.py silently
+        # swallowed that entire phrase as the answer (e.g. as event_location), corrupting real
+        # data. Clearing last_asked_field/last_asked_group before extraction means the resuming
+        # message is still mined for genuine facts (dates, policy numbers, keywords) but can
+        # never be blindly attributed to a stale question — the state machine just re-asks
+        # whatever is still missing, exactly as a human advisor would.
+        if context.current_agent is not None and context.current_agent != self.name:
+            state = state.model_copy(update={"last_asked_field": None, "last_asked_group": []})
         language = resolve_language(context.metadata, request.message)
         # PBI-05-01: preserve any other Agent's in-progress state across a cross-domain
         # handoff (e.g. Claims -> Broker) — AgentResponse.metadata replaces, not merges, the
         # conversation's stored metadata (see state_persistence.carry_forward_other_agent_state).
         other_agent_state = carry_forward_other_agent_state(context.metadata, _STATE_METADATA_KEY)
+        # PBI-09-01: global cross-agent memory — slot filling (requirement 2) adopts whatever
+        # another domain already resolved this conversation, only on this Agent's first turn.
+        memory = load_memory(context.metadata)
+        if state.status == ClaimsIntakeStatus.NEW:
+            state = _prefill_from_memory(state, memory)
 
         try:
             state, notices = await advance_claims_intake(
@@ -172,13 +252,30 @@ class ClaimsAgent:
                     **other_agent_state,
                     _STATE_METADATA_KEY: state.model_dump_json(),
                     LANGUAGE_METADATA_KEY: language,
+                    GLOBAL_MEMORY_METADATA_KEY: save_memory(memory),
                 },
             )
+
+        # PBI-09-01: feed every fact this turn actually learned/confirmed back into the shared
+        # memory (requirement 1) — holder_name (Tool-authoritative, from policy validation) is
+        # preferred over customer_name once known, since it is the confirmed policy holder.
+        memory = update_memory(
+            memory,
+            agent_name=self.name,
+            customer_name=state.holder_name or state.customer_name,
+            policy_number=state.policy_number,
+            claim_number=state.claim_reference,
+            incident_date=state.event_date,
+            incident_type=state.loss_type,
+            location=state.event_location,
+            coverage=state.coverage_type,
+        )
 
         knowledge_chunks = await self._retrieve_knowledge(request.message)
         grounded_context = self._grounder.ground(knowledge_chunks, top_k=_CITATION_TOP_K)
 
         response_text = " ".join(notices) if notices else _NO_NOTICE_FALLBACK[language]
+        response_text = _maybe_add_progress_summary(state, response_text, language)
         # PBI-04-04: the [prompt=...]/[llm=...] diagnostic is metadata-only now (technical
         # detail end users must never see) — response_text itself is untouched by it.
         diagnostics = await annotate_with_prompt_and_llm(
@@ -214,6 +311,7 @@ class ClaimsAgent:
                 **other_agent_state,
                 _STATE_METADATA_KEY: state.model_dump_json(),
                 LANGUAGE_METADATA_KEY: language,
+                GLOBAL_MEMORY_METADATA_KEY: save_memory(memory),
                 "diagnostics": diagnostics,
             },
             citations=grounded_response.citations,

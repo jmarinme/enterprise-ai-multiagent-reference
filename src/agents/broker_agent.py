@@ -23,10 +23,17 @@ docs/sprint_01/decisions.md.
 
 from __future__ import annotations
 
-from src.agents.broker.state import BrokerInquiryState
+from src.agents.broker.state import BrokerInquiryState, BrokerInquiryStatus
 from src.agents.broker.workflow import advance_broker_inquiry
 from src.agents.shared.annotation import annotate_with_prompt_and_llm
 from src.agents.shared.language import LANGUAGE_METADATA_KEY, resolve_language
+from src.agents.shared.memory import (
+    GLOBAL_MEMORY_METADATA_KEY,
+    ConversationMemory,
+    load_memory,
+    save_memory,
+    update_memory,
+)
 from src.agents.shared.state_persistence import carry_forward_other_agent_state, load_agent_state
 from src.llm.provider import LLMProvider
 from src.prompts.manager import PromptManager
@@ -48,6 +55,33 @@ _SAFE_FALLBACK_MESSAGE = {
 _NO_NOTICE_FALLBACK = {"es-MX": "Gracias — continuemos.", "en": "Thanks — please continue."}
 
 
+def _prefill_from_memory(state: BrokerInquiryState, memory: ConversationMemory) -> BrokerInquiryState:
+    """Slot filling + entity-resolution reuse (PBI-09-01 requirements 2/3/10): if a broker was
+    already identified (by resolved id) or a policy already validated in a different domain this
+    same conversation, adopt it instead of asking again — pre-filling broker_id directly also
+    lets _handle_collecting_information skip LOOKING_UP_BROKER entirely (state.
+    missing_required_fields only requires broker_name when broker_id is still unset), avoiding a
+    redundant broker_lookup Tool call (requirement 10).
+
+    Applied every turn (not just this Agent's first) for broker_id/policy_number — neither is
+    ever cleared by any Broker transition, so there is no stale-value risk, and a caller who
+    switches into Broker mid-conversation (after this Agent's own first turn already ran) still
+    benefits from a fact resolved afterward in another domain (final validation — PBI-09-01
+    initially over-restricted this to first-turn-only, which missed exactly that case).
+    broker_name is the one exception: _handle_looking_up_broker's not-found path clears it back
+    to None so the caller can retry with a different name, so it is only ever adopted from
+    memory on this Agent's genuine first turn — otherwise a failed-lookup retry could be
+    silently overwritten by an older, unrelated, already-resolved name still sitting in memory."""
+    updates: dict[str, str] = {}
+    if state.broker_id is None and memory.broker_id:
+        updates["broker_id"] = memory.broker_id
+    if state.broker_name is None and memory.broker_name and state.status == BrokerInquiryStatus.NEW:
+        updates["broker_name"] = memory.broker_name
+    if state.policy_number is None and memory.policy_number:
+        updates["policy_number"] = memory.policy_number
+    return state.model_copy(update=updates) if updates else state
+
+
 class BrokerAgent:
     """Deterministic, multi-turn broker-services agent registered for the BROKER intent."""
 
@@ -62,9 +96,18 @@ class BrokerAgent:
 
     async def handle(self, request: AgentRequest, context: ConversationContext) -> AgentResponse:
         state = load_agent_state(context.metadata, _STATE_METADATA_KEY, BrokerInquiryState)
+        # PBI-09-01 final validation: see claims_agent.py's identical rationale — a domain
+        # re-entry message must never be blindly attributed to a stale last-asked question.
+        if context.current_agent is not None and context.current_agent != self.name:
+            state = state.model_copy(update={"last_asked_field": None})
         language = resolve_language(context.metadata, request.message)
         # PBI-05-01: preserve any other Agent's in-progress state across a cross-domain handoff.
         other_agent_state = carry_forward_other_agent_state(context.metadata, _STATE_METADATA_KEY)
+        # PBI-09-01: global cross-agent memory — see claims_agent.py's identical rationale.
+        # Applied every turn, not just the first (see _prefill_from_memory's own docstring for
+        # why that is safe here).
+        memory = load_memory(context.metadata)
+        state = _prefill_from_memory(state, memory)
 
         try:
             state, notices = await advance_broker_inquiry(
@@ -89,8 +132,27 @@ class BrokerAgent:
                     **other_agent_state,
                     _STATE_METADATA_KEY: state.model_dump_json(),
                     LANGUAGE_METADATA_KEY: language,
+                    GLOBAL_MEMORY_METADATA_KEY: save_memory(memory),
                 },
             )
+
+        # PBI-09-01: feed every fact this turn actually learned/confirmed back into memory.
+        # reference_numbers is append-only (computed here, not left to update_memory's plain
+        # overlay) so an earlier turn's reference is never dropped by a later, unrelated one.
+        reference_numbers = list(memory.reference_numbers)
+        if (
+            state.payment_request_reference
+            and state.payment_request_reference not in reference_numbers
+        ):
+            reference_numbers.append(state.payment_request_reference)
+        memory = update_memory(
+            memory,
+            agent_name=self.name,
+            broker_id=state.broker_id,
+            broker_name=state.broker_name,
+            policy_number=state.policy_number,
+            reference_numbers=reference_numbers,
+        )
 
         response_text = " ".join(notices) if notices else _NO_NOTICE_FALLBACK[language]
         # PBI-04-04: diagnostic is metadata-only (technical detail end users must never see).
@@ -121,6 +183,7 @@ class BrokerAgent:
                 **other_agent_state,
                 _STATE_METADATA_KEY: state.model_dump_json(),
                 LANGUAGE_METADATA_KEY: language,
+                GLOBAL_MEMORY_METADATA_KEY: save_memory(memory),
                 "diagnostics": diagnostics,
             },
         )

@@ -92,7 +92,9 @@ FIELD_PROMPTS: dict[str, dict[Language, str]] = {
         "en": "Please provide the synthetic transaction reference.",
     },
     "broker_name": {
-        "es-MX": "¿Cuál es el nombre de tu correduría?",
+        # PBI-09-01 requirement 8: "correduría" reads as formal/robotic for the Mexico market —
+        # "¿con qué broker trabajas?" is how a caller would naturally be asked this in practice.
+        "es-MX": "¿Con qué broker trabajas?",
         "en": "What is the name of your brokerage?",
     },
     "commission_period": {
@@ -105,7 +107,7 @@ FIELD_PROMPTS: dict[str, dict[Language, str]] = {
 # once, rather than asking for them one at a time as ClaimsAgent does — this Agent's examples
 # explicitly show both fields requested together.
 _COMBINED_COMMISSION_PROMPT: dict[Language, str] = {
-    "es-MX": "¿Cuál es el nombre de tu correduría, y qué período te gustaría revisar?",
+    "es-MX": "¿Con qué broker trabajas, y qué período te gustaría revisar?",
     "en": "What is the name of your brokerage, and which period would you like to review?",
 }
 

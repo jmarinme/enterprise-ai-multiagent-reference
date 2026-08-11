@@ -52,6 +52,20 @@ def test_extracts_loss_type_from_keyword() -> None:
     assert state.loss_type == "collision"
 
 
+def test_extracts_weather_loss_type_from_llovio() -> None:
+    """PBI-09-01 requirement 4's own example: "llovió" must be recognized as a weather-loss
+    signal, same as the existing "clima"/"granizo" keywords."""
+    state = extract_fields("llovió mucho y se inundó mi casa", ClaimsIntakeState())
+
+    assert state.loss_type == "water damage"  # "inund" is checked before "llov" in the map
+
+
+def test_extracts_weather_loss_type_from_lluvia_alone() -> None:
+    state = extract_fields("hubo una lluvia muy fuerte anoche", ClaimsIntakeState())
+
+    assert state.loss_type == "weather"
+
+
 def test_yes_no_answer_is_only_interpreted_for_the_last_asked_yes_no_field() -> None:
     state = ClaimsIntakeState(last_asked_field="injuries_reported")
 
@@ -67,6 +81,64 @@ def test_yes_answer_sets_the_field_true() -> None:
     updated = extract_fields("yes, another driver", state)
 
     assert updated.third_parties_involved is True
+
+
+def test_bare_no_answers_both_injuries_and_third_parties_from_the_combined_question() -> None:
+    """PBI-09-01 final validation: a live conversational test found that a bare "no" answering
+    the combined injuries+third-parties question only ever resolved injuries_reported — the
+    single-field yes/no fallback ran before the "combo" check and always claimed the field
+    first, forcing a redundant second "were any third parties involved?" question the caller
+    had already effectively answered. Requirement 5/9: never ask twice what one answer covers."""
+    state = ClaimsIntakeState(
+        last_asked_field="injuries_reported",
+        last_asked_group=["injuries_reported", "third_parties_involved"],
+    )
+
+    updated = extract_fields("no", state)
+
+    assert updated.injuries_reported is False
+    assert updated.third_parties_involved is False
+
+
+def test_single_yes_no_field_fallback_still_works_outside_the_combo_group() -> None:
+    """The combo-check reordering must not regress the plain single-field case (e.g.
+    vehicle_drivable, asked on its own, not as part of the injuries+third-parties group)."""
+    state = ClaimsIntakeState(
+        last_asked_field="vehicle_drivable", last_asked_group=["vehicle_drivable"]
+    )
+
+    updated = extract_fields("no", state)
+
+    assert updated.vehicle_drivable is False
+
+
+def test_opening_message_with_several_facts_extracts_location_without_being_asked() -> None:
+    """PBI-09-01 final validation: an opening message packing several facts into one sentence
+    ("...chocamos ayer en Avenida Reforma, Ciudad de Mexico...") never had its explicit "en
+    <place>" location extracted at all — only a *follow-up* answer to a location-specific
+    question ever triggered it. A caller who volunteers the location up front must not be asked
+    for it again. Also regresses a second, related defect found in the same live test: the
+    trailing ", no hubo lesionados" clause (comma-joined, no period) must not be swept into the
+    location — a real address never contains ", no "."""
+    state = extract_fields(
+        "Choqué ayer en Avenida Reforma, Ciudad de Mexico, no hubo lesionados.",
+        ClaimsIntakeState(),
+    )
+
+    assert state.event_location == "Avenida Reforma, Ciudad de Mexico"
+
+
+def test_en_realidad_filler_phrase_is_never_mistaken_for_a_location() -> None:
+    """PBI-09-01 final validation: making location extraction unconditional (previous test)
+    initially reintroduced a worse defect — "En realidad, volvamos a mi accidente." (a domain
+    switch-back message, "Actually, let's go back to my claim.") was silently captured as
+    event_location = "realidad, volvamos a mi accidente", since "en" is also the start of the
+    common Spanish discourse filler "en realidad" ("actually"). This corruption was invisible
+    to the user (the visible question still looked correct) but would have permanently blocked
+    the real location from ever being asked for."""
+    state = extract_fields("En realidad, volvamos a mi accidente.", ClaimsIntakeState())
+
+    assert state.event_location is None
 
 
 def test_free_text_fallback_fills_the_last_asked_free_text_field() -> None:
