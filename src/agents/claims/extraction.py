@@ -160,10 +160,21 @@ def extract_fields(message: str, state: ClaimsIntakeState) -> ClaimsIntakeState:
     matched_structured_field = False
 
     policy_match = _POLICY_NUMBER_PATTERN.search(normalized)
-    if policy_match:
-        # Always refreshed (not gated on being previously unset): after a "policy not found"
-        # notice, the user is expected to supply a corrected number in reply. A direct policy
-        # number always short-circuits customer discovery (see workflow.py).
+    if policy_match and not state.policy_validated:
+        # Refreshed while not yet validated (not gated on being previously unset): during
+        # initial collection, or after a "policy not found" notice, the user is expected to
+        # supply a (corrected) number in reply, and policy_validated is still False in both
+        # cases. A direct policy number always short-circuits customer discovery (see
+        # workflow.py). Once policy_validated is True (a real Tool call already confirmed this
+        # exact number), it becomes immutable for the rest of the conversation — the same
+        # immutability the confirmation-decline flow already gives it by never including
+        # policy_number in its own field-clearing list (see workflow._handle_confirming).
+        # Functional defect fix: any later free-form reply that happened to contain an
+        # incidental substring shaped like a policy number ("XX-XX-999") — e.g. an unrelated
+        # reference number mentioned in passing — silently overwrote the already-validated
+        # canonical policy number, which then caused a second, spurious policy_lookup with that
+        # wrong value once the flow re-reached VALIDATING_POLICY (e.g. after a confirmation
+        # decline re-collects the incident-detail fields).
         updated.policy_number = policy_match.group(1).upper()
         matched_structured_field = True
 

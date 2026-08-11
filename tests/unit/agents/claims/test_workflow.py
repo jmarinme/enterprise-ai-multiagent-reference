@@ -51,6 +51,43 @@ def _ready_state(policy_number: str) -> ClaimsIntakeState:
     )
 
 
+async def test_answering_injuries_after_validation_continues_without_re_asking_for_policy() -> (
+    None
+):
+    """Functional defect fix (Priority #1): once the policy is validated and the caller answers
+    the combined injuries+third-parties question, the workflow must continue straight to the
+    next missing field (vehicle_drivable, for an auto policy) — never re-ask for the policy
+    number, and never issue a second policy_lookup with a corrupted value. Simulates the
+    post-decline re-collection state (policy_validated=True, mid-COLLECTING_INFORMATION, only
+    injuries/third-parties still missing) that the reported scenario reaches."""
+    state = ClaimsIntakeState(
+        status=ClaimsIntakeStatus.COLLECTING_INFORMATION,
+        policy_number="SYN-POL-0001",
+        line_of_business="auto",
+        policy_validated=True,
+        policy_active=True,
+        payment_current=True,
+        holder_name="Synthetic Claimant One",
+        event_date="2026-08-01",
+        event_location="Main St",
+        loss_type="collision",
+        loss_description="Rear-ended at a stoplight.",
+        contact_phone="555-123-4567",
+        last_asked_field="injuries_reported",
+        last_asked_group=["injuries_reported", "third_parties_involved"],
+    )
+
+    new_state, notices = await advance_claims_intake(
+        state, "No hubo personas lesionadas ni terceros involucrados.", _build_executor(), language="es-MX"
+    )
+
+    assert new_state.policy_number == "SYN-POL-0001"
+    assert new_state.status == ClaimsIntakeStatus.COLLECTING_INFORMATION
+    assert new_state.last_asked_field == "vehicle_drivable"
+    assert not any("póliza" in notice.lower() and "quién" in notice.lower() for notice in notices)
+    assert not any("no encontramos una póliza" in notice.lower() for notice in notices)
+
+
 async def test_new_conversation_asks_for_the_first_missing_field() -> None:
     state, notices = await advance_claims_intake(
         ClaimsIntakeState(), "I need to file a claim", _build_executor(), language="en"
