@@ -20,6 +20,44 @@ def test_policy_number_is_refreshed_even_if_already_set() -> None:
     assert updated.policy_number == "SYN-POL-0001"
 
 
+def test_validated_policy_number_is_never_overwritten_by_an_incidental_match() -> None:
+    """Functional defect fix: once a policy number has actually been confirmed by a real Tool
+    call (policy_validated=True), it must be immutable for the rest of the conversation — an
+    unrelated reference number mentioned in passing in a later free-form reply (e.g. "el número
+    de referencia del taller es AB-CD-123") must never silently overwrite the canonical,
+    already-validated value. Contrast with test_policy_number_is_refreshed_even_if_already_set
+    above, where the state is *not yet* validated and a correction is expected to be accepted."""
+    state = ClaimsIntakeState(
+        policy_number="SYN-POL-0001",
+        policy_validated=True,
+        last_asked_field="injuries_reported",
+        last_asked_group=["injuries_reported", "third_parties_involved"],
+    )
+
+    updated = extract_fields("El número de referencia del taller es AB-CD-123.", state)
+
+    assert updated.policy_number == "SYN-POL-0001"
+
+
+def test_bare_no_after_policy_validation_preserves_the_canonical_policy_number() -> None:
+    """Direct regression for the reported scenario: after the policy is validated, answering
+    the combined injuries+third-parties question must never touch policy_number, regardless of
+    that this exact message does not itself contain a policy-shaped token — this guards the
+    fix's gating logic (state.policy_validated), not just the regex match itself."""
+    state = ClaimsIntakeState(
+        policy_number="SYN-POL-0001",
+        policy_validated=True,
+        last_asked_field="injuries_reported",
+        last_asked_group=["injuries_reported", "third_parties_involved"],
+    )
+
+    updated = extract_fields("No hubo personas lesionadas ni terceros involucrados.", state)
+
+    assert updated.policy_number == "SYN-POL-0001"
+    assert updated.injuries_reported is False
+    assert updated.third_parties_involved is False
+
+
 def test_extracts_event_date_in_iso_format() -> None:
     state = extract_fields("it happened on 2026-08-01", ClaimsIntakeState())
 
