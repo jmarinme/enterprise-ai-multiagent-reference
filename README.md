@@ -91,3 +91,69 @@ El Sprint 00 prepara:
 - documentación y ADRs.
 
 No implementa todavía los agentes funcionales.
+
+## Funcionalidades
+
+- Supervisor Agent: clasifica intención, aplica guardrails y enruta a un agente de dominio.
+- Claims Agent: guía un flujo sintético de notificación de siniestro después de horario.
+- Broker Services Agent: consultas sintéticas de póliza, procedimiento, recibo, referencia de
+  pago y comisión.
+- Commercial Intake Agent: clasifica solicitudes comerciales, identifica línea de negocio y
+  preregistra un lead sintético.
+- API conversacional (`POST /chat`, `GET /conversations`, `GET /conversations/{id}`) con
+  historial persistido en Azure Cosmos DB.
+- ✓ Microsoft Entra ID: inicio de sesión empresarial en la Web (`apps/web/`) y validación de
+  token en la API (`apps/api/`).
+
+## Arquitectura (visión general)
+
+```text
+Usuario → React SPA (MSAL React) → Microsoft Entra ID (OAuth2 Authorization Code + PKCE)
+        → FastAPI API (validación JWT vía JWKS) → Supervisor Agent
+        → Claims Agent / Broker Services Agent / Commercial Intake Agent → Tool Layer
+        → Proveedores de datos sintéticos
+```
+
+Diagrama de flujo completo (autenticación + agentes + tools):
+[docs/Architecture/diagrams/authentication-request-flow.md](docs/Architecture/diagrams/authentication-request-flow.md).
+Detalle completo de la decisión de autenticación:
+[ADR-0010 — Enterprise Authentication using Microsoft Entra ID](docs/Architecture/adr/0010-enterprise-authentication-entra-id.md).
+
+## Stack tecnológico
+
+| Capa | Tecnología |
+|---|---|
+| Backend API | Python 3.12, FastAPI, Pydantic |
+| Frontend | React, TypeScript, MSAL React |
+| Autenticación | Microsoft Entra ID (OAuth2 Authorization Code + PKCE) |
+| Conversation store | Azure Cosmos DB for NoSQL |
+| Tools deterministas | Azure Functions |
+| Workflows de larga duración | Azure Durable Functions |
+| Contenedores | Azure Container Apps, Azure Container Registry |
+| Secretos | Azure Key Vault |
+| Identidad de servicio | Managed Identity |
+| IaC | Azure Bicep |
+| CI/CD | Azure DevOps Pipelines |
+| Observabilidad | OpenTelemetry, Application Insights, Azure Monitor |
+
+Ver `CLAUDE.md` sección 5 para el stack completo y las restricciones de tecnología permitida.
+
+## Seguridad y autenticación
+
+La API y la Web están protegidas con **Microsoft Entra ID**:
+
+- ✓ OAuth2 Authorization Code + PKCE (sin client secret en el navegador).
+- ✓ MSAL React (`@azure/msal-browser`, `@azure/msal-react`) para el inicio de sesión y la
+  adquisición de tokens en la Web.
+- ✓ JWT Validation: la API valida firma, expiración, audiencia y emisor de cada token
+  (`apps/api/src/api/auth/`).
+- ✓ JWKS: las claves públicas de firma se obtienen y cachean desde el endpoint de
+  descubrimiento de Microsoft Entra ID.
+- ✓ Conversation Isolation: el historial de conversación se asocia exclusivamente a la
+  identidad derivada del token validado (`tid:oid`), nunca a un identificador provisto por el
+  cliente.
+- ✓ Enterprise Authentication: soporta usuarios internos y externos mediante la autoridad
+  `/common`.
+
+Detalle de contexto, decisión, alternativas y consecuencias en
+[ADR-0010](docs/Architecture/adr/0010-enterprise-authentication-entra-id.md).

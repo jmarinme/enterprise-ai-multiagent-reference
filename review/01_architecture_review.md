@@ -30,6 +30,13 @@ Message) is the only persisted domain model; each Agent's own working-state mode
 *not* core business truth (CLAUDE.md §4.3) but in-progress session notes. This is a deliberate,
 well-reasoned choice (see `src/agents/claims/state.py`'s own docstring), not scattered logic —
 each state machine is a single dict-dispatched handler table, not an if/elif chain.
+`src/domain/conversation.py:39` also defines `ConversationStatus.ESCALATED`, a status this
+category's own domain model anticipates — **new finding, `06_enterprise_architecture_assessment.md`
+(PBI-10-07, NEW-001/RISK-027)**: that status is never actually set anywhere in the codebase, and
+CLAUDE.md §3/§4.1's named "escalates below the confidence threshold" mechanism does not exist —
+`Intent.confidence` is only ever the literal constant `1.0` or `0.0`, never a graded, thresholded
+score. A real gap between documented and implemented Supervisor behavior, not previously flagged
+in this review.
 
 ## 2b. Scalability & performance
 
@@ -53,6 +60,11 @@ each state machine is a single dict-dispatched handler table, not an if/elif cha
   the same pre-existing, documented characteristic the prior review flagged (its own finding
   A-06) — still true, not yet addressed, and now slightly more consequential since a genuine
   resilience layer (circuit breakers) has been added on top of the same per-process assumption.
+  **Sharpened by `06_enterprise_architecture_assessment.md` (PBI-10-07, NEW-002/RISK-028)**:
+  `ops/bicep/modules/container-app.bicep`'s `scale:` block defines no `rules` array at all — no
+  HTTP-concurrency or CPU-based scale trigger exists, so raising `maxReplicas` alone would not
+  cause the platform to actually scale under load, independent of the state-sharing question
+  above.
 - **Caching**: no HTTP response cache, no read-through cache for Tool lookups — reasonable, given
   every Tool call is already an in-memory dict lookup with negligible cost; nothing here would
   benefit from caching today.
@@ -77,9 +89,12 @@ each state machine is a single dict-dispatched handler table, not an if/elif cha
   readiness, added since the prior review — checks only whatever is actually configured:
   LLM provider health, conversation repository, knowledge retriever) both exist
   (`apps/api/src/api/routes/health.py`). This closes the prior review's own liveness-only gap.
-- **Remaining gap**: no timeout is explicitly set on the Azure OpenAI/Cosmos/AI Search SDK client
-  calls beyond each SDK's own default — not independently verified as a problem (SDK defaults are
-  usually reasonable), but also not confirmed as deliberately tuned.
+- **Remaining gap, now confirmed rather than suspected** (`06_enterprise_architecture_assessment.md`,
+  PBI-10-07): no timeout is explicitly set on the `AzureOpenAIProvider`/`CosmosConversationRepository`/
+  `AzureAISearchProvider` SDK client constructors — each relies entirely on the SDK's own default.
+  By contrast, `OllamaLLMProvider`, `DurableWorkflowProvider`, and `AzureFunctionToolProvider` in
+  this same codebase all pass an explicit `aiohttp.ClientSession(timeout=...)` — an inconsistency
+  worth closing (`04_risk_register.md` RISK-021), not just a theoretical absence.
 
 ## 2d. Observability
 
@@ -112,8 +127,13 @@ each state machine is a single dict-dispatched handler table, not an if/elif cha
   a short ADR before any real schema change.
 - **PII/sensitive data**: none exists by design — every business record is explicitly synthetic
   and labeled as such (`SYN-*`/`CUS-SYN-*` prefixes throughout
-  `src/services/tools/synthetic/provider.py`). `userId` itself is the only quasi-identifier, and
-  it is unauthenticated (see `02_security_review.md` for the resulting IDOR).
+  `src/services/tools/synthetic/provider.py`). The partition key is now `f"{tid}:{oid}"` — Entra
+  ID's own tenant-qualified object identifier, derived exclusively from a signature/audience/
+  issuer-validated Bearer token (`apps/api/src/api/auth/`), never from a client-supplied value.
+  This closes the prior review's finding that `userId` was an unauthenticated quasi-identifier
+  and the resulting IDOR — see `02_security_review.md` §3b and
+  [ADR-0010](../docs/Architecture/adr/0010-enterprise-authentication-entra-id.md) for the full
+  evidence trail.
 
 ## 2f. Technical debt & maintainability
 

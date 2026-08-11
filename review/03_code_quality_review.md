@@ -25,6 +25,14 @@
 - **`mypy` is strict-leaning**: `disallow_untyped_defs = true`, `no_implicit_optional = true`,
   `warn_unused_ignores = true` — a genuinely strict configuration, not a token gesture, and
   confirmed clean (`Success: no issues found`) as recently as this session's own PBI-09-01 work.
+  Not full `strict = true` (no `disallow_untyped_calls`/`disallow_any_generics`) — named
+  explicitly for the first time in `06_enterprise_architecture_assessment.md` (PBI-10-07).
+- **New finding, minor** (`06_enterprise_architecture_assessment.md`, PBI-10-07, NEW-003/RISK-029):
+  the resilience-layer threshold constants (`_CIRCUIT_BREAKER_FAILURE_THRESHOLD`,
+  `_CIRCUIT_BREAKER_RESET_TIMEOUT_SECONDS`, `_RETRY_MAX_ATTEMPTS`) are declared independently and
+  identically in `azure_openai_provider.py`, `cosmos.py`, and `azure_ai_search_provider.py` rather
+  than as a single shared constant — a small DRY gap, LOW severity, not urgent with only three
+  consumers.
 
 ## 4b. Error handling
 
@@ -46,14 +54,18 @@
 
 ## 4c. Test coverage
 
-- **93 test files**, spanning `tests/unit/` (the large majority), `tests/integration/`,
-  `tests/e2e/` (1 file, added since the prior review — a lightweight concurrency/load smoke
-  test), and `tests/conversational/` (3 files, added since the prior review — prompt-injection/
-  adversarial-input scenarios plus this review's own immediate predecessor's live-conversation
-  regression suite).
-- **Exact current pass count** (this session's own final run, PBI-09-01): **649 passed, 2
-  skipped**, zero failures — independently re-run and confirmed as part of this session's work
-  immediately preceding this review, not an assumed/stale number.
+- **Test file count grew again since the prior snapshot (93 files)**, most recently with
+  `tests/unit/api/test_auth.py` (24 tests: JWT signature/expiry/audience/issuer rejection paths,
+  plus the dedicated IDOR regression tests — see `02_security_review.md` §3b) and
+  `tests/unit/api/test_cors.py` (10 tests, including the `Authorization`-header preflight
+  regression guard, PBI-11-01C) — both added under the Microsoft Entra ID authentication work
+  (PBI-11-01 through PBI-11-01D). File count was not re-tallied exhaustively in this pass; the
+  test *count* below was re-verified directly.
+- **Exact current count, re-verified in this review** (`pytest tests/ --collect-only -q`): **684
+  tests collected** (backend), plus **40 passing tests** (`vitest run`, frontend,
+  `apps/web/src/App.test.tsx` et al.) — up from the prior snapshot's 649 backend tests, the
+  difference consistent with the new authentication/CORS test files above plus other work in the
+  interim. Re-run directly as part of this review, not an assumed/stale number.
 - **No coverage percentage is measured** — no `pytest-cov`/`coverage.py` dependency exists in
   either `pyproject.toml`. CLAUDE.md §11 states a 70% target but nothing in CI actually measures
   or gates on it — the target is aspirational/unenforced, not verified. This is a real
@@ -120,5 +132,5 @@
 |---|---|
 | HIGH | 0 |
 | MEDIUM | 2 (no coverage measurement/gate; no Python dependency lockfile — already counted once in Security, cross-referenced not double-counted in the register) |
-| LOW | 4 (no pre-commit hooks, minimal ruff rule set, no frontend error boundary, dev deps present in the single-stage web runtime image) |
+| LOW | 5 (no pre-commit hooks, minimal ruff rule set, no frontend error boundary, dev deps present in the single-stage web runtime image, resilience-constant duplication across three provider files — RISK-029, new in PBI-10-07) |
 | INFO | 1 (zero TODO/FIXME/HACK debt — a positive finding) |
