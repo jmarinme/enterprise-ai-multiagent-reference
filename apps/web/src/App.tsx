@@ -1,4 +1,7 @@
 import { useEffect, useState } from "react";
+import { useMsal } from "@azure/msal-react";
+import type { AccountInfo, IPublicClientApplication } from "@azure/msal-browser";
+import { InteractionStatus } from "@azure/msal-browser";
 import { Header } from "./components/Header";
 import { Sidebar } from "./components/Sidebar";
 import { MessageArea } from "./components/MessageArea";
@@ -11,7 +14,8 @@ import {
   listConversations,
 } from "./api/conversations";
 import type { ConversationDetail, ConversationSummary } from "./api/conversations";
-import { getOrCreateUserId } from "./utils/userId";
+import { getAccessToken } from "./auth/getAccessToken";
+import { loginRequest } from "./auth/loginRequest";
 import {
   getStoredActiveConversationId,
   setStoredActiveConversationId,
@@ -48,19 +52,66 @@ function mapDetailToMessages(detail: ConversationDetail): Message[] {
     }));
 }
 
+/** Top-level component: gates the entire application behind Entra ID sign-in (PBI-11-01) — no
+ * chat state is created and no API call is ever attempted until a real authenticated account
+ * exists. */
 export function App() {
+  const { instance, accounts, inProgress } = useMsal();
+  const account = accounts[0];
+
+  if (!account) {
+    return <SignInScreen instance={instance} isSigningIn={inProgress !== InteractionStatus.None} />;
+  }
+
+  return <ChatApp instance={instance} account={account} />;
+}
+
+function SignInScreen({
+  instance,
+  isSigningIn,
+}: {
+  instance: IPublicClientApplication;
+  isSigningIn: boolean;
+}) {
+  return (
+    <div className="sign-in-screen">
+      <div className="sign-in-screen__card">
+        <div className="sign-in-screen__title">TMX — Asistente de Seguros AI</div>
+        <p className="sign-in-screen__description">
+          Inicia sesión con tu cuenta de Microsoft para usar el asistente. Tus conversaciones
+          quedan asociadas a tu identidad autenticada, no a este navegador.
+        </p>
+        <button
+          type="button"
+          className="sign-in-screen__button"
+          disabled={isSigningIn}
+          onClick={() => void instance.loginPopup(loginRequest)}
+        >
+          {isSigningIn ? "Iniciando sesión…" : "Iniciar sesión con Microsoft"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+interface ChatAppProps {
+  instance: IPublicClientApplication;
+  account: AccountInfo;
+}
+
+function ChatApp({ instance, account }: ChatAppProps) {
   const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE]);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [lastFailedMessage, setLastFailedMessage] = useState<string | null>(null);
-  const [userId] = useState(getOrCreateUserId);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [isLoadingConversations, setIsLoadingConversations] = useState(false);
 
   async function refreshConversations(): Promise<void> {
     setIsLoadingConversations(true);
     try {
-      const result = await listConversations(userId);
+      const accessToken = await getAccessToken(instance, account);
+      const result = await listConversations(accessToken);
       setConversations(result);
     } catch (error) {
       console.error("GET /conversations failed:", error);
@@ -76,7 +127,8 @@ export function App() {
     if (storedId) {
       void loadConversation(storedId, { silentOnMissing: true });
     }
-    // Only ever run once on mount — userId is stable for the lifetime of this component.
+    // Only ever run once per signed-in account — account/instance are stable for the lifetime
+    // of this component (ChatApp is only mounted once App confirms a real account exists).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -85,14 +137,16 @@ export function App() {
     options: { silentOnMissing?: boolean } = {},
   ): Promise<void> {
     try {
-      const detail = await getConversation(userId, targetConversationId);
+      const accessToken = await getAccessToken(instance, account);
+      const detail = await getConversation(accessToken, targetConversationId);
       setMessages(mapDetailToMessages(detail));
       setConversationId(detail.conversationId);
       setLastFailedMessage(null);
       setStoredActiveConversationId(detail.conversationId);
     } catch (error) {
       if (error instanceof ConversationRequestError && error.status === 404) {
-        // A stored conversation id that no longer resolves (e.g. cleared dev data) should
+        // A stored conversation id that no longer resolves (e.g. cleared dev data, or it
+        // belongs to a different authenticated identity than the one now signed in) should
         // never block the app from starting fresh.
         setStoredActiveConversationId(null);
         if (!options.silentOnMissing) {
@@ -115,7 +169,8 @@ export function App() {
     setLastFailedMessage(null);
 
     try {
-      const result = await sendChatMessage({ userId, message: text, conversationId });
+      const accessToken = await getAccessToken(instance, account);
+      const result = await sendChatMessage({ accessToken, message: text, conversationId });
       setConversationId(result.conversationId);
       setStoredActiveConversationId(result.conversationId);
       const assistantMessage: Message = {
@@ -170,9 +225,13 @@ export function App() {
     void loadConversation(targetConversationId);
   }
 
+  function handleSignOut(): void {
+    void instance.logoutPopup();
+  }
+
   return (
     <div className="app-shell">
-      <Header />
+      <Header account={account} onSignOut={handleSignOut} />
       <div className="app-body">
         <Sidebar
           conversations={conversations}

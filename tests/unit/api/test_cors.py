@@ -75,3 +75,71 @@ def test_cors_actual_get_request_includes_allow_origin_header_for_allowed_origin
 
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+
+
+def test_cors_preflight_for_conversations_allows_the_authorization_header() -> None:
+    """PBI-11-01C regression guard: the exact live failure this fixes — a browser preflight
+    for GET /conversations requesting the Authorization header (as the SPA does before every
+    Entra ID Bearer-token request, PBI-11-01) must succeed, not 400."""
+    response = client.options(
+        "/conversations",
+        headers={
+            "Origin": "http://localhost:3000",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "authorization",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    allowed_headers = response.headers["access-control-allow-headers"].lower()
+    assert "authorization" in allowed_headers
+
+
+def test_cors_preflight_for_chat_allows_the_authorization_header() -> None:
+    """Same regression guard as above, for POST /chat."""
+    response = client.options(
+        "/chat",
+        headers={
+            "Origin": "http://localhost:3000",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization, content-type",
+        },
+    )
+
+    assert response.status_code == 200
+    allowed_headers = response.headers["access-control-allow-headers"].lower()
+    assert "authorization" in allowed_headers
+    assert "content-type" in allowed_headers
+
+
+def test_cors_preflight_still_allows_content_type_and_correlation_id() -> None:
+    """Preserves the two headers this fix must not regress (PBI-04-02/observability)."""
+    response = client.options(
+        "/chat",
+        headers={
+            "Origin": "http://localhost:3000",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type, x-correlation-id",
+        },
+    )
+
+    assert response.status_code == 200
+    allowed_headers = response.headers["access-control-allow-headers"].lower()
+    assert "content-type" in allowed_headers
+    assert "x-correlation-id" in allowed_headers
+
+
+def test_cors_preflight_for_conversations_rejects_an_unconfigured_origin() -> None:
+    """The Authorization-header fix must not loosen origin restriction — an unlisted origin
+    still gets no Access-Control-Allow-Origin, even when requesting Authorization."""
+    response = client.options(
+        "/conversations",
+        headers={
+            "Origin": "https://not-the-allowed-web-app.example.com",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "authorization",
+        },
+    )
+
+    assert "access-control-allow-origin" not in response.headers

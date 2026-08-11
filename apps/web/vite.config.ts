@@ -1,5 +1,9 @@
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
+
+const rootDir = fileURLToPath(new URL(".", import.meta.url));
 
 // PBI-08-02: environment-driven allowlist for Vite's preview-server Host-header check
 // (VITE_PREVIEW_ALLOWED_HOSTS, comma-separated). Read via process.env — this file runs in
@@ -20,6 +24,17 @@ const previewAllowedHosts = allowedHostsEnv
 
 export default defineConfig({
   plugins: [react()],
+  // Multi-page build (PBI-11-01B): auth-bridge.html is a genuinely separate, minimal MSAL
+  // redirect-bridge entry point (see src/auth-bridge.ts) — a popup/silent-iframe auth flow
+  // must never have to download and evaluate the full SPA bundle just to relay its response.
+  build: {
+    rollupOptions: {
+      input: {
+        main: resolve(rootDir, "index.html"),
+        authBridge: resolve(rootDir, "auth-bridge.html"),
+      },
+    },
+  },
   server: {
     host: true,
     port: 5173,

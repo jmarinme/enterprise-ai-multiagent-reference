@@ -23,6 +23,8 @@ from pydantic.alias_generators import to_camel
 from src.domain.conversation import Message
 from src.domain.conversation_repository import ConversationRepository
 
+from api.auth.dependency import get_current_user
+from api.auth.models import AuthenticatedUser
 from api.dependencies import get_conversation_repository_dep
 
 router = APIRouter(tags=["conversations"])
@@ -74,11 +76,15 @@ def _derive_title(messages: list[Message]) -> str:
 
 @router.get("/conversations", response_model=list[ConversationSummaryResponse])
 async def list_conversations(
-    user_id: str = Query(alias="userId"),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    # DEPRECATED (PBI-11-01): accepted only for backward compatibility with any client still
+    # sending it; never used for authorization. The authenticated caller's identity (from the
+    # validated Entra ID Bearer token) always determines which conversations are listed.
+    user_id: str | None = Query(default=None, alias="userId", deprecated=True),
     repository: ConversationRepository = Depends(get_conversation_repository_dep),
 ) -> list[ConversationSummaryResponse]:
-    """List every conversation for one synthetic user, newest first."""
-    conversations = await repository.list_conversations(user_id)
+    """List every conversation for the authenticated caller, newest first."""
+    conversations = await repository.list_conversations(current_user.user_id)
     return [
         ConversationSummaryResponse(
             conversation_id=conversation.conversation_id,
@@ -95,11 +101,21 @@ async def list_conversations(
 @router.get("/conversations/{conversation_id}", response_model=ConversationDetailResponse)
 async def get_conversation(
     conversation_id: str,
-    user_id: str = Query(alias="userId"),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    # DEPRECATED (PBI-11-01): see list_conversations above — accepted for backward
+    # compatibility only, never used for authorization.
+    user_id: str | None = Query(default=None, alias="userId", deprecated=True),
     repository: ConversationRepository = Depends(get_conversation_repository_dep),
 ) -> ConversationDetailResponse:
-    """Fetch one full conversation (with messages) for the history sidebar's restore action."""
-    conversation = await repository.get_conversation(user_id, conversation_id)
+    """Fetch one full conversation (with messages) for the history sidebar's restore action.
+
+    Scoped exclusively to the authenticated caller (current_user.user_id, from the validated
+    Entra ID Bearer token) — a caller can never retrieve another identity's conversation by
+    supplying a different `userId` or by guessing a `conversationId` that belongs to someone
+    else (PBI-11-01 IDOR remediation): the repository lookup's partition key is always the
+    server-derived identity, never a client-supplied one.
+    """
+    conversation = await repository.get_conversation(current_user.user_id, conversation_id)
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
 

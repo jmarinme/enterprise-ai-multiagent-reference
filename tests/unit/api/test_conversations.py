@@ -20,13 +20,23 @@ def test_list_conversations_accepts_the_camelcase_userid_query_parameter() -> No
     assert response.json() == []
 
 
-def test_list_conversations_rejects_the_snake_case_query_parameter() -> None:
-    """Regression guard for the exact shape of the bug found live: FastAPI does not
-    camelCase-alias plain function parameters automatically — only Pydantic body models with
-    an alias_generator do that. "user_id" must NOT work; only "userId" should."""
+def test_list_conversations_ignores_the_snake_case_query_parameter() -> None:
+    """PBI-11-01: `userId` (in any casing) is now a deprecated, optional, authorization-inert
+    parameter — identity comes exclusively from the authenticated Bearer token (see
+    test_auth.py's IDOR regression tests). Sending the wrong casing ("user_id") no longer
+    produces a 422 the way it did when userId was still a required field; it is simply
+    ignored, same as any other unrecognized/irrelevant query parameter."""
     response = client.get("/conversations", params={"user_id": "conv-list-user-1"})
 
-    assert response.status_code == 422
+    assert response.status_code == 200
+
+
+def test_list_conversations_accepts_no_userid_at_all() -> None:
+    """PBI-11-01 regression guard: userId is deprecated — a client that stops sending it
+    entirely must still be accepted (identity comes from the Bearer token)."""
+    response = client.get("/conversations")
+
+    assert response.status_code == 200
 
 
 def test_list_conversations_returns_a_conversation_after_a_chat_turn() -> None:

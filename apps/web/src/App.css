@@ -25,6 +25,82 @@
   font-size: 0.85rem;
 }
 
+.app-header__account {
+  font-size: 0.85rem;
+  color: #e0e0e0;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-header__sign-out {
+  padding: 0.3rem 0.7rem;
+  border: 1px solid #ffffff;
+  border-radius: 6px;
+  background-color: transparent;
+  color: #ffffff;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.app-header__sign-out:hover {
+  background-color: #ffffff;
+  color: #14213d;
+}
+
+.sign-in-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #f5f6f8;
+}
+
+.sign-in-screen__card {
+  max-width: 420px;
+  padding: 2rem 2.25rem;
+  border-radius: 12px;
+  background-color: #ffffff;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.08);
+  text-align: center;
+}
+
+.sign-in-screen__title {
+  font-weight: 700;
+  font-size: 1.2rem;
+  color: #14213d;
+  margin-bottom: 0.75rem;
+}
+
+.sign-in-screen__description {
+  font-size: 0.9rem;
+  color: #555555;
+  line-height: 1.5;
+  margin-bottom: 1.5rem;
+}
+
+.sign-in-screen__button {
+  width: 100%;
+  padding: 0.7rem 1rem;
+  border: none;
+  border-radius: 8px;
+  background-color: #14213d;
+  color: #ffffff;
+  font-weight: 600;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.sign-in-screen__button:hover:not(:disabled) {
+  background-color: #1f3a5f;
+}
+
+.sign-in-screen__button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .status-badge {
   padding: 0.15rem 0.6rem;
   border-radius: 999px;

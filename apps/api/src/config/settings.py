@@ -22,6 +22,26 @@ class Settings(BaseSettings):
     # Web Container App's own FQDN (resolved dynamically, never hardcoded) for DEV/staging/prod.
     cors_allowed_origins: str = "http://localhost:3000"
 
+    # Entra ID (Azure AD) authentication — PBI-11-01. Defaults match the confirmed DEV App
+    # Registration (a Single Page Application registration supporting internal and external
+    # users, hence /common rather than a fixed tenant — CLAUDE.md §4.5). None of these values
+    # are secrets — a SPA client ID, an authority URL, and an Application ID URI are all meant
+    # to be public — so, consistent with this class's existing pattern (e.g. cosmos_db_database
+    # above), they default to the real, current values rather than an empty placeholder, while
+    # remaining overridable per environment via env vars.
+    entra_authority: str = "https://login.microsoftonline.com/common"
+    entra_client_id: str = "67d95215-5a31-416a-99ab-5fe203fb7c32"
+    # PBI-11-01D: the expected `aud` claim on incoming access tokens — confirmed against a real,
+    # live Entra v2.0 token from this exact App Registration (ver=2.0, scp=access_as_user).
+    # For a v2.0 access token, `aud` is the bare API client ID GUID, never the "api://..."
+    # Application ID URI — that URI is the *resource identifier requested by the frontend*
+    # (src/auth/loginRequest.ts's scope, api://67d95215-.../access_as_user) and appears in the
+    # `scp`-granting request, but Entra issues the v2.0 token itself with `aud` set to the bare
+    # GUID. This platform issues only v2.0 tokens (no v1 support exists or is planned), so a
+    # single exact-match audience is correct — do not add "api://..." as a second accepted
+    # value without a proven, live v1-token requirement.
+    entra_api_audience: str = "67d95215-5a31-416a-99ab-5fe203fb7c32"
+
     @property
     def cors_allowed_origins_list(self) -> list[str]:
         """Parsed, whitespace-trimmed origin list — empty entries dropped."""

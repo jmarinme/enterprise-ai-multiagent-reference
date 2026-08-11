@@ -15,6 +15,8 @@ from src.rag.grounding_models import Citation, GroundingMetadata
 from src.supervisor.models import AgentRequest
 from src.supervisor.orchestrator import SupervisorOrchestrator
 
+from api.auth.dependency import get_current_user
+from api.auth.models import AuthenticatedUser
 from api.dependencies import get_supervisor
 
 router = APIRouter(tags=["chat"])
@@ -27,7 +29,12 @@ class _CamelModel(BaseModel):
 class ChatRequest(_CamelModel):
     message: str
     conversation_id: str | None = None
-    user_id: str
+    # DEPRECATED (PBI-11-01): retained only for backward compatibility with any client still
+    # sending it. Never used for authorization — the authenticated caller's identity (derived
+    # from the validated Entra ID Bearer token, see api.auth.dependency.get_current_user)
+    # always determines which conversation is read or written, regardless of this value. A
+    # future PBI may remove this field once no client still sends it.
+    user_id: str | None = None
 
 
 class ChatResponse(_CamelModel):
@@ -52,12 +59,18 @@ class ChatResponse(_CamelModel):
 @router.post("/chat", response_model=ChatResponse)
 async def post_chat(
     chat_request: ChatRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
     supervisor: SupervisorOrchestrator = Depends(get_supervisor),
 ) -> ChatResponse:
-    """Route a chat message through the Supervisor and return the selected agent's response."""
+    """Route a chat message through the Supervisor and return the selected agent's response.
+
+    Requires a valid Entra ID Bearer token (PBI-11-01) — current_user.user_id (derived from
+    the token's own tid/oid claims) is the only identity ever used, never
+    chat_request.user_id (deprecated, ignored for authorization).
+    """
     agent_request = AgentRequest(
         message=chat_request.message,
-        user_id=chat_request.user_id,
+        user_id=current_user.user_id,
         conversation_id=chat_request.conversation_id,
     )
 
