@@ -25,7 +25,7 @@ class _CamelModel(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
 
-ToolCallErrorType = Literal["unauthorized", "unknown_tool", "tool_failed"]
+ToolCallErrorType = Literal["unauthorized", "unknown_tool", "tool_failed", "duplicate_call"]
 
 
 class ToolCallResult(_CamelModel):
@@ -53,6 +53,10 @@ class ToolCallingContext(BaseModel):
     conversation_id: str | None = None
     user_id: str | None = None
     max_iterations: int = Field(default=DEFAULT_MAX_TOOL_CALL_ITERATIONS, ge=1)
+    # PBI-12-04 (ReAct generalization hardening): per-LLM-call wall-clock bound, in addition to
+    # max_iterations above. None (default) preserves every existing caller's exact prior
+    # behavior — this is opt-in, not a change to Claims' or any test's current timing.
+    timeout_seconds: float | None = Field(default=None, gt=0)
 
 
 class ToolCallingResponse(BaseModel):
@@ -68,3 +72,6 @@ class ToolCallingResponse(BaseModel):
     # response — the loop still stops safely and returns whatever text/tool_calls exist so far,
     # it never raises (CLAUDE.md §11: a safe, understandable response is always required).
     stopped_due_to_max_iterations: bool = False
+    # PBI-12-04: True only if ToolCallingContext.timeout_seconds elapsed waiting on a single LLM
+    # call — same safe-stop guarantee as stopped_due_to_max_iterations above, never a raise.
+    stopped_due_to_timeout: bool = False

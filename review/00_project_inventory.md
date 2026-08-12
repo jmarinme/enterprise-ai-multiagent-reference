@@ -31,7 +31,7 @@ validated multiple times, most recently for this review's own immediate predeces
 | Test files (`test_*.py` under `tests/`) | 93 | 76 | +17 |
 | `tests/e2e/` real test files | 1 (`test_load.py`) | 0 | +1 |
 | `tests/conversational/` real test files | 3 | 0 | +3 |
-| ADRs | 10 (as of this PBI-10-06 documentation refresh; 3 at this table's original snapshot) | 2 | +1 since original snapshot (`0003-...`); +7 more since, most recently [ADR-0010](../docs/Architecture/adr/0010-enterprise-authentication-entra-id.md) (Microsoft Entra ID authentication) |
+| ADRs | 11 (as of PBI-12-04; 3 at this table's original snapshot) | 2 | +1 since original snapshot (`0003-...`); +8 more since, most recently [ADR-0011](../docs/Architecture/adr/0011-react-pattern-for-tool-orchestrated-reasoning.md) (ReAct pattern for Tool-orchestrated reasoning), preceded by [ADR-0010](../docs/Architecture/adr/0010-enterprise-authentication-entra-id.md) (Microsoft Entra ID authentication) |
 | Bicep modules | 17 | 15 | +2 (`function-app.bicep`, `storage-account.bicep`, `monitor-alerts.bicep` — net +3 shown as +2 due to a rename/consolidation not investigated further) |
 | Sprints with a logged `README.md` | 9 (`sprint_00`–`sprint_09`) | 6 | +3 |
 

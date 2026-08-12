@@ -38,7 +38,7 @@ All business systems, policies, claims, brokers, payments, commissions, adjuster
 
 1. **AI First, not AI Only** — use the LLM for language understanding, classification, extraction, reasoning support, and response generation; keep critical business rules deterministic.
 2. **The LLM is not the source of truth** — business facts must come from approved Tools, APIs, or governed data sources.
-3. **Tool Calling for business action** — every business query or action must use a deterministic, versioned, testable, and auditable Tool.
+3. **Tool Calling for business action** — every business query or action must use a deterministic, versioned, testable, and auditable Tool. Every specialist agent reasons about which Tool to call through a bounded ReAct (Reason → Act → Observe → ... → Final Answer) loop (`src/core/tool_calling/orchestrator.py`; see ADR-0011) — the loop decides *whether and which* Tool to request, never *what the Tool returns or does*, and its internal reasoning is never exposed or persisted.
 4. **No direct database access from agents** — agents must never query or modify databases directly.
 5. **Human-in-the-Loop** — sensitive, ambiguous, low-confidence, legal, financial, or coverage-related decisions must escalate to a person.
 6. **Security and privacy by design** — use least privilege, managed identities, secure configuration, data minimization, and synthetic data outside production.

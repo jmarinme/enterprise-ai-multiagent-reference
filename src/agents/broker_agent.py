@@ -19,6 +19,17 @@ machine -> annotate -> return) rather than sharing a base class with it — only
 genuinely identical pieces (state persistence, prompt+LLM annotation) were extracted into
 src.agents.shared once a third agent (Commercial Intake, PBI-01-07) needed them too; see
 docs/sprint_01/decisions.md.
+
+ToolCallingOrchestrator (PBI-12-04 — generalizes PBI-02-04's ClaimsAgent-only wiring to every
+specialist agent; see docs/Architecture/adr/0011-react-pattern-for-tool-orchestrated-reasoning.md):
+an additive, isolated ReAct (Reason -> Act -> Observe -> ... -> Final Answer) capability run
+alongside — never in place of — advance_broker_inquiry's own deterministic Tool calls, exactly
+mirroring ClaimsAgent's own _run_controlled_tool_calling. It proves the LLM can request one of
+this Agent's allow-listed Tools (src.core.tool_calling.policies.BROKER_ALLOWED_TOOLS) through
+the controlled, bounded orchestration loop, with the outcome surfaced as typed
+AgentResponse.tool_calls. It never feeds into BrokerInquiryState or the deterministic
+business-fact text, and a configuration failure degrades gracefully exactly like a Prompt/LLM
+failure — it never blocks the turn.
 """
 
 from __future__ import annotations
@@ -35,7 +46,17 @@ from src.agents.shared.memory import (
     update_memory,
 )
 from src.agents.shared.state_persistence import carry_forward_other_agent_state, load_agent_state
+from src.core.tool_calling.exceptions import ToolCallingError
+from src.core.tool_calling.models import (
+    DEFAULT_MAX_TOOL_CALL_ITERATIONS,
+    ToolCallingContext,
+    ToolCallingResponse,
+)
+from src.core.tool_calling.orchestrator import ToolCallingOrchestrator
+from src.core.tool_calling.policies import BROKER_ALLOWED_TOOLS
+from src.llm.models import LLMMessage, LLMMessageRole
 from src.llm.provider import LLMProvider
+from src.prompts.exceptions import PromptError
 from src.prompts.manager import PromptManager
 from src.prompts.models import PromptRenderContext
 from src.supervisor.models import AgentRequest, AgentResponse, ConversationContext, IntentCategory
@@ -88,11 +109,18 @@ class BrokerAgent:
     name = "BrokerAgent"
 
     def __init__(
-        self, tool_executor: ToolExecutor, prompt_manager: PromptManager, llm_provider: LLMProvider
+        self,
+        tool_executor: ToolExecutor,
+        prompt_manager: PromptManager,
+        llm_provider: LLMProvider,
+        tool_calling_orchestrator: ToolCallingOrchestrator,
+        tool_calling_max_iterations: int = DEFAULT_MAX_TOOL_CALL_ITERATIONS,
     ) -> None:
         self._tool_executor = tool_executor
         self._prompt_manager = prompt_manager
         self._llm_provider = llm_provider
+        self._tool_calling_orchestrator = tool_calling_orchestrator
+        self._tool_calling_max_iterations = tool_calling_max_iterations
 
     async def handle(self, request: AgentRequest, context: ConversationContext) -> AgentResponse:
         state = load_agent_state(context.metadata, _STATE_METADATA_KEY, BrokerInquiryState)
@@ -174,6 +202,8 @@ class BrokerAgent:
             user_id=request.user_id,
         )
 
+        tool_calling_response = await self._run_controlled_tool_calling(request, context)
+
         return AgentResponse(
             conversation_id=context.conversation_id,
             agent=self.name,
@@ -186,4 +216,55 @@ class BrokerAgent:
                 GLOBAL_MEMORY_METADATA_KEY: save_memory(memory),
                 "diagnostics": diagnostics,
             },
+            tool_calls=tool_calling_response.tool_calls,
         )
+
+    async def _run_controlled_tool_calling(
+        self, request: AgentRequest, context: ConversationContext
+    ) -> ToolCallingResponse:
+        """Additive, isolated ReAct proof that the LLM can request one of this Agent's
+        allow-listed Tools through ToolCallingOrchestrator (PBI-12-04, generalizing PBI-02-04's
+        ClaimsAgent-only wiring) — entirely independent of, and never altering,
+        advance_broker_inquiry's own deterministic Tool calls above. Degrades to an empty
+        ToolCallingResponse on PromptError/ToolCallingError, the same graceful-degradation
+        pattern ClaimsAgent._run_controlled_tool_calling uses."""
+        try:
+            rendered_prompt = await self._prompt_manager.render(
+                "broker.system",
+                PromptRenderContext(
+                    conversation_id=context.conversation_id,
+                    user_id=request.user_id,
+                    intent=IntentCategory.BROKER.value,
+                    conversation_summary=context.summary,
+                    agent_name=self.name,
+                ),
+            )
+        except PromptError:
+            return ToolCallingResponse(text="", iterations=0)
+
+        try:
+            return await self._tool_calling_orchestrator.run(
+                messages=[
+                    LLMMessage(role=LLMMessageRole.SYSTEM, content=rendered_prompt.text),
+                    LLMMessage(role=LLMMessageRole.USER, content=request.message),
+                ],
+                context=ToolCallingContext(
+                    agent_name=self.name,
+                    allowed_tools=list(BROKER_ALLOWED_TOOLS),
+                    correlation_id=request.correlation_id,
+                    conversation_id=context.conversation_id,
+                    user_id=request.user_id,
+                    max_iterations=self._tool_calling_max_iterations,
+                ),
+            )
+        except ToolCallingError:
+            return ToolCallingResponse(text="", iterations=0)
+        except Exception:  # noqa: BLE001
+            # PBI-12-04 hardening (discovered while generalizing this path to a second/third
+            # Agent): ToolCallingOrchestrator.run() does not itself catch a genuine LLMProvider
+            # failure (e.g. a sustained outage after AzureOpenAIProvider's own retry/circuit-
+            # breaker layer is exhausted) — only ToolCallingError (misconfiguration) is handled
+            # above. Since this whole method is an additive, isolated capability that must never
+            # block the turn (see this method's own docstring), any other exception here is
+            # degraded exactly the same way, not allowed to propagate past this boundary.
+            return ToolCallingResponse(text="", iterations=0)

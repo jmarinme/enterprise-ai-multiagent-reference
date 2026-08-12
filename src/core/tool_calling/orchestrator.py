@@ -4,6 +4,14 @@ framework (PBI-02-04).
 Agent -> PromptManager -> LLMProvider -> ToolCallRequest -> ToolCallingOrchestrator ->
 ToolExecutor -> ToolResult -> LLMProvider -> Final Agent Response.
 
+This loop is this platform's ReAct (Reason -> Act -> Observe -> Reason -> ... -> Final Answer)
+implementation (PBI-12-04; see docs/Architecture/adr/0011-react-pattern-for-tool-orchestrated-
+reasoning.md): each pass through the `for iteration in ...` loop below is one Reason step (the
+LLM call), optionally followed by an Act step (a Tool call) and an Observation step (the
+ToolCallResult fed back into `conversation` as a TOOL-role message for the next Reason step).
+Bounded by `max_iterations` (existing, PBI-02-04), plus two hardening additions from PBI-12-04:
+a per-LLM-call `timeout_seconds` and duplicate-tool-call detection — see `run()`.
+
 Reuses ToolRegistry and ToolExecutor exactly as-is (src.tools) — this class adds only the
 per-Agent authorization boundary neither of those has: ToolExecutor executes any registered
 Tool it is asked to, with no concept of "for this Agent". No eval(), no dynamic import, no
@@ -13,6 +21,7 @@ Tool.execute() through the existing, already-audited ToolExecutor.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -23,6 +32,7 @@ from src.llm.models import (
     LLMMessage,
     LLMMessageRole,
     LLMRequest,
+    LLMResponse,
     LLMToolDefinition,
 )
 from src.llm.models import (
@@ -80,26 +90,39 @@ class ToolCallingOrchestrator:
         context: ToolCallingContext,
         settings: LLMGenerationSettings | None = None,
     ) -> ToolCallingResponse:
-        """Runs the controlled LLM<->Tool loop and returns the final response. Never raises for
-        an unauthorized/unknown/failed tool call (all represented as typed ToolCallResult data)
-        — only ToolCallingError for genuine misconfiguration (see build_tool_definitions)."""
+        """Runs the controlled LLM<->Tool loop (this platform's ReAct implementation — see this
+        module's own docstring) and returns the final response. Never raises for an
+        unauthorized/unknown/duplicate/failed tool call (all represented as typed
+        ToolCallResult data) or for a timed-out/max-iterations-exceeded loop (represented as
+        typed ToolCallingResponse flags) — only ToolCallingError for genuine misconfiguration
+        (see build_tool_definitions)."""
         tool_definitions = self.build_tool_definitions(context.allowed_tools)
         generation_settings = settings or LLMGenerationSettings()
         conversation: list[LLMMessage] = list(messages)
         all_results: list[ToolCallResult] = []
         llm_response_text = ""
+        # PBI-12-04: bounds duplicate tool-call requests (same tool + same arguments, seen
+        # anywhere earlier in this single run() invocation) — a real risk for a ReAct loop that
+        # a max_iterations cap alone does not address (a misbehaving LLM could otherwise spend
+        # every iteration re-requesting the same non-idempotent action, e.g. claim_registration,
+        # instead of making progress). Local to this call only — never shared across turns/
+        # Agents, since this instance is a cached, process-wide singleton (see
+        # apps/api/src/api/dependencies.py get_tool_calling_orchestrator()).
+        seen_call_signatures: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
 
         for iteration in range(1, context.max_iterations + 1):
-            llm_response = await self._llm_provider.generate(
-                LLMRequest(
-                    messages=conversation,
-                    settings=generation_settings,
-                    tools=tool_definitions,
-                    correlation_id=context.correlation_id,
-                    conversation_id=context.conversation_id,
-                    user_id=context.user_id,
+            try:
+                llm_response = await self._generate(
+                    conversation, tool_definitions, generation_settings, context
                 )
-            )
+            except TimeoutError:
+                return ToolCallingResponse(
+                    text=llm_response_text,
+                    tool_calls=all_results,
+                    iterations=iteration - 1,
+                    stopped_due_to_max_iterations=False,
+                    stopped_due_to_timeout=True,
+                )
             llm_response_text = llm_response.text
 
             if not llm_response.tool_calls:
@@ -130,7 +153,21 @@ class ToolCallingOrchestrator:
             )
 
             for call in llm_response.tool_calls:
-                result = await self._execute_tool_call(call, context)
+                signature = _call_signature(call)
+                if signature in seen_call_signatures:
+                    result = ToolCallResult(
+                        call_id=call.call_id,
+                        tool_name=call.tool_name,
+                        success=False,
+                        error=(
+                            f"Tool '{call.tool_name}' was already called with the same "
+                            "arguments earlier in this reasoning loop — not executed again."
+                        ),
+                        error_type="duplicate_call",
+                    )
+                else:
+                    seen_call_signatures.add(signature)
+                    result = await self._execute_tool_call(call, context)
                 all_results.append(result)
                 conversation.append(
                     LLMMessage(
@@ -146,6 +183,31 @@ class ToolCallingOrchestrator:
             iterations=context.max_iterations,
             stopped_due_to_max_iterations=True,
         )
+
+    async def _generate(
+        self,
+        conversation: list[LLMMessage],
+        tool_definitions: list[LLMToolDefinition],
+        generation_settings: LLMGenerationSettings,
+        context: ToolCallingContext,
+    ) -> LLMResponse:
+        """One Reason step: a single LLM call, optionally bounded by
+        ToolCallingContext.timeout_seconds (PBI-12-04). Raises `TimeoutError` (built-in,
+        distinct from ToolCallingError — a resilience condition, not a misconfiguration) when
+        the bound is exceeded; `run()` turns that into a safe, typed ToolCallingResponse."""
+        coro = self._llm_provider.generate(
+            LLMRequest(
+                messages=conversation,
+                settings=generation_settings,
+                tools=tool_definitions,
+                correlation_id=context.correlation_id,
+                conversation_id=context.conversation_id,
+                user_id=context.user_id,
+            )
+        )
+        if context.timeout_seconds is None:
+            return await coro
+        return await asyncio.wait_for(coro, timeout=context.timeout_seconds)
 
     async def _execute_tool_call(
         self, call: LLMToolCallRequest, context: ToolCallingContext
@@ -200,3 +262,18 @@ def _serialize_result(result: ToolCallResult) -> str:
     not str()/repr(), so the LLM receives a stable, parseable structure — not a debugging
     string."""
     return json.dumps({"success": result.success, "data": result.data, "error": result.error})
+
+
+def _call_signature(call: LLMToolCallRequest) -> tuple[str, tuple[tuple[str, str], ...]]:
+    """The identity a duplicate-tool-call check (PBI-12-04) compares on: tool name plus
+    arguments, deliberately excluding `call_id` (an LLM/provider-generated request identifier,
+    never part of what makes two calls "the same action"). `json.dumps(..., default=str)` on
+    each argument's value gives a stable, order-independent signature even when a value is a
+    non-hashable type (e.g. a nested dict, seen in this module's own tests)."""
+    argument_signature = tuple(
+        sorted(
+            (argument.name, json.dumps(argument.value, sort_keys=True, default=str))
+            for argument in call.arguments
+        )
+    )
+    return (call.tool_name, argument_signature)

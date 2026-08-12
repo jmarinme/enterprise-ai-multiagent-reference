@@ -107,28 +107,34 @@ detallo en las siguientes diapositivas.
 
 ## Diapositiva 5 — Patrones de IA Agéntica
 
-Los requisitos del proyecto mencionan varios patrones de IA Agéntica —Multi-Agent,
-Planner-Executor, Memory, Guardrails, RAG, y también ReAct, LLM-as-a-Judge y Self-Reflection—, y
-quiero explicar explícitamente cómo se posiciona esta arquitectura frente a ese conjunto completo,
-en lugar de dejarlo implícito.
+Esta diapositiva cambió de fondo desde la versión anterior de esta defensa, y quiero
+explicar exactamente qué cambió y por qué.
 
-Durante el diseño se eligió la arquitectura de referencia inspirada en el modelo Supervisor más
-Agentes Especialistas porque ofrece ejecución determinista y encaja mejor con procesos de negocio
-de seguros, donde la auditabilidad no es negociable. Esta arquitectura ya implementa cinco de los
-patrones requeridos: Multi-Agent, Planner-Executor, Memory, Guardrails, y RAG con su arquitectura
-lista aunque hoy con datos sintéticos.
+Anteriormente presentaba ReAct como una evolución futura. Un análisis dedicado de brechas contra
+el requisito del curso —ReAct más Tool Calling como patrón primario— encontró que el mecanismo ya
+existía: ToolCallingOrchestrator ya implementaba un bucle acotado de Razonar, Actuar, Observar,
+Razonar de nuevo, con quince pruebas que ya lo confirmaban. Lo que faltaba no era construir algo
+nuevo: faltaba generalizarlo —estaba conectado solo al agente de Siniestros— y nombrarlo
+explícitamente como lo que es.
 
-ReAct se evaluó explícitamente durante la fase de diseño. En lugar de forzar una implementación
-completa de ReAct dentro del alcance académico —lo que habría introducido razonamiento menos
-predecible en un dominio que exige justamente lo contrario— se decidió preservar la orquestación
-determinista del Supervisor y dejar identificado a ReAct como la siguiente evolución
-arquitectónica, no como algo ya construido. El diagrama de la derecha lo muestra con claridad: la
-versión actual va directo de Tool Calling a la respuesta; la evolución agrega un bucle de
-razonamiento —Reason, Tool, Observation, Reason— dentro del agente especialista, sin tocar al
-Supervisor, sin tocar los Guardrails, sin tocar la memoria ni la seguridad empresarial.
+Por eso hoy ReAct más Tool Calling es el patrón primario, implementado en los tres agentes
+especialistas: Claims, Broker Services y Commercial Intake. Cada uno razona internamente antes de
+responder, decide si necesita una herramienta, la invoca, observa el resultado, y repite ese ciclo
+solo lo necesario antes de dar su respuesta final. El Supervisor, en cambio, permanece
+completamente fuera de ese bucle: sigue enrutando de forma determinista, por palabras clave, sin
+ningún modelo de lenguaje involucrado — esa separación es intencional y está documentada en el
+ADR-0011: el enrutamiento es una decisión de gobierno que debe ser reproducible; el razonamiento
+sobre qué herramienta usar es responsabilidad de cada agente especialista.
 
-Esa evolución mejoraría el razonamiento autónomo en varios pasos y la validación de la conversación,
-preservando en todo momento la gobernanza y la seguridad empresarial ya construidas.
+Los patrones complementarios que ya estaban implementados —Multi-Agent, Planner-Executor, Memory,
+Guardrails— siguen ahí, sin cambios; ReAct los complementa, no los reemplaza. Lo que sí cambió es
+la lista de evolución futura: ya no incluye ReAct, porque dejó de ser futuro. Lo que queda son dos
+patrones genuinamente no implementados — LLM-as-a-Judge y Self-Reflection — que evaluarían o
+corregirían el propio razonamiento del agente, algo que este sistema no hace hoy.
+
+Y quiero cerrar con la regla que no cambió en absoluto: el razonamiento interno de ese bucle nunca
+se expone al usuario ni se guarda en el historial de conversación — solo la respuesta final. Eso
+está comprobado con pruebas dedicadas, no solo diseñado.
 
 ---
 

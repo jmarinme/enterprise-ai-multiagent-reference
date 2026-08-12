@@ -104,13 +104,18 @@ No implementa todavía los agentes funcionales.
   historial persistido en Azure Cosmos DB.
 - ✓ Microsoft Entra ID: inicio de sesión empresarial en la Web (`apps/web/`) y validación de
   token en la API (`apps/api/`).
+- ✓ ReAct + Tool Calling: los tres agentes especialistas (Claims, Broker Services, Commercial
+  Intake) razonan mediante un bucle acotado Reason → Action → Observation → Reason → ... →
+  Final Answer (`src/core/tool_calling/orchestrator.py`) antes de responder — nunca se expone
+  el razonamiento interno, solo la respuesta final.
 
 ## Arquitectura (visión general)
 
 ```text
 Usuario → React SPA (MSAL React) → Microsoft Entra ID (OAuth2 Authorization Code + PKCE)
-        → FastAPI API (validación JWT vía JWKS) → Supervisor Agent
-        → Claims Agent / Broker Services Agent / Commercial Intake Agent → Tool Layer
+        → FastAPI API (validación JWT vía JWKS) → Supervisor Agent (enrutamiento determinista)
+        → Claims Agent / Broker Services Agent / Commercial Intake Agent (ReAct: Reason → Action
+          → Observation → ... → Final Answer) → Tool Layer (determinista)
         → Proveedores de datos sintéticos
 ```
 
@@ -118,6 +123,8 @@ Diagrama de flujo completo (autenticación + agentes + tools):
 [docs/Architecture/diagrams/authentication-request-flow.md](docs/Architecture/diagrams/authentication-request-flow.md).
 Detalle completo de la decisión de autenticación:
 [ADR-0010 — Enterprise Authentication using Microsoft Entra ID](docs/Architecture/adr/0010-enterprise-authentication-entra-id.md).
+Detalle completo del patrón de razonamiento agéntico:
+[ADR-0011 — Adoption of ReAct Pattern for Tool-Orchestrated Reasoning](docs/Architecture/adr/0011-react-pattern-for-tool-orchestrated-reasoning.md).
 
 ## Stack tecnológico
 
@@ -157,3 +164,25 @@ La API y la Web están protegidas con **Microsoft Entra ID**:
 
 Detalle de contexto, decisión, alternativas y consecuencias en
 [ADR-0010](docs/Architecture/adr/0010-enterprise-authentication-entra-id.md).
+
+## Patrones de IA Agéntica
+
+**Patrón primario: ReAct + Tool Calling.** Cada agente especialista razona mediante un bucle
+acotado — `src/core/tool_calling/orchestrator.py` — antes de responder:
+
+- ✓ Reason → decide si necesita una herramienta o ya puede responder.
+- ✓ Action → solicita una Tool determinista (nunca la ejecuta directamente).
+- ✓ Observation → recibe el resultado real de la Tool.
+- ✓ Repite Reason/Action/Observation solo lo necesario, acotado por `max_iterations`.
+- ✓ Final Answer → única salida visible; el razonamiento interno nunca se expone ni se
+  persiste (CLAUDE.md §10).
+
+**Patrones complementarios ya implementados:** Multi-Agent (Supervisor + 3 agentes de dominio),
+Planner–Executor (el Supervisor enruta de forma determinista, cada agente ejecuta), Memory
+(memoria conversacional en Cosmos DB), Guardrails (Entra ID + validación JWT/JWKS + Tool Calling
+determinista).
+
+**Patrones futuros (no implementados):** LLM-as-a-Judge, Self-Reflection.
+
+Detalle de contexto, decisión, alternativas y consecuencias en
+[ADR-0011](docs/Architecture/adr/0011-react-pattern-for-tool-orchestrated-reasoning.md).

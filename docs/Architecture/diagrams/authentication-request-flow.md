@@ -1,4 +1,4 @@
-# Authentication & Request Flow (PBI-11-01, documented under PBI-10-06)
+# Authentication & Request Flow (PBI-11-01, documented under PBI-10-06, ReAct-annotated under PBI-12-04)
 
 Source of truth: `apps/web/src/auth/`, `apps/web/auth-bridge.html`, `apps/api/src/api/auth/`,
 `src/supervisor/orchestrator.py`, `src/agents/`, `src/services/tools/`. See
@@ -26,9 +26,9 @@ flowchart LR
     subgraph API["FastAPI API (apps/api)"]
         JWT["JWT Validation\n(EntraTokenValidator: signature via JWKS,\nexpiry, audience, issuer — apps/api/src/api/auth/)"]
         Supervisor["Supervisor Agent\n(intent classification, routing, guardrails)"]
-        Claims["Claims Agent"]
-        Broker["Broker Services Agent"]
-        Commercial["Commercial Intake Agent"]
+        Claims["Claims Agent\n(ReAct: Reason/Act/Observe)"]
+        Broker["Broker Services Agent\n(ReAct: Reason/Act/Observe)"]
+        Commercial["Commercial Intake Agent\n(ReAct: Reason/Act/Observe)"]
         Tools["Tool Layer\n(deterministic, versioned Tools)"]
     end
 
@@ -53,6 +53,8 @@ flowchart LR
 
     classDef auth fill:#1F3A5F,color:#fff,stroke:#1F3A5F;
     class Entra,JWT,Bridge auth
+    classDef react stroke:#0E7C86,stroke-width:2px;
+    class Claims,Broker,Commercial react
 ```
 
 ## Reading this diagram
@@ -78,3 +80,11 @@ flowchart LR
 - Cosmos DB's partition key is the authenticated `tid:oid` identity, not a client-supplied value
   — this is the mechanism that closes the IDOR described in
   `review/02_security_review.md` §3b and `review/04_risk_register.md` (RISK-025/RISK-026).
+- **Update (PBI-12-04)**: the three Agent boxes are now annotated "ReAct: Reason/Act/Observe" —
+  each runs a bounded Reason → Act (Tool call) → Observe → Reason loop
+  (`src/core/tool_calling/orchestrator.py`) before producing its response, generalized from
+  Claims (the only Agent that had it before PBI-12-04) to all three. This is an annotation of
+  existing boxes, not a new box or a new flow — the loop happens entirely inside the "Claims
+  Agent" / "Broker Services Agent" / "Commercial Intake Agent" step shown above, between
+  receiving the request from the Supervisor and calling the Tool Layer. See
+  [ADR-0011](../adr/0011-react-pattern-for-tool-orchestrated-reasoning.md).

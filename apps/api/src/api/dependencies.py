@@ -275,6 +275,10 @@ def get_supervisor() -> SupervisorOrchestrator:
             tool_executor=tool_executor,
             prompt_manager=prompt_manager,
             llm_provider=llm_provider,
+            # PBI-12-04: reuses the exact same cached, process-wide ToolCallingOrchestrator
+            # instance as ClaimsAgent — never a second, competing orchestrator.
+            tool_calling_orchestrator=tool_calling_orchestrator,
+            tool_calling_max_iterations=tool_calling_settings.tool_calling_max_iterations,
         ),
     )
     registry.register(
@@ -283,6 +287,10 @@ def get_supervisor() -> SupervisorOrchestrator:
             tool_executor=tool_executor,
             prompt_manager=prompt_manager,
             llm_provider=llm_provider,
+            # PBI-12-04: reuses the exact same cached, process-wide ToolCallingOrchestrator
+            # instance as ClaimsAgent/BrokerAgent — never a second, competing orchestrator.
+            tool_calling_orchestrator=tool_calling_orchestrator,
+            tool_calling_max_iterations=tool_calling_settings.tool_calling_max_iterations,
         ),
     )
     registry.register(IntentCategory.UNKNOWN, FallbackAgent())

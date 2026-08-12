@@ -9,6 +9,7 @@ own cooperative tool-calling behavior (tested separately in tests/unit/llm/test_
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -69,6 +70,30 @@ class _RecordingTool:
         )
 
 
+class _PolicyLookupInput(BaseModel):
+    policy_number: str
+
+
+class _CountingPolicyLookupTool:
+    """Registered as "policy_lookup" (matching the real Tool's name) so scripted duplicate-call
+    requests resolve against it — counts how many times execute() actually ran, to prove a
+    detected duplicate is genuinely never re-executed (PBI-12-04), not just re-labeled."""
+
+    name = "policy_lookup"
+    description = "Counts real executions."
+    version = "1.0.0"
+    input_model = _PolicyLookupInput
+
+    def __init__(self) -> None:
+        self.execution_count = 0
+
+    async def execute(
+        self, tool_input: _PolicyLookupInput, context: ToolExecutionContext
+    ) -> ToolResult[Any]:
+        self.execution_count += 1
+        return ToolResult(tool_name=self.name, success=True, data=None)
+
+
 class _ScriptedLLMProvider:
     """Returns one scripted LLMResponse per call, in order. Records every LLMRequest it saw."""
 
@@ -98,6 +123,42 @@ class _AlwaysRequestsToolCallProvider:
                 )
             ],
         )
+
+
+class _RepeatsTheSameToolCallProvider:
+    """Requests the identical tool call (same tool + same arguments, only call_id differs)
+    every iteration — used to prove duplicate-tool-call detection (PBI-12-04) is what actually
+    stops a misbehaving LLM from re-triggering a non-idempotent action, independent of
+    max_iterations."""
+
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    async def generate(self, request: LLMRequest) -> LLMResponse:
+        self.call_count += 1
+        return LLMResponse(
+            text="",
+            model="stub",
+            tool_calls=[
+                ToolCallRequest(
+                    call_id=f"call-{self.call_count}",
+                    tool_name="policy_lookup",
+                    arguments=[ToolCallArgument(name="policy_number", value="SYN-POL-0001")],
+                )
+            ],
+        )
+
+
+class _SlowLLMProvider:
+    """Sleeps longer than any reasonable test timeout before returning — used to prove
+    ToolCallingContext.timeout_seconds (PBI-12-04) actually bounds a single hung LLM call."""
+
+    def __init__(self, delay_seconds: float) -> None:
+        self._delay_seconds = delay_seconds
+
+    async def generate(self, request: LLMRequest) -> LLMResponse:
+        await asyncio.sleep(self._delay_seconds)
+        return LLMResponse(text="too slow to matter", model="stub")
 
 
 def _build_registry(*tools: object) -> ToolRegistry:
@@ -579,6 +640,146 @@ async def test_run_stops_at_max_iterations_against_a_never_terminating_llm() -> 
     # exactly the configured cap, and each iteration's assistant/tool pair is still correctly
     # sequenced even though the LLM never cooperates and terminates on its own.
     assert response.iterations == context.max_iterations
+
+
+# --- duplicate tool-call detection (PBI-12-04) ------------------------------------------------
+
+
+async def test_run_rejects_a_repeated_identical_tool_call_without_re_executing_it() -> None:
+    """A misbehaving LLM that keeps requesting the exact same tool call (same tool name, same
+    arguments) must be stopped from re-triggering it a second time — the duplicate is rejected
+    with a typed error, and the underlying Tool genuinely never runs again."""
+    counting_tool = _CountingPolicyLookupTool()
+    registry = _build_registry(counting_tool)
+    orchestrator = _build_orchestrator(registry, _RepeatsTheSameToolCallProvider())
+    context = ToolCallingContext(
+        agent_name="ClaimsAgent", allowed_tools=["policy_lookup"], max_iterations=3
+    )
+
+    response = await orchestrator.run(messages=_user_message(), context=context)
+
+    assert response.iterations == 3
+    assert len(response.tool_calls) == 3
+    assert response.tool_calls[0].success is True
+    assert response.tool_calls[0].error_type is None
+    assert response.tool_calls[1].success is False
+    assert response.tool_calls[1].error_type == "duplicate_call"
+    assert response.tool_calls[2].success is False
+    assert response.tool_calls[2].error_type == "duplicate_call"
+    # The proof that matters: the real Tool only ever executed once, not three times.
+    assert counting_tool.execution_count == 1
+
+
+async def test_run_does_not_treat_the_same_tool_with_different_arguments_as_a_duplicate() -> None:
+    registry = _build_registry(PolicyLookupTool())
+    llm = _ScriptedLLMProvider(
+        [
+            LLMResponse(
+                text="",
+                model="stub",
+                tool_calls=[
+                    ToolCallRequest(
+                        call_id="call-1",
+                        tool_name="policy_lookup",
+                        arguments=[ToolCallArgument(name="policy_number", value="SYN-POL-0001")],
+                    )
+                ],
+            ),
+            LLMResponse(
+                text="",
+                model="stub",
+                tool_calls=[
+                    ToolCallRequest(
+                        call_id="call-2",
+                        tool_name="policy_lookup",
+                        arguments=[ToolCallArgument(name="policy_number", value="SYN-POL-0002")],
+                    )
+                ],
+            ),
+            LLMResponse(text="done", model="stub"),
+        ]
+    )
+    orchestrator = _build_orchestrator(registry, llm)
+    context = ToolCallingContext(
+        agent_name="ClaimsAgent", allowed_tools=["policy_lookup"], max_iterations=3
+    )
+
+    response = await orchestrator.run(messages=_user_message(), context=context)
+
+    # Different arguments -> genuinely different calls, neither ever flagged as a duplicate.
+    assert [call.error_type for call in response.tool_calls] == [None, None]
+    assert [call.success for call in response.tool_calls] == [True, True]
+
+
+async def test_run_rejects_a_duplicate_requested_twice_within_the_same_llm_turn() -> None:
+    """The duplicate check applies within a single LLM response's tool_calls list too, not only
+    across iterations — two identical calls requested in the same turn must not both execute."""
+    counting_tool = _CountingPolicyLookupTool()
+    registry = _build_registry(counting_tool)
+    llm = _ScriptedLLMProvider(
+        [
+            LLMResponse(
+                text="",
+                model="stub",
+                tool_calls=[
+                    ToolCallRequest(
+                        call_id="call-1",
+                        tool_name="policy_lookup",
+                        arguments=[ToolCallArgument(name="policy_number", value="SYN-POL-0001")],
+                    ),
+                    ToolCallRequest(
+                        call_id="call-2",
+                        tool_name="policy_lookup",
+                        arguments=[ToolCallArgument(name="policy_number", value="SYN-POL-0001")],
+                    ),
+                ],
+            ),
+            LLMResponse(text="done", model="stub"),
+        ]
+    )
+    orchestrator = _build_orchestrator(registry, llm)
+    context = ToolCallingContext(agent_name="ClaimsAgent", allowed_tools=["policy_lookup"])
+
+    response = await orchestrator.run(messages=_user_message(), context=context)
+
+    assert response.tool_calls[0].error_type is None
+    assert response.tool_calls[1].error_type == "duplicate_call"
+    assert counting_tool.execution_count == 1
+
+
+# --- loop timeout (PBI-12-04) -------------------------------------------------------------------
+
+
+async def test_run_stops_and_flags_timeout_when_a_single_llm_call_hangs() -> None:
+    registry = _build_registry(PolicyLookupTool())
+    orchestrator = _build_orchestrator(registry, _SlowLLMProvider(delay_seconds=5.0))
+    context = ToolCallingContext(
+        agent_name="ClaimsAgent",
+        allowed_tools=["policy_lookup"],
+        max_iterations=3,
+        timeout_seconds=0.05,
+    )
+
+    response = await orchestrator.run(messages=_user_message(), context=context)
+
+    assert response.stopped_due_to_timeout is True
+    assert response.stopped_due_to_max_iterations is False
+    assert response.iterations == 0
+    assert response.tool_calls == []
+    assert response.text == ""
+
+
+async def test_run_never_times_out_when_timeout_seconds_is_not_configured() -> None:
+    """Default (None) preserves every prior caller's exact behavior — this is opt-in hardening,
+    not a change to the existing default timing of any Agent already using this orchestrator."""
+    registry = _build_registry(PolicyLookupTool())
+    llm = _ScriptedLLMProvider([LLMResponse(text="a plain answer", model="stub")])
+    orchestrator = _build_orchestrator(registry, llm)
+    context = ToolCallingContext(agent_name="ClaimsAgent", allowed_tools=["policy_lookup"])
+
+    response = await orchestrator.run(messages=_user_message(), context=context)
+
+    assert response.stopped_due_to_timeout is False
 
 
 # --- context propagation -----------------------------------------------------------------------
