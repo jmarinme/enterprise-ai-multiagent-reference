@@ -73,68 +73,48 @@ en ningún punto de la arquitectura.
 
 ## Diapositiva 4 — Arquitectura Empresarial Completa
 
-Esta es la diapositiva central de toda la defensa, así que voy a recorrerla de arriba hacia abajo
-explicando el porqué de cada capa, no solo qué hace.
+Esta arquitectura no cambió de forma, pero sí cambió lo que ocurre dentro de cada
+agente especialista, y quiero señalarlo explícitamente en el diagrama.
 
-El flujo empieza con el usuario autenticándose contra Microsoft Entra ID mediante OAuth2
-Authorization Code con PKCE — el flujo recomendado para una aplicación pública como esta SPA, que
-no puede guardar un secreto de cliente de forma segura. Cada solicitud subsiguiente llega a FastAPI
-con un token, y FastAPI lo valida completo — firma, expiración, audiencia y emisor — contra las
-claves públicas publicadas por Entra ID (JWKS). Ningún componente posterior vuelve a preguntar
-quién es el usuario: esa es la esencia de seguridad por diseño que mencioné en la diapositiva
-anterior.
+El flujo de autenticación —Entra ID, PKCE, validación JWT— es exactamente el mismo que expliqué
+antes. Lo que cambió es lo que pasa después del Supervisor: el Supervisor sigue siendo
+puramente determinista —enrutamiento por palabras clave, sin razonamiento de modelo alguno—, y
+por eso su recuadro ahora dice explícitamente "sin ReAct". Cada uno de los tres agentes
+especialistas, en cambio, ahora ejecuta un bucle ReAct acotado antes de responder —Claims, Broker
+Services y Commercial Intake, los tres etiquetados "ReAct + Tool Calling" en el diagrama.
 
-El Supervisor Agent enruta de forma determinista —no probabilística— hacia uno de los tres agentes
-de dominio, y cada agente accede a la lógica de negocio exclusivamente a través de la capa de
-herramientas determinista, nunca directamente. Aquí quiero ser explícito con algo importante: el
-recuadro de Azure Functions y Durable Functions tiene borde punteado y dice "arquitectura
-objetivo" porque **no está desplegado hoy**. La capa de herramientas sí está completamente
-diseñada, codificada y probada para ejecutarse ahí — pero el runtime actual, marcado en verde sólido,
-es "Tool Provider en proceso": las mismas herramientas, la misma lógica de negocio, ejecutando
-dentro del propio proceso de la API en lugar de en un endpoint serverless separado. Más adelante
-explico por qué exactamente.
-
-A la derecha están los servicios de IA y datos: Azure OpenAI para el razonamiento del modelo,
-Cosmos DB para el historial de conversación, y Azure AI Search —marcado en ámbar porque está
-provisionado pero su índice aún no está poblado, tema que profundizo en la diapositiva de
-arquitectura del conocimiento. Abajo, en la franja transversal, están los servicios de plataforma
-que no pertenecen a un paso específico del flujo sino que sostienen a todos: Container Apps y
-Container Registry para el despliegue, Key Vault y Managed Identity para la gestión de secretos e
-identidad de servicio, y Application Insights junto con Azure Monitor para observabilidad — los
-detallo en las siguientes diapositivas.
+La capa de herramientas sigue siendo la misma pieza determinista de siempre: es la única fuente
+de verdad para cualquier operación de negocio, y el modelo de lenguaje nunca la ejecuta
+directamente — solo puede solicitarla. Notén también que ahora nombro explícitamente el modelo,
+gpt-5-mini, en el recuadro de Azure OpenAI. Y Azure Functions junto con Durable Functions siguen
+marcados con borde punteado como arquitectura objetivo: el runtime actual sigue siendo Tool
+Provider en proceso, exactamente como expliqué antes — eso no cambió con la generalización de
+ReAct, son decisiones independientes.
 
 ---
 
 ## Diapositiva 5 — Patrones de IA Agéntica
 
-Esta diapositiva cambió de fondo desde la versión anterior de esta defensa, y quiero
-explicar exactamente qué cambió y por qué.
+El patrón primario que exige el curso —ReAct más Tool Calling— está implementado, y
+quiero ser explícito en esta diapositiva sobre qué significa eso exactamente: no en un solo
+agente, no parcialmente — en los tres agentes especialistas: Claims, Broker Services y Commercial
+Intake, todos comparten la misma instancia de ToolCallingOrchestrator.
 
-Anteriormente presentaba ReAct como una evolución futura. Un análisis dedicado de brechas contra
-el requisito del curso —ReAct más Tool Calling como patrón primario— encontró que el mecanismo ya
-existía: ToolCallingOrchestrator ya implementaba un bucle acotado de Razonar, Actuar, Observar,
-Razonar de nuevo, con quince pruebas que ya lo confirmaban. Lo que faltaba no era construir algo
-nuevo: faltaba generalizarlo —estaba conectado solo al agente de Siniestros— y nombrarlo
-explícitamente como lo que es.
+El diagrama de la derecha muestra el ciclo real: el modelo razona sobre qué necesita, decide si
+hace falta una herramienta, la invoca, observa el resultado, y razona de nuevo con esa
+información —repitiendo el ciclo solo cuando es necesario— antes de producir su respuesta final.
+Ese bucle está acotado por tres mecanismos, no solo uno: un número máximo de iteraciones,
+detección de llamadas duplicadas a la misma herramienta, y un tiempo límite por llamada.
 
-Por eso hoy ReAct más Tool Calling es el patrón primario, implementado en los tres agentes
-especialistas: Claims, Broker Services y Commercial Intake. Cada uno razona internamente antes de
-responder, decide si necesita una herramienta, la invoca, observa el resultado, y repite ese ciclo
-solo lo necesario antes de dar su respuesta final. El Supervisor, en cambio, permanece
-completamente fuera de ese bucle: sigue enrutando de forma determinista, por palabras clave, sin
-ningún modelo de lenguaje involucrado — esa separación es intencional y está documentada en el
-ADR-0011: el enrutamiento es una decisión de gobierno que debe ser reproducible; el razonamiento
-sobre qué herramienta usar es responsabilidad de cada agente especialista.
+Los patrones complementarios —Multi-Agent, Planner-Executor, Memory, Guardrails— siguen
+implementados sin cambios; ReAct los complementa. Sobre RAG quiero ser honesto: la arquitectura de
+Azure AI Search está disponible y lista, pero el uso actual sigue siendo con datos sintéticos —no
+quiero exagerar ese punto. Y la lista de evolución futura ya no incluye ReAct: lo que queda
+genúlmente sin construir es LLM-as-a-Judge y Self-Reflection.
 
-Los patrones complementarios que ya estaban implementados —Multi-Agent, Planner-Executor, Memory,
-Guardrails— siguen ahí, sin cambios; ReAct los complementa, no los reemplaza. Lo que sí cambió es
-la lista de evolución futura: ya no incluye ReAct, porque dejó de ser futuro. Lo que queda son dos
-patrones genuinamente no implementados — LLM-as-a-Judge y Self-Reflection — que evaluarían o
-corregirían el propio razonamiento del agente, algo que este sistema no hace hoy.
-
-Y quiero cerrar con la regla que no cambió en absoluto: el razonamiento interno de ese bucle nunca
-se expone al usuario ni se guarda en el historial de conversación — solo la respuesta final. Eso
-está comprobado con pruebas dedicadas, no solo diseñado.
+Cierro con la regla que gobierna todo esto: el razonamiento interno de ese bucle —cada Reason,
+cada Observation— nunca se expone al usuario ni se guarda en el historial. Solo la respuesta
+final. Eso está comprobado con pruebas dedicadas, no solo diseñado.
 
 ---
 
