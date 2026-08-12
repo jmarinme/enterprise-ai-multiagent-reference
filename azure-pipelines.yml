@@ -230,7 +230,7 @@ stages:
                 "PyJWT[crypto]>=2.9,<3"
               # root pyproject.toml dependencies + dev/cosmos/keyvault/azureopenai/azuresearch extras
               pip install --cache-dir $(PIP_CACHE_DIR) \
-                "pytest-asyncio>=0.23,<1" \
+                "pytest-asyncio>=0.23,<1" "types-PyYAML>=6.0,<7" \
                 "azure-cosmos>=4.7,<5" "azure-identity>=1.17,<2" \
                 "azure-keyvault-secrets>=4.8,<5" "openai>=1.40,<2" "aiohttp>=3.9,<4" \
                 "azure-search-documents>=11.5,<12"
