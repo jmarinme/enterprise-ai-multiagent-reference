@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 
 from src.agents.commercial_intake_agent import CommercialIntakeAgent
+from src.core.tool_calling.orchestrator import ToolCallingOrchestrator
 from src.llm.exceptions import LLMProviderError
 from src.llm.mock_provider import MockLLMProvider
 from src.llm.models import LLMRequest, LLMResponse
@@ -30,10 +31,15 @@ def _build_prompt_manager() -> PromptManager:
 def _build_agent() -> CommercialIntakeAgent:
     tool_registry = InMemoryToolRegistry()
     tool_registry.register(LeadRegistrationTool())
+    tool_executor = ToolExecutor(tool_registry=tool_registry)
+    llm_provider = MockLLMProvider()
     return CommercialIntakeAgent(
-        tool_executor=ToolExecutor(tool_registry=tool_registry),
+        tool_executor=tool_executor,
         prompt_manager=_build_prompt_manager(),
-        llm_provider=MockLLMProvider(),
+        llm_provider=llm_provider,
+        tool_calling_orchestrator=ToolCallingOrchestrator(
+            tool_registry=tool_registry, tool_executor=tool_executor, llm_provider=llm_provider
+        ),
     )
 
 
@@ -109,10 +115,17 @@ async def test_re_sending_a_message_after_registration_does_not_duplicate_it() -
 
 async def test_agent_degrades_gracefully_when_lead_registration_tool_is_not_registered() -> None:
     empty_registry = InMemoryToolRegistry()
+    empty_tool_executor = ToolExecutor(tool_registry=empty_registry)
+    empty_llm_provider = MockLLMProvider()
     agent = CommercialIntakeAgent(
-        tool_executor=ToolExecutor(tool_registry=empty_registry),
+        tool_executor=empty_tool_executor,
         prompt_manager=_build_prompt_manager(),
-        llm_provider=MockLLMProvider(),
+        llm_provider=empty_llm_provider,
+        tool_calling_orchestrator=ToolCallingOrchestrator(
+            tool_registry=empty_registry,
+            tool_executor=empty_tool_executor,
+            llm_provider=empty_llm_provider,
+        ),
     )
 
     responses = await _run_conversation(
@@ -146,10 +159,15 @@ class _RaisingLLMProvider:
 async def test_agent_degrades_gracefully_when_prompt_manager_fails() -> None:
     tool_registry = InMemoryToolRegistry()
     tool_registry.register(LeadRegistrationTool())
+    tool_executor = ToolExecutor(tool_registry=tool_registry)
+    llm_provider = MockLLMProvider()
     agent = CommercialIntakeAgent(
-        tool_executor=ToolExecutor(tool_registry=tool_registry),
+        tool_executor=tool_executor,
         prompt_manager=_RaisingPromptManager(),  # type: ignore[arg-type]
-        llm_provider=MockLLMProvider(),
+        llm_provider=llm_provider,
+        tool_calling_orchestrator=ToolCallingOrchestrator(
+            tool_registry=tool_registry, tool_executor=tool_executor, llm_provider=llm_provider
+        ),
     )
     context = ConversationContext(conversation_id="conv-1", user_id="user-1")
 
@@ -165,10 +183,20 @@ async def test_agent_degrades_gracefully_when_prompt_manager_fails() -> None:
 async def test_agent_degrades_gracefully_when_llm_provider_fails() -> None:
     tool_registry = InMemoryToolRegistry()
     tool_registry.register(LeadRegistrationTool())
+    raising_llm_provider = _RaisingLLMProvider()
     agent = CommercialIntakeAgent(
         tool_executor=ToolExecutor(tool_registry=tool_registry),
         prompt_manager=_build_prompt_manager(),
-        llm_provider=_RaisingLLMProvider(),
+        llm_provider=raising_llm_provider,
+        # Proves the PBI-12-04 hardening (broad `except Exception` around the isolated
+        # tool-calling path, see commercial_intake_agent.py): a genuine LLMProvider failure —
+        # not just a ToolCallingError — inside _run_controlled_tool_calling must also degrade
+        # gracefully, not propagate past this Agent and crash the whole turn.
+        tool_calling_orchestrator=ToolCallingOrchestrator(
+            tool_registry=tool_registry,
+            tool_executor=ToolExecutor(tool_registry=tool_registry),
+            llm_provider=raising_llm_provider,
+        ),
     )
     context = ConversationContext(conversation_id="conv-1", user_id="user-1")
 
@@ -178,5 +206,5 @@ async def test_agent_degrades_gracefully_when_llm_provider_fails() -> None:
     )
 
     assert "company" in response.response.lower()
-    assert "[prompt=commercial.system@2.0.0]" in response.metadata["diagnostics"]
+    assert "[prompt=commercial.system@2.1.0]" in response.metadata["diagnostics"]
     assert "[llm=" not in response.metadata["diagnostics"]

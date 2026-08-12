@@ -52,7 +52,7 @@ async def test_claims_agent_response_references_the_rendered_prompt_identifier_a
         AgentRequest(message="I need to file a claim", user_id="user-1"), context
     )
 
-    assert "prompt=claims.system@3.1.0" in response.metadata["diagnostics"]
+    assert "prompt=claims.system@3.2.0" in response.metadata["diagnostics"]
 
 
 async def test_claims_agent_source_file_contains_no_embedded_prompt_wording() -> None:

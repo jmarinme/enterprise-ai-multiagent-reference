@@ -63,9 +63,9 @@ from two deployable applications and a set of managed Azure backing services.
 | **React Web Application** | Chat UI the end user interacts with; calls the API over HTTPS. | `apps/web/` (React + TypeScript + Vite); `apps/web/Dockerfile` |
 | **FastAPI Backend** | HTTP transport layer; exposes `POST /chat`, `GET /health`, `GET /ready`, and conversation-history endpoints. | `apps/api/src/main.py`, `apps/api/src/api/` |
 | **Supervisor Agent** | Validates context, resolves intent deterministically, routes to a domain Agent, persists conversation state. | `src/supervisor/orchestrator.py`; see [ADR-0007](adr/0007-ai-governance-boundary.md) |
-| **Claims Agent** | Guides a synthetic after-hours claim notification flow through approved Tools. | `src/agents/claims_agent.py`, `src/agents/claims/` |
-| **Broker Services Agent** | Synthetic policy/procedure/receipt/commission queries. | `src/agents/broker_agent.py`, `src/agents/broker/` |
-| **Commercial Intake Agent** | Synthetic commercial lead classification and preregistration. | `src/agents/commercial_intake_agent.py` |
+| **Claims Agent** | Guides a synthetic after-hours claim notification flow through approved Tools, plus an isolated ReAct (Reason/Act/Observe) Tool-calling capability (PBI-02-04). | `src/agents/claims_agent.py`, `src/agents/claims/` |
+| **Broker Services Agent** | Synthetic policy/procedure/receipt/commission queries, plus the same isolated ReAct Tool-calling capability, generalized from Claims (PBI-12-04). | `src/agents/broker_agent.py`, `src/agents/broker/` |
+| **Commercial Intake Agent** | Synthetic commercial lead classification and preregistration, plus the same isolated ReAct Tool-calling capability, generalized from Claims (PBI-12-04). | `src/agents/commercial_intake_agent.py` |
 | **Azure OpenAI** | LLM backing the platform's language understanding and response generation (`gpt-5-mini`). | `ops/bicep/modules/azure-openai.bicep`; `src/llm/azure_openai_provider.py` |
 | **Azure AI Search** | Provisioned as infrastructure; **not currently used at runtime** — the deployed API uses the local `KnowledgeProvider` (see Section 8). | `ops/bicep/modules/ai-search.bicep`; `src/rag/azure_ai_search_provider.py` |
 | **Cosmos DB** | Conversation history persistence, partitioned by `userId`. | `ops/bicep/modules/cosmos-db.bicep`; see [ADR-0004](adr/0004-conversation-store-selection.md) |
@@ -695,3 +695,4 @@ actually implemented in this repository. Items marked **(manual)** are not curre
 - [ADR-0008](adr/0008-resilience-strategy.md) — Resilience strategy
 - [ADR-0009](adr/0009-conversation-memory-strategy.md) — Conversation memory strategy
 - [ADR-0010](adr/0010-enterprise-authentication-entra-id.md) — Enterprise authentication using Microsoft Entra ID
+- [ADR-0011](adr/0011-react-pattern-for-tool-orchestrated-reasoning.md) — ReAct pattern for Tool-orchestrated reasoning

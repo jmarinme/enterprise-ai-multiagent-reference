@@ -12,11 +12,11 @@ optional RAG over a small synthetic knowledge base and a global cross-agent conv
   (behind an `LLMProvider` Protocol, with Mock/Ollama alternatives), Cosmos DB for conversation
   history, Azure AI Search (provisioned, not yet populated), Azure Container Apps, Azure Bicep,
   Azure DevOps Pipelines.
-- **Scale**: 684 backend tests collected (`pytest --collect-only`, re-verified in this review) plus
-  40 passing frontend tests (`vitest run`), 17 Bicep modules, 10 ADRs (ADR-0010 newly added for
-  Microsoft Entra ID authentication), 9 completed sprints each with a logged Deliverable Log.
-  File/LOC counts were not independently re-measured in this pass (unaffected by the
-  authentication work) — see the prior review snapshot for that detail.
+- **Scale**: 700 backend tests passing (`pytest`, re-verified after PBI-12-04's ReAct
+  generalization) plus 40 passing frontend tests (`vitest run`), 17 Bicep modules, 11 ADRs
+  (ADR-0010 for Microsoft Entra ID authentication, ADR-0011 for the ReAct pattern), 9 completed
+  sprints each with a logged Deliverable Log. File/LOC counts were not independently re-measured
+  in this pass (unaffected by this work) — see the prior review snapshot for that detail.
 - **Maturity**: a real Azure DEV environment (`rg-tmx-agent-platform-dev`, inside the Tokio
   Marine Mexico corporate Azure tenant/subscription) is live, independently inspected via `az`
   CLI, and demonstrably functional end to end — live `POST /chat` calls during this review showed
@@ -84,7 +84,15 @@ prior review.
    injectable-provider pattern as every other external dependency in this codebase
    ([ADR-0006](../docs/Architecture/adr/0006-provider-abstraction-pattern.md)), and the platform's
    own history continues to show real hardening work being executed and closed out over time
-   (PBI-08-01, PBI-09-01, PBI-11-01) rather than findings accumulating unaddressed.
+   (PBI-08-01, PBI-09-01, PBI-11-01, PBI-12-04) rather than findings accumulating unaddressed.
+6. **The course's named primary agentic pattern — ReAct + Tool Calling — is now demonstrable on
+   all three specialist agents, not just Claims (PBI-12-04).** A dedicated gap analysis
+   (PBI-12-01) found the bounded Reason→Act→Observe loop already existed and was already tested,
+   just wired into only one Agent and never formally named; `BrokerAgent`/`CommercialIntakeAgent`
+   were generalized to the same pattern with 18 new passing tests, duplicate-tool-call detection
+   and an opt-in per-call timeout were added, and the decision is now recorded in
+   [ADR-0011](../docs/Architecture/adr/0011-react-pattern-for-tool-orchestrated-reasoning.md).
+   Zero regressions: all 682 previously-passing tests plus the 18 new ones (700 total) pass.
 
 ## 4. Risk dashboard
 

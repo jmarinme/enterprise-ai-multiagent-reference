@@ -51,10 +51,15 @@ def _build_broker_agent() -> BrokerAgent:
     prompt_manager = PromptManager(
         provider=FileSystemPromptProvider(prompts_root=Path("configs/prompts"))
     )
+    tool_executor = ToolExecutor(tool_registry=tool_registry)
+    llm_provider = MockLLMProvider()
     return BrokerAgent(
-        tool_executor=ToolExecutor(tool_registry=tool_registry),
+        tool_executor=tool_executor,
         prompt_manager=prompt_manager,
-        llm_provider=MockLLMProvider(),
+        llm_provider=llm_provider,
+        tool_calling_orchestrator=ToolCallingOrchestrator(
+            tool_registry=tool_registry, tool_executor=tool_executor, llm_provider=llm_provider
+        ),
     )
 
 
@@ -64,10 +69,15 @@ def _build_commercial_intake_agent() -> CommercialIntakeAgent:
     prompt_manager = PromptManager(
         provider=FileSystemPromptProvider(prompts_root=Path("configs/prompts"))
     )
+    tool_executor = ToolExecutor(tool_registry=tool_registry)
+    llm_provider = MockLLMProvider()
     return CommercialIntakeAgent(
-        tool_executor=ToolExecutor(tool_registry=tool_registry),
+        tool_executor=tool_executor,
         prompt_manager=prompt_manager,
-        llm_provider=MockLLMProvider(),
+        llm_provider=llm_provider,
+        tool_calling_orchestrator=ToolCallingOrchestrator(
+            tool_registry=tool_registry, tool_executor=tool_executor, llm_provider=llm_provider
+        ),
     )
 
 
@@ -118,4 +128,4 @@ async def test_agent_response_is_stable_when_input_has_no_recognizable_claims_fi
     assert first.agent == second.agent == "ClaimsAgent"
     assert first.intent == second.intent
     assert first.response == second.response
-    assert "[prompt=claims.system@3.1.0]" in first.metadata["diagnostics"]
+    assert "[prompt=claims.system@3.2.0]" in first.metadata["diagnostics"]

@@ -191,6 +191,16 @@ against the five specifically-named prior findings.
   anywhere in this module." This is architecture principle #3 (CLAUDE.md §3, "Tool Calling for
   business action") implemented exactly as specified, independently confirmed by reading the
   actual validation code path, not inferred from the principle's existence.
+- **Update (PBI-12-04, after a dedicated gap analysis against the course's named primary pattern
+  — ReAct + Tool Calling, PBI-12-01)**: `ToolCallingOrchestrator.run()` was independently
+  confirmed to already implement a bounded Reason → Act → Observe → Reason loop (not a
+  single-shot call) — previously wired only into `ClaimsAgent`. This has since been generalized
+  to `BrokerAgent`/`CommercialIntakeAgent` with 18 new passing tests, hardened with
+  duplicate-tool-call detection and an opt-in per-call timeout, and formally documented in
+  [ADR-0011](../docs/Architecture/adr/0011-react-pattern-for-tool-orchestrated-reasoning.md).
+  This does not change this section's 5/5 score (the underlying mechanism was already sound) —
+  it closes the "only wired into one Agent, never named as ReAct" gap that score was implicitly
+  carrying.
 - Prompt-injection tests (`tests/conversational/test_prompt_injection_and_security_scenarios.py`)
   assert concrete, specific outcomes — no internal diagnostic leakage, no bypass of the
   deterministic claims flow via a fake-authority message, SQL/XSS-shaped input handled inertly,
@@ -222,6 +232,10 @@ against the five specifically-named prior findings.
   definition is the only match) — a placeholder for a Human-in-the-Loop feature that was named in
   the architecture but never wired to any code path. See §12, new finding NEW-001 (the highest-
   scored new finding in this assessment).
+- **Update (PBI-12-04)**: unrelated to NEW-001 above — this is a different gap. Generalizing
+  `ToolCallingOrchestrator` to all three specialist agents (see §9's update note) does not
+  address confidence-based escalation; the two remain separate findings. This section's 3/5
+  score is unchanged by PBI-12-04.
 
 ---
 
