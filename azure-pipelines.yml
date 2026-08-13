@@ -439,7 +439,7 @@ stages:
           - script: |
               set -e
               mkdir -p "$(Build.ArtifactStagingDirectory)/security-reports"
-              echo "=== detect-secrets: scanning repository for committed secrets ==="
+              echo "=== detect-secrets scan: tracked repository content ==="
               # docs/**/evidence/*.txt are frozen, historical raw CLI-output transcripts (Sprint
               # validation records — CLAUDE.md SS12's "do not erase previous entries") that
               # legitimately contain high-entropy content with no security meaning (Ollama model
@@ -448,7 +448,13 @@ stages:
               # parameter/variable NAMES like secretName/SecretProvider, never a value) are
               # suppressed inline via `pragma: allowlist secret` at their exact line, auditable
               # in code review — no repo-wide baseline file needed.
-              detect-secrets scan --all-files --exclude-files 'docs/.*/evidence/.*' \
+              # No --all-files: that flag scans the raw filesystem recursively, which descends
+              # into .git/ (FETCH_HEAD's commit SHA is a 40-char hex string — a "Hex High
+              # Entropy String" false positive on internal git metadata, never versioned code)
+              # and ignores .gitignore (node_modules/, venv/, __pycache__/, dist/, build/,
+              # artifacts/). Omitting it scans git-tracked files only — detect-secrets' own
+              # documented default — which is the correct scope for a committed-secrets gate.
+              detect-secrets scan --exclude-files 'docs/.*/evidence/.*' \
                 > "$(Build.ArtifactStagingDirectory)/security-reports/detect-secrets.json"
               python3 -c "
               import json
