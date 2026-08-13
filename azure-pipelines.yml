@@ -436,15 +436,10 @@ stages:
                 | tee "$(Build.ArtifactStagingDirectory)/security-reports/pip-audit.txt"
             displayName: 'Python dependency vulnerability scan (pip-audit) — gate 1/3'
 
-          - script: | # pragma: allowlist secret
-              # ^ detect-secrets attributes a "Secret Keyword" match found anywhere inside a YAML
-              # block scalar to the scalar's own key line (this one), not the physical line of
-              # the match. The actual trigger is the echo line below, whose message names this
-              # tool and what it looks for — descriptive text, never a credential. Confirmed by
-              # hand, 2026-08-12, by running the plugin directly against each line in isolation.
+          - script: |
               set -e
               mkdir -p "$(Build.ArtifactStagingDirectory)/security-reports"
-              echo "=== detect-secrets: scanning repository for committed secrets ==="
+              echo "=== detect-secrets scan: tracked repository content ==="
               # docs/**/evidence/*.txt are frozen, historical raw CLI-output transcripts (Sprint
               # validation records — CLAUDE.md SS12's "do not erase previous entries") that
               # legitimately contain high-entropy content with no security meaning (Ollama model
