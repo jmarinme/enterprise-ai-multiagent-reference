@@ -11,7 +11,7 @@
 # below split further for genuine parallelism/isolation reasons, documented at each one):
 #   1 (Quality)        -> BackendQuality + FrontendQuality (parallel)
 #   2 (Security)        -> SecurityScan (parallel with 1; gates stage 3)
-#   3 (Build)           -> ContainerBuildValidation (feat/*/fix/*/review/*/PR — build only, no
+#   3 (Build)           -> ContainerBuildValidation (PR validation against main — build only, no
 #                          push, no Azure login) + ContainerBuildAndPush (main only — build +
 #                          push combined — see that stage's own comment)
 #   4 (Infrastructure)  -> InfrastructureValidation (4a, offline, every run) + InfrastructureDeploy
@@ -104,18 +104,21 @@ trigger:
   branches:
     include:
       - main
-      - feat/*
-      - fix/*
-      - review/*
   paths:
     exclude:
       - docs/**
       - "**/*.md"
 
 pr:
+  autoCancel: true
+  drafts: false
   branches:
     include:
       - main
+  paths:
+    exclude:
+      - docs/**
+      - "**/*.md"
 
 parameters:
   - name: bicepModuleFiles
@@ -157,11 +160,13 @@ parameters:
     type: string
     default: 'rg-tmx-agent-platform-dev'
   # Only pushes to this branch trigger the deploy-affecting stages (ContainerBuildAndPush,
-  # InfrastructureDeploy, DeployDev, SmokeTests, DeploymentSummary). feat/*, fix/*, review/*
-  # pushes and PR validation builds (which always target main — see the `pr:` trigger above)
-  # still run Quality/Security/ContainerBuildValidation/Infrastructure-Validate but never
-  # deploy — this project has no `develop` branch (PBI-07-01B); DEV tracks `main` only,
-  # reviewed/merged changes, never an individual feature branch (CLAUDE.md §15's branch model:
+  # InfrastructureDeploy, DeployDev, SmokeTests, DeploymentSummary). PR validation builds
+  # (which always target main — see the `pr:` trigger above; the `trigger:` block only fires
+  # on pushes to `main` — feat/*/fix/*/review/* branches no longer run CI on push, only once a
+  # PR against main exists, to avoid duplicate runs against free-tier CI minutes) still run
+  # Quality/Security/ContainerBuildValidation/Infrastructure-Validate but never deploy — this
+  # project has no `develop` branch (PBI-07-01B); DEV tracks `main` only, reviewed/merged
+  # changes, never an individual feature branch (CLAUDE.md §15's branch model:
   # `feature/*`/`fix/*`/`review/*` off `main`, no long-lived integration branch).
   - name: deployBranch
     type: string
@@ -645,15 +650,16 @@ stages:
             name: infraDeploy
 
   # ============================================================================================
-  # PBI-07-01B STAGE 3 (Build) — validation half, feat/*/fix/*/review*/PR branches
+  # PBI-07-01B STAGE 3 (Build) — validation half, PR-against-main branches
   # Requirement 3 ("feat/fix/review branches must run CI validation only... they may run:
   # Quality, Security, Build, Infrastructure validation") + requirement 4 (deployment stages —
   # InfrastructureDeploy/DeployDev/SmokeTests — main-only) together mean Build itself belongs on
   # feature branches too, but strictly as a "does this image build" check — no ACR login, no
   # push, no Azure authentication of any kind, nothing this identity could use to affect Azure.
   # Plain `docker build`, discarded when the job ends. Deliberately the mirror image of
-  # ContainerBuildAndPush below: runs when isDeployRun is NOT true (every PR against main, every
-  # feat/*/fix/*/review/* push) so main never redundantly builds twice — ContainerBuildAndPush's
+  # ContainerBuildAndPush below: runs when isDeployRun is NOT true (every PR against main — the
+  # `trigger:` block only fires on `main` itself, so a bare feat/*/fix/*/review/* push no longer
+  # runs this stage on its own) so main never redundantly builds twice — ContainerBuildAndPush's
   # own (superset) build+push already covers main.
   # ============================================================================================
   - stage: ContainerBuildValidation
@@ -719,10 +725,11 @@ stages:
   # overhead with no benefit for a DEV-only, non-approval-gated flow. Build and Push remain
   # two clearly separated, independently-named step groups below.
   #
-  # Runs only for the deploy branch (isDeployRun) — PR validation (always against main) and
-  # feat/*/fix/*/review/* pushes stop after Stages 1/2/4a
-  # (Quality/Security/Infrastructure-Validate) plus the build-only ContainerBuildValidation
-  # stage above, exactly as before (this project has no `develop` branch — PBI-07-01B).
+  # Runs only for the deploy branch (isDeployRun) — PR validation (always against main) stops
+  # after Stages 1/2/4a (Quality/Security/Infrastructure-Validate) plus the build-only
+  # ContainerBuildValidation stage above, exactly as before (this project has no `develop`
+  # branch — PBI-07-01B). A bare feat/*/fix/*/review/* push no longer runs any of this at all —
+  # only main pushes and PRs against main trigger the pipeline.
   #
   # Fixes a pre-existing bug in this pipeline: the Sprint-0 version of this stage built the
   # API image with `./apps/api` as the Docker build context. apps/api/Dockerfile has required
@@ -1149,10 +1156,11 @@ stages:
 
   # ============================================================================================
   # ArtifactPublication — validation-only summary (Bicep/IaC content), unchanged in purpose
-  # from Sprint 0. Runs on every pipeline execution (PR against main, or a push to
-  # main/feat/*/fix/*/review/*), not gated by isDeployRun, since it documents what was
-  # VALIDATED, not what was deployed — DeploymentSummary above is the deploy-specific
-  # counterpart, only meaningful on an actual deploy run.
+  # from Sprint 0. Runs on every pipeline execution (PR against main, or a push to main —
+  # feat/*/fix/*/review/* branches no longer trigger a run on their own), not gated by
+  # isDeployRun, since it documents what was VALIDATED, not what was deployed —
+  # DeploymentSummary above is the deploy-specific counterpart, only meaningful on an actual
+  # deploy run.
   # ============================================================================================
   - stage: ArtifactPublication
     displayName: 'Artifact Publication (validation summary, every run)'
