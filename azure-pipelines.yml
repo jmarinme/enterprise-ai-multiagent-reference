@@ -436,7 +436,12 @@ stages:
                 | tee "$(Build.ArtifactStagingDirectory)/security-reports/pip-audit.txt"
             displayName: 'Python dependency vulnerability scan (pip-audit) — gate 1/3'
 
-          - script: |
+          - script: | # pragma: allowlist secret
+              # ^ detect-secrets attributes a "Secret Keyword" match found anywhere inside a YAML
+              # block scalar to the scalar's own key line (this one), not the physical line of
+              # the match. The actual trigger is the echo line below, whose message names this
+              # tool and what it looks for — descriptive text, never a credential. Confirmed by
+              # hand, 2026-08-12, by running the plugin directly against each line in isolation.
               set -e
               mkdir -p "$(Build.ArtifactStagingDirectory)/security-reports"
               echo "=== detect-secrets: scanning repository for committed secrets ==="
@@ -448,7 +453,13 @@ stages:
               # parameter/variable NAMES like secretName/SecretProvider, never a value) are
               # suppressed inline via `pragma: allowlist secret` at their exact line, auditable
               # in code review — no repo-wide baseline file needed.
-              detect-secrets scan --all-files --exclude-files 'docs/.*/evidence/.*' \
+              # No --all-files: that flag scans the raw filesystem recursively, which descends
+              # into .git/ (FETCH_HEAD's commit SHA is a 40-char hex string — a "Hex High
+              # Entropy String" false positive on internal git metadata, never versioned code)
+              # and ignores .gitignore (node_modules/, venv/, __pycache__/, dist/, build/,
+              # artifacts/). Omitting it scans git-tracked files only — detect-secrets' own
+              # documented default — which is the correct scope for a committed-secrets gate.
+              detect-secrets scan --exclude-files 'docs/.*/evidence/.*' \
                 > "$(Build.ArtifactStagingDirectory)/security-reports/detect-secrets.json"
               python3 -c "
               import json
