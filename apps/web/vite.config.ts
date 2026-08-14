@@ -14,13 +14,27 @@ const rootDir = fileURLToPath(new URL(".", import.meta.url));
 // working unchanged — this only adds the *option* to override it later (e.g. a future
 // production custom domain) without another code change; no Bicep/Container App env var is
 // wired for it yet (out of PBI-08-02's own explicit "do not deploy Bicep" scope).
+//
+// The explicit DEV FQDN below is deliberately listed alongside the wildcard, not instead of
+// it: the wildcard already matches it (`hostname.endsWith(".azurecontainerapps.io")` — verified
+// against Vite 5.4.21's own preview-server host check), so this is belt-and-suspenders, not a
+// second mechanism. Root cause of the live "Blocked request" failure was never a missing
+// allowedHosts entry — it was a stale deployed Web image predating the wildcard fix (the
+// pipeline's DeployDev stage only rebuilds/redeploys the Web Container App when apps/web
+// changed since the immediately-preceding commit; several recent main-branch merges did not
+// touch apps/web, so the previously-built image kept running). This exact-host entry is a
+// harmless, explicit safety net for this specific DEV environment regardless of that
+// deploy-skip behavior or any future Vite change to wildcard-suffix matching.
 const allowedHostsEnv = process.env.VITE_PREVIEW_ALLOWED_HOSTS;
 const previewAllowedHosts = allowedHostsEnv
   ? allowedHostsEnv
       .split(",")
       .map((host) => host.trim())
       .filter(Boolean)
-  : [".azurecontainerapps.io"];
+  : [
+      ".azurecontainerapps.io",
+      "ca-tmxap-dev-web.bluemushroom-e2f74836.eastus2.azurecontainerapps.io",
+    ];
 
 export default defineConfig({
   plugins: [react()],
