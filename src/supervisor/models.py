@@ -84,6 +84,13 @@ class AgentResponse(BaseModel):
     # FallbackAgent, which never calls an LLM.
     model: str | None = None
     token_usage: LLMUsageTotal | None = None
+    # PBI-14-03 section 20: real routing telemetry, set only by SupervisorOrchestrator (never by
+    # an Agent) after Agent.handle() returns. Deliberately a separate field from `metadata`
+    # above: `metadata` round-trips into the persisted Conversation document (see
+    # SupervisorOrchestrator._persist_turn) — chat history is not the right place for
+    # observability-only routing diagnostics, so this field is read by the observability call
+    # site (apps/api/src/api/routes/chat.py) and never persisted to the conversation store.
+    routing_diagnostics: dict[str, str] | None = None
 
 
 class SupervisorConfig(BaseModel):

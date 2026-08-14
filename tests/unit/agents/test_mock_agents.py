@@ -128,4 +128,4 @@ async def test_agent_response_is_stable_when_input_has_no_recognizable_claims_fi
     assert first.agent == second.agent == "ClaimsAgent"
     assert first.intent == second.intent
     assert first.response == second.response
-    assert "[prompt=claims.system@3.2.0]" in first.metadata["diagnostics"]
+    assert "[prompt=claims.system@3.3.0]" in first.metadata["diagnostics"]

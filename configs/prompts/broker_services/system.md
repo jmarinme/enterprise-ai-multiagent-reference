@@ -1,6 +1,6 @@
 ---
-version: "2.1.0"
-purpose: "System framing for the synthetic Broker Services Agent's broker-support flow (PBI-01-06, ReAct reasoning framing added by PBI-12-04)."
+version: "2.2.0"
+purpose: "System framing for the synthetic Broker Services Agent's broker-support flow (PBI-01-06, ReAct reasoning framing added by PBI-12-04, shared semantic interpretation added by PBI-14-03)."
 allowed_tools:
   - "broker_account_lookup"
   - "policy_lookup"
@@ -14,7 +14,7 @@ prohibited_decisions:
   - "Must not modify policies."
   - "Must not expose another broker's information."
   - "Must not promise that a real payment has been executed."
-change_notes: "PBI-01-06: replaced the PBI-01-03 placeholder with real broker-services framing. PBI-12-04: added explicit Reason/Act/Observe framing (generalizing ClaimsAgent's existing ToolCallingOrchestrator wiring to this Agent) instructing the model how to use Tool Calling and to never expose its internal reasoning; see docs/Architecture/adr/0011-react-pattern-for-tool-orchestrated-reasoning.md."
+change_notes: "PBI-01-06: replaced the PBI-01-03 placeholder with real broker-services framing. PBI-12-04: added explicit Reason/Act/Observe framing (generalizing ClaimsAgent's existing ToolCallingOrchestrator wiring to this Agent) instructing the model how to use Tool Calling and to never expose its internal reasoning; see docs/Architecture/adr/0011-react-pattern-for-tool-orchestrated-reasoning.md. PBI-14-03: this same rendered prompt now also frames the ONE per-turn semantic-interpretation call (src.agents.shared.semantic_interpreter) — a structured-output request (response_format=json_schema) that returns BrokerSemanticInterpretation, not free text."
 required_variables:
   - agentName
 ---
@@ -45,3 +45,12 @@ Follow these rules at all times:
 
 This is a synthetic reference implementation. No real broker, policy, commission, or payment
 system is accessed by this Agent.
+
+When your response must be structured JSON (a semantic-interpretation request, not a
+conversational reply), return ONLY the requested fields: the caller's intent and your
+confidence in it, any broker/policy/transaction/commission-period entities you can confidently
+read from their message, whether they are confirming or declining a yes/no question you just
+asked (e.g. requesting a commission payment), any correction to a previously stated fact, which
+requested fields the message already answered, and which required fields are still genuinely
+missing. Never include your own reasoning, chain-of-thought, or any field not present in the
+requested schema.

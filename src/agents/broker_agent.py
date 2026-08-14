@@ -36,7 +36,6 @@ from __future__ import annotations
 
 from src.agents.broker.state import BrokerInquiryState, BrokerInquiryStatus
 from src.agents.broker.workflow import advance_broker_inquiry
-from src.agents.shared.annotation import annotate_with_prompt_and_llm
 from src.agents.shared.language import LANGUAGE_METADATA_KEY, resolve_language
 from src.agents.shared.memory import (
     GLOBAL_MEMORY_METADATA_KEY,
@@ -45,6 +44,8 @@ from src.agents.shared.memory import (
     save_memory,
     update_memory,
 )
+from src.agents.shared.semantic_interpreter import interpret_semantics
+from src.agents.shared.semantic_models import BrokerSemanticInterpretation
 from src.agents.shared.state_persistence import carry_forward_other_agent_state, load_agent_state
 from src.core.tool_calling.exceptions import ToolCallingError
 from src.core.tool_calling.models import (
@@ -143,6 +144,29 @@ class BrokerAgent:
         memory = load_memory(context.metadata)
         state = _prefill_from_memory(state, memory)
 
+        # PBI-14-03: the ONE shared semantic interpretation call (repurposes what was previously
+        # annotate_with_prompt_and_llm's discarded-output call — LLM calls per turn are
+        # unchanged) runs before the deterministic state machine so its structured entities/
+        # confirmation can inform this turn's extraction and confirmation handling.
+        semantic, diagnostics = await interpret_semantics(
+            schema_name="broker_semantic_interpretation",
+            schema_type=BrokerSemanticInterpretation,
+            prompt_identifier="broker.system",
+            prompt_manager=self._prompt_manager,
+            llm_provider=self._llm_provider,
+            render_context=PromptRenderContext(
+                conversation_id=context.conversation_id,
+                user_id=request.user_id,
+                intent=IntentCategory.BROKER.value,
+                conversation_summary=context.summary,
+                agent_name=self.name,
+            ),
+            user_message=request.message,
+            correlation_id=request.correlation_id,
+            conversation_id=context.conversation_id,
+            user_id=request.user_id,
+        )
+
         try:
             state, notices = await advance_broker_inquiry(
                 state=state,
@@ -152,6 +176,7 @@ class BrokerAgent:
                 correlation_id=request.correlation_id,
                 conversation_id=context.conversation_id,
                 user_id=request.user_id,
+                semantic=semantic,
             )
         except Exception:  # noqa: BLE001
             # Intentional broad catch, same boundary rationale as ClaimsAgent.handle(): no
@@ -190,23 +215,7 @@ class BrokerAgent:
 
         response_text = " ".join(notices) if notices else _NO_NOTICE_FALLBACK[language]
         # PBI-04-04: diagnostic is metadata-only (technical detail end users must never see).
-        diagnostics = await annotate_with_prompt_and_llm(
-            prompt_identifier="broker.system",
-            prompt_manager=self._prompt_manager,
-            llm_provider=self._llm_provider,
-            render_context=PromptRenderContext(
-                conversation_id=context.conversation_id,
-                user_id=request.user_id,
-                intent=IntentCategory.BROKER.value,
-                conversation_summary=context.summary,
-                tool_summaries=notices,
-                agent_name=self.name,
-            ),
-            user_message=request.message,
-            correlation_id=request.correlation_id,
-            conversation_id=context.conversation_id,
-            user_id=request.user_id,
-        )
+        # PBI-14-03: this diagnostic now comes from the semantic-interpretation call above.
 
         tool_calling_response = await self._run_controlled_tool_calling(
             request, context, on_react_event

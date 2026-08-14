@@ -29,7 +29,11 @@ class InMemoryObservabilityRepository:
         now = datetime.now(UTC)
         input_tokens = run.token_usage.prompt_tokens if run.token_usage else 0
         output_tokens = run.token_usage.completion_tokens if run.token_usage else 0
-        cost = run.estimated_cost_usd or 0.0
+        # PBI-14-03: never coerce an unknown per-run cost to 0.0 — that silently understates the
+        # conversation total while making it look like a precise, known number. See
+        # ConversationSummary.total_estimated_cost_usd's own docstring for the "once Unavailable,
+        # stays Unavailable" rule this function implements below.
+        cost = run.estimated_cost_usd
         if summary is None:
             self._summaries[run.conversation_id] = ConversationSummary(
                 id=run.conversation_id,
@@ -46,6 +50,8 @@ class InMemoryObservabilityRepository:
             )
             return
 
+        previous_total = summary.total_estimated_cost_usd
+        new_total = None if previous_total is None or cost is None else previous_total + cost
         self._summaries[run.conversation_id] = summary.model_copy(
             update={
                 "updated_at": now,
@@ -53,7 +59,7 @@ class InMemoryObservabilityRepository:
                 "run_count": summary.run_count + 1,
                 "total_input_tokens": summary.total_input_tokens + input_tokens,
                 "total_output_tokens": summary.total_output_tokens + output_tokens,
-                "total_estimated_cost_usd": summary.total_estimated_cost_usd + cost,
+                "total_estimated_cost_usd": new_total,
                 "business_outcome": run.final_status or summary.business_outcome,
             }
         )
@@ -86,7 +92,17 @@ class InMemoryObservabilityRepository:
         elif sort == "updated_asc":
             matches.sort(key=lambda s: s.updated_at)
         elif sort == "cost_desc":
-            matches.sort(key=lambda s: s.total_estimated_cost_usd, reverse=True)
+            # Unavailable (None) costs sort last regardless of direction — never treated as $0,
+            # which would otherwise sort them to the very top of a descending "highest cost
+            # first" view.
+            matches.sort(
+                key=lambda s: (
+                    s.total_estimated_cost_usd
+                    if s.total_estimated_cost_usd is not None
+                    else float("-inf")
+                ),
+                reverse=True,
+            )
         total = len(matches)
         page = matches[skip : skip + limit]
         return [s.model_copy(deep=True) for s in page], total
@@ -99,13 +115,14 @@ class InMemoryObservabilityRepository:
             for run in self._runs.values()
             if run.conversation_id in conversation_ids
         ]
+        total_cost = _sum_costs_or_none(matches)
         if not runs:
             return SummaryKpis(
                 conversation_count=len(matches),
                 run_count=0,
                 total_input_tokens=sum(s.total_input_tokens for s in matches),
                 total_output_tokens=sum(s.total_output_tokens for s in matches),
-                total_estimated_cost_usd=sum(s.total_estimated_cost_usd for s in matches),
+                total_estimated_cost_usd=total_cost,
             )
         succeeded = sum(1 for r in runs if r.final_status == "completed")
         latencies = [r.total_latency_ms for r in runs if r.total_latency_ms is not None]
@@ -116,8 +133,16 @@ class InMemoryObservabilityRepository:
             average_latency_ms=(sum(latencies) / len(latencies)) if latencies else None,
             total_input_tokens=sum(s.total_input_tokens for s in matches),
             total_output_tokens=sum(s.total_output_tokens for s in matches),
-            total_estimated_cost_usd=sum(s.total_estimated_cost_usd for s in matches),
+            total_estimated_cost_usd=total_cost,
         )
+
+
+def _sum_costs_or_none(summaries: list[ConversationSummary]) -> float | None:
+    """None (Unavailable) if any contributing conversation's own total is Unavailable — never
+    silently sums only the known subset and presents that partial figure as the real total."""
+    if any(s.total_estimated_cost_usd is None for s in summaries):
+        return None
+    return sum(s.total_estimated_cost_usd or 0.0 for s in summaries)
 
 
 def _matches(summary: ConversationSummary, filters: ObservabilityFilters) -> bool:

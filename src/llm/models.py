@@ -98,6 +98,23 @@ class LLMGenerationSettings(BaseModel):
     configured deployment when None."""
 
 
+class LLMResponseSchema(BaseModel):
+    """Requests structured (JSON-schema-constrained) output from the model, mapped onto Azure
+    OpenAI/OpenAI's `response_format={"type": "json_schema", "json_schema": {...}}` (PBI-14-03).
+    None on LLMRequest (the default) preserves every existing call site's plain-text behavior
+    unchanged — additive, same pattern as `tools` above.
+    """
+
+    name: str
+    """A short, stable identifier for this schema (e.g. "claims_semantic_interpretation"),
+    required by the API's own json_schema.name field."""
+    schema_: dict[str, Any] = Field(alias="schema")
+    """The JSON schema itself (typically a Pydantic model's own `model_json_schema()`)."""
+    strict: bool = True
+
+    model_config = {"populate_by_name": True}
+
+
 class LLMRequest(BaseModel):
     """A request to generate a completion."""
 
@@ -106,6 +123,9 @@ class LLMRequest(BaseModel):
     # Tools the LLM may request (PBI-02-04). Empty for every existing call site (the shared
     # src.agents.shared.annotation helper never sets this) — additive, zero behavior change.
     tools: list[LLMToolDefinition] = Field(default_factory=list)
+    # Structured-output request (PBI-14-03). None for every existing call site — additive,
+    # zero behavior change. See LLMResponseSchema.
+    response_schema: LLMResponseSchema | None = None
     correlation_id: str | None = None
     conversation_id: str | None = None
     user_id: str | None = None

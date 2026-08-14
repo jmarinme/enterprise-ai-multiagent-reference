@@ -33,7 +33,15 @@ def _build_agent() -> ClaimsAgent:
         provider=LocalKnowledgeProvider(documents_root=Path("configs/knowledge_base"))
     )
     tool_executor = ToolExecutor(tool_registry=tool_registry)
-    llm_provider = MockLLMProvider()
+    # PBI-14-03: ClaimsAgent's one per-turn LLM call now requests structured output
+    # (src.agents.shared.semantic_interpreter) — a scripted plan is required for MockLLMProvider
+    # to return a real completion (proving invocation) instead of degrading to a prompt-only
+    # diagnostic, exactly like a real deployment would need a genuinely working model.
+    llm_provider = MockLLMProvider(
+        structured_response_plan={
+            "claims_semantic_interpretation": '{"intent": "claims", "intent_confidence": 0.9}'
+        }
+    )
     return ClaimsAgent(
         tool_executor=tool_executor,
         prompt_manager=prompt_manager,

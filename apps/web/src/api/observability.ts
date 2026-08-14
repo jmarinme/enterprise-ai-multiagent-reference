@@ -27,7 +27,9 @@ export interface ConversationSummaryRow {
   runCount: number;
   totalInputTokens: number;
   totalOutputTokens: number;
-  totalEstimatedCostUsd: number;
+  // PBI-14-03: None/null once any contributing run's cost is genuinely unknown — never a
+  // fabricated 0. See src/domain/observability.py's ConversationSummary docstring.
+  totalEstimatedCostUsd: number | null;
   operationalQualityScore: number | null;
   businessOutcome: string | null;
   lastMessagePreview: string | null;

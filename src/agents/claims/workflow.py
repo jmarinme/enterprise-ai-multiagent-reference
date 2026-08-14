@@ -31,13 +31,35 @@ from src.agents.claims.state import (
     PolicyCandidate,
     next_question_group,
 )
+from src.agents.shared.confirmation import resolve_confirmation
 from src.agents.shared.conversational_policy import opening_acknowledgment
 from src.agents.shared.language import Language
 from src.agents.shared.messages import t
+from src.agents.shared.semantic_merge import apply_semantic_entities
+from src.agents.shared.semantic_models import ClaimsSemanticInterpretation
 from src.core.tool_provider.protocol import ToolProvider
 from src.core.workflow_provider.models import ClaimsWorkflowInput
 from src.core.workflow_provider.protocol import ClaimsWorkflowProvider
 from src.tools.models import ToolRequest
+
+# Multi-field extraction (PBI-14-03 section 6): the free-text/ambiguous ClaimsIntakeState fields
+# a high-confidence semantic interpretation may fill in when this turn's deterministic
+# extract_fields() left them empty — never policy_number/line_of_business/coverage/
+# policy_validated/claim_reference/adjuster_assigned, which only ever come from a Tool result.
+_SEMANTIC_FALLBACK_FIELDS: tuple[str, ...] = (
+    "customer_name",
+    "event_date",
+    "event_time",
+    "event_location",
+    "loss_type",
+    "loss_description",
+    "contact_phone",
+    "contact_email",
+    "injuries_reported",
+    "third_parties_involved",
+    "vehicle_drivable",
+    "property_habitable",
+)
 
 _ToolContext = dict[str, str | None]
 _HandlerResult = tuple[ClaimsIntakeState, list[str], bool]
@@ -224,6 +246,7 @@ async def advance_claims_intake(
     conversation_id: str | None = None,
     user_id: str | None = None,
     workflow_provider: ClaimsWorkflowProvider | None = None,
+    semantic: ClaimsSemanticInterpretation | None = None,
 ) -> tuple[ClaimsIntakeState, list[str]]:
     """Extract any recognizable fields from message, then drive the state machine forward
     until it needs more information from the user. Returns the updated state and the ordered
@@ -235,7 +258,15 @@ async def advance_claims_intake(
     (in-process or Durable Functions) then owns claim registration + adjuster assignment as one
     transaction, started only after the user has confirmed. Conversational state (this function,
     ClaimsIntakeState) never moves into the workflow — only the already-collected, already-
-    confirmed fields do (see src.core.workflow_provider.models.ClaimsWorkflowInput)."""
+    confirmed fields do (see src.core.workflow_provider.models.ClaimsWorkflowInput).
+
+    semantic (PBI-14-03, default None): this turn's shared structured semantic interpretation
+    (src.agents.shared.semantic_interpreter, the same repurposed per-turn LLM call this Agent
+    already made). Deterministic extract_fields() always runs first and always wins; semantic
+    entities only fill a field extract_fields left empty, and only above
+    src.agents.shared.semantic_merge.MIN_CONFIDENCE_TO_APPLY. The pre-registration confirmation
+    question additionally consults semantic.confirmation when the deterministic word-set fast
+    path in src.agents.shared.confirmation is inconclusive."""
     if state.status == ClaimsIntakeStatus.SELECTING_POLICY:
         selection = resolve_selection(message, state.candidates)
         if selection is not None:
@@ -248,6 +279,20 @@ async def advance_claims_intake(
                 }
             )
     current_state = extract_fields(message, state)
+    if semantic is not None:
+        current_state, _ = apply_semantic_entities(
+            current_state,
+            semantic.entities,
+            semantic.intent_confidence,
+            fields=_SEMANTIC_FALLBACK_FIELDS,
+        )
+    if state.last_asked_field == "confirmed" and current_state.confirmed is None:
+        resolved_confirmation = resolve_confirmation(
+            message,
+            semantic_confirmation=semantic.confirmation if semantic is not None else None,
+        )
+        if resolved_confirmation is not None:
+            current_state = current_state.model_copy(update={"confirmed": resolved_confirmation})
     tool_context: _ToolContext = {
         "correlation_id": correlation_id,
         "conversation_id": conversation_id,

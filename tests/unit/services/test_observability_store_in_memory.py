@@ -115,3 +115,64 @@ async def test_get_summary_kpis_conversation_count_is_never_fabricated_when_empt
     assert kpis.conversation_count == 0
     assert kpis.success_rate is None
     assert kpis.average_latency_ms is None
+
+
+# PBI-14-03: the $0.0000 cost bug — an unknown per-run price must never be coerced to 0.0 and
+# silently summed into a conversation's total, which used to make an Unavailable cost display
+# as a precise-looking (but fabricated) number.
+
+
+async def test_a_known_price_run_produces_a_real_conversation_total() -> None:
+    repository = InMemoryObservabilityRepository()
+
+    await repository.record_run(_run("run-1", "conv-1", "u1", estimated_cost_usd=0.0042))
+
+    summary = await repository.get_conversation_summary("conv-1")
+    assert summary is not None
+    assert summary.total_estimated_cost_usd == pytest.approx(0.0042)
+
+
+async def test_an_unknown_price_run_leaves_the_conversation_total_unavailable() -> None:
+    repository = InMemoryObservabilityRepository()
+
+    await repository.record_run(_run("run-1", "conv-1", "u1", estimated_cost_usd=None))
+
+    summary = await repository.get_conversation_summary("conv-1")
+    assert summary is not None
+    assert summary.total_estimated_cost_usd is None
+
+
+async def test_one_unknown_price_run_poisons_the_whole_conversation_total() -> None:
+    """A later known-cost run must never resurrect a total that an earlier unknown-cost run
+    already made Unavailable — presenting a partial sum as the real total would understate
+    actual spend."""
+    repository = InMemoryObservabilityRepository()
+
+    await repository.record_run(_run("run-1", "conv-1", "u1", estimated_cost_usd=None))
+    await repository.record_run(_run("run-2", "conv-1", "u1", estimated_cost_usd=0.01))
+
+    summary = await repository.get_conversation_summary("conv-1")
+    assert summary is not None
+    assert summary.total_estimated_cost_usd is None
+
+
+async def test_kpi_total_cost_is_unavailable_when_any_matching_conversation_cost_is_unknown() -> (
+    None
+):
+    repository = InMemoryObservabilityRepository()
+    await repository.record_run(_run("run-1", "conv-1", "u1", estimated_cost_usd=0.02))
+    await repository.record_run(_run("run-2", "conv-2", "u1", estimated_cost_usd=None))
+
+    kpis = await repository.get_summary_kpis(ObservabilityFilters())
+
+    assert kpis.total_estimated_cost_usd is None
+
+
+async def test_kpi_total_cost_sums_when_every_matching_conversation_cost_is_known() -> None:
+    repository = InMemoryObservabilityRepository()
+    await repository.record_run(_run("run-1", "conv-1", "u1", estimated_cost_usd=0.02))
+    await repository.record_run(_run("run-2", "conv-2", "u1", estimated_cost_usd=0.03))
+
+    kpis = await repository.get_summary_kpis(ObservabilityFilters())
+
+    assert kpis.total_estimated_cost_usd == pytest.approx(0.05)

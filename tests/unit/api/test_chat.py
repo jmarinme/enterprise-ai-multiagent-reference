@@ -167,6 +167,8 @@ def test_chat_drives_a_full_commercial_intake_conversation_end_to_end_through_th
         "jane@example.com",
         "general liability",
         "We provide small business consulting services.",
+        # PBI-14-03 section 11: explicit pre-registration confirmation is now required.
+        "yes",
     ]:
         payload = {"message": message, "userId": user_id}
         if conversation_id:
@@ -178,7 +180,7 @@ def test_chat_drives_a_full_commercial_intake_conversation_end_to_end_through_th
         final_response = body["response"]
         agents_seen.append(body["agent"])
 
-    assert agents_seen == ["CommercialIntakeAgent"] * 7
+    assert agents_seen == ["CommercialIntakeAgent"] * 8
     assert "SYN-LEAD-" in final_response
 
 

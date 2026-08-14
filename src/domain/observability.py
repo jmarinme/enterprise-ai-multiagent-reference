@@ -113,7 +113,13 @@ class ConversationSummary(_CamelModel):
     run_count: int = 0
     total_input_tokens: int = 0
     total_output_tokens: int = 0
-    total_estimated_cost_usd: float = 0.0
+    # PBI-14-03: None means genuinely Unavailable (at least one contributing run had no known
+    # model price — src.observability.pricing.PricingCatalog.estimate_cost_usd already returns
+    # None for that case) — never coerced to 0.0. Summing only the known-cost runs and calling
+    # that a total would silently understate real spend and display a precise-looking but wrong
+    # number; once a conversation's total is None it stays None, never resurrected by a later
+    # known-cost run (see src.services.observability_store.in_memory/cosmos's record_run).
+    total_estimated_cost_usd: float | None = None
     operational_quality_score: float | None = None
     business_outcome: str | None = None
     last_message_preview: str | None = None
