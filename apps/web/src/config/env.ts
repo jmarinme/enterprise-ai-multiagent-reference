@@ -51,6 +51,16 @@ export const entraPostLogoutRedirectUri: string = resolveOrFallback(
   () => window.location.origin,
 );
 
+/** Build/deployment traceability (PBI-14-06) — mirrors apps/api's own app_version/build_number/
+ * commit_sha (apps/api/src/config/settings.py). app_version is a maintained, human-readable
+ * release identifier (bumped alongside apps/api's own default, not sourced from CI);
+ * build_number/commit_sha are immutable CI artifacts injected at image-build time via
+ * apps/web/Dockerfile's ARG/ENV passthrough (VITE_BUILD_NUMBER/VITE_COMMIT_SHA, sourced from
+ * the pipeline's Build.BuildNumber/Build.SourceVersion) — never hardcoded here. */
+export const webAppVersion: string = import.meta.env.VITE_APP_VERSION ?? "14.6.0";
+export const webBuildNumber: string = import.meta.env.VITE_BUILD_NUMBER ?? "local";
+export const webCommitSha: string = import.meta.env.VITE_COMMIT_SHA ?? "unknown";
+
 /** PBI-13-01: a purely client-side kill switch for the Observability nav link/routes —
  * mirrors the backend's own OBSERVABILITY_ENABLED. Real authorization is always enforced
  * server-side (api.observability_access.require_observability_access); this only decides

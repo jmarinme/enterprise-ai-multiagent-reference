@@ -184,6 +184,13 @@ variables:
   # without needing to cross-reference the Azure DevOps build history — "preserve commit/build
   # traceability in image tags" (docker tags allow up to 128 chars; this is well under that).
   imageTag: 'dev-$(Build.BuildId)-$(Build.SourceVersion)'
+  # appVersion (PBI-14-06): the maintained, human-readable release identifier baked into both
+  # images at build time (GET /version's app_version, apps/api/src/config/settings.py's own
+  # default, and apps/web's Sidebar version indicator) — kept in sync with those defaults by
+  # hand, same as this file's own imageTag doesn't need external input either. Never used as a
+  # substitute for the real per-build identity (Build.BuildNumber/Build.SourceVersion below),
+  # only as the "which sprint/PBI shipped this" label.
+  appVersion: '14.6.0'
   isDeployRun: $[eq(variables['Build.SourceBranch'], 'refs/heads/${{ parameters.deployBranch }}')]
 
 stages:
@@ -815,8 +822,12 @@ stages:
                 az acr login --name "$ACR_NAME"
 
                 echo "=== Building API image (repo-root build context — see apps/api/Dockerfile) ==="
+                echo "Build metadata: APP_VERSION=$(appVersion) BUILD_NUMBER=$(Build.BuildNumber) COMMIT_SHA=$(Build.SourceVersion)"
                 docker build \
                   --file apps/api/Dockerfile \
+                  --build-arg APP_VERSION="$(appVersion)" \
+                  --build-arg BUILD_NUMBER="$(Build.BuildNumber)" \
+                  --build-arg COMMIT_SHA="$(Build.SourceVersion)" \
                   -t "$ACR_LOGIN_SERVER/$(apiImageName):$(imageTag)" \
                   .
 
@@ -838,8 +849,12 @@ stages:
                 # and — more importantly — this is what keeps DEV's Web Container App from
                 # silently drifting behind whatever main actually contains).
                 echo "=== Building Web image (always; context apps/web, VITE_API_URL=https://$API_FQDN) ==="
+                echo "Build metadata: VITE_APP_VERSION=$(appVersion) VITE_BUILD_NUMBER=$(Build.BuildNumber) VITE_COMMIT_SHA=$(Build.SourceVersion)"
                 docker build \
                   --build-arg VITE_API_URL="https://$API_FQDN" \
+                  --build-arg VITE_APP_VERSION="$(appVersion)" \
+                  --build-arg VITE_BUILD_NUMBER="$(Build.BuildNumber)" \
+                  --build-arg VITE_COMMIT_SHA="$(Build.SourceVersion)" \
                   -t "$ACR_LOGIN_SERVER/$(webImageName):$(imageTag)" \
                   apps/web
 
@@ -926,12 +941,17 @@ stages:
   # PBI-07-01 STAGE 6 — Smoke Tests
   # Checks against the just-updated, real DEV API and Web Container Apps: deployed API image
   # tag matches this run; deployed Web image tag matches this run (PBI-14-05 — the exact check
-  # that would have caught the stale-Web drift this PBI fixes, had it existed before); GET
-  # /health; POST /chat with a real Claims-triggering message, asserting X-Correlation-ID is
-  # echoed back unchanged; a second POST /chat reusing the same conversationId (continuity).
-  # `curl -f`/explicit `exit 1` on any check failure fails this step, which fails this stage,
-  # which blocks the summary stage — "pipeline must fail if smoke tests fail" with no extra
-  # error-handling code needed. Uses the existing synthetic policy SYN-POL-0001
+  # that would have caught the stale-Web drift this PBI fixes, had it existed before); deployed
+  # API reports the expected build_number/commit_sha via GET /version, and the deployed Web
+  # bundle contains the expected commit SHA (PBI-14-06 — catches the case where the *image tag*
+  # updated but the running application somehow still serves stale content, e.g. a caching
+  # layer or a container that didn't actually restart); GET /health; POST /chat with a real
+  # Claims-triggering message, asserting X-Correlation-ID is echoed back unchanged; a second
+  # POST /chat reusing the same conversationId (continuity). `curl -f`/explicit `exit 1` on any
+  # check failure fails this step, which fails this stage, which blocks the summary stage —
+  # "pipeline must fail if smoke tests fail" / "a deployment must not be considered successful
+  # if Azure is still serving an older application build" with no extra error-handling code
+  # needed. Uses the existing synthetic policy SYN-POL-0001
   # (src/services/tools/synthetic/provider.py) — never real customer data.
   # ============================================================================================
   - stage: SmokeTests
@@ -941,6 +961,7 @@ stages:
     condition: and(succeeded(), eq(variables.isDeployRun, true))
     variables:
       apiFqdn: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.apiFqdn'] ]
+      webFqdn: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.webFqdn'] ]
       apiAppName: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.apiAppName'] ]
       webAppName: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.webAppName'] ]
     jobs:
@@ -950,7 +971,7 @@ stages:
           vmImage: ubuntu-latest
         steps:
           - task: AzureCLI@2
-            displayName: 'Smoke test 1/5: verify deployed API image tag'
+            displayName: 'Smoke test 1/7: verify deployed API image tag'
             inputs:
               azureSubscription: '${{ parameters.azureServiceConnection }}'
               scriptType: bash
@@ -970,7 +991,7 @@ stages:
                 esac
 
           - task: AzureCLI@2
-            displayName: 'Smoke test 2/5: verify deployed Web image tag (PBI-14-05 — catches stale-Web drift)'
+            displayName: 'Smoke test 2/7: verify deployed Web image tag (PBI-14-05 — catches stale-Web drift)'
             inputs:
               azureSubscription: '${{ parameters.azureServiceConnection }}'
               scriptType: bash
@@ -991,15 +1012,53 @@ stages:
 
           - script: |
               set -e
-              echo "Smoke test 3/5: GET https://$(apiFqdn)/health"
-              curl -sf --max-time 30 "https://$(apiFqdn)/health"
-              echo ""
-              echo "GET /health: OK"
-            displayName: 'Smoke test 3/5: GET /health'
+              echo "Smoke test 3/7: verify deployed API reports the expected build/commit via GET /version"
+              VERSION_BODY=$(curl -sf --max-time 30 "https://$(apiFqdn)/version")
+              echo "$VERSION_BODY"
+              echo "$VERSION_BODY" | python3 -c "
+              import json, sys
+              body = json.load(sys.stdin)
+              expected_build = '$(Build.BuildNumber)'
+              expected_commit = '$(Build.SourceVersion)'
+              actual_build = body.get('build_number')
+              actual_commit = body.get('commit_sha')
+              print(f'Deployed API build_number={actual_build!r} commit_sha={actual_commit!r}')
+              print(f'Expected build_number={expected_build!r} commit_sha={expected_commit!r}')
+              assert actual_build == expected_build, f'API build_number mismatch: expected {expected_build!r}, got {actual_build!r} — Azure may still be serving an older build.'
+              assert actual_commit == expected_commit, f'API commit_sha mismatch: expected {expected_commit!r}, got {actual_commit!r} — Azure may still be serving an older build.'
+              print('Deployed API build/commit identity: OK')
+              "
+            displayName: 'Smoke test 3/7: verify deployed API build/commit identity (GET /version)'
 
           - script: |
               set -e
-              echo "Smoke test 4/5: POST /chat, turn 1 — Claims scenario + correlation ID"
+              echo "Smoke test 4/7: verify deployed Web build identity (commit SHA present in served bundle)"
+              INDEX_HTML=$(curl -sf --max-time 30 "https://$(webFqdn)/")
+              JS_ASSET_PATH=$(echo "$INDEX_HTML" | grep -oE '/assets/[^"'"'"']+\.js' | head -1)
+              if [ -z "$JS_ASSET_PATH" ]; then
+                echo "MISMATCH: could not locate a built JS asset reference in the deployed Web app's index page."
+                exit 1
+              fi
+              echo "Checking bundle: https://$(webFqdn)$JS_ASSET_PATH for commit $(Build.SourceVersion)"
+              if curl -sf --max-time 30 "https://$(webFqdn)$JS_ASSET_PATH" | grep -qF "$(Build.SourceVersion)"; then
+                echo "Deployed Web build/commit identity: OK (commit found in bundle)"
+              else
+                echo "MISMATCH: the deployed Web bundle does not contain this run's commit SHA — Azure may still be serving an older build."
+                exit 1
+              fi
+            displayName: 'Smoke test 4/7: verify deployed Web build/commit identity (bundle contains expected commit)'
+
+          - script: |
+              set -e
+              echo "Smoke test 5/7: GET https://$(apiFqdn)/health"
+              curl -sf --max-time 30 "https://$(apiFqdn)/health"
+              echo ""
+              echo "GET /health: OK"
+            displayName: 'Smoke test 5/7: GET /health'
+
+          - script: |
+              set -e
+              echo "Smoke test 6/7: POST /chat, turn 1 — Claims scenario + correlation ID"
               CORR_ID="cicd-smoke-$(Build.BuildId)"
               HEADERS_FILE=$(mktemp)
               BODY=$(curl -sf --max-time 60 -D "$HEADERS_FILE" -X POST "https://$(apiFqdn)/chat" \
@@ -1028,11 +1087,11 @@ stages:
                 exit 1
               fi
               echo "Correlation ID propagation: OK"
-            displayName: 'Smoke test 4/5: POST /chat — Claims scenario + correlation ID (turn 1)'
+            displayName: 'Smoke test 6/7: POST /chat — Claims scenario + correlation ID (turn 1)'
 
           - script: |
               set -e
-              echo "Smoke test 5/5: POST /chat, turn 2 — conversation continuity"
+              echo "Smoke test 7/7: POST /chat, turn 2 — conversation continuity"
               BODY2=$(curl -sf --max-time 60 -X POST "https://$(apiFqdn)/chat" \
                 -H "Content-Type: application/json" \
                 -d "{\"userId\":\"cicd-smoke-test\",\"conversationId\":\"$(conversationId)\",\"message\":\"Never mind, thank you.\"}")
@@ -1047,7 +1106,7 @@ stages:
               print(f\"POST /chat turn 2: OK (conversationId preserved: {actual})\")
               "
               echo "Conversation continuity: OK"
-            displayName: 'Smoke test 5/5: POST /chat — conversation continuity (turn 2, same conversationId)'
+            displayName: 'Smoke test 7/7: POST /chat — conversation continuity (turn 2, same conversationId)'
 
   # ============================================================================================
   # PBI-07-01 STAGE 7 (bonus, beyond this PBI's own 6-stage list) — Deployment Summary
@@ -1173,7 +1232,18 @@ stages:
                 esac
                 echo "- API deployed image matches this run's \$(imageTag): $API_TAG_OK"
                 echo "- Web deployed image matches this run's \$(imageTag): $WEB_TAG_OK"
-                echo "(Smoke Tests 1/5 and 2/5 already independently verified and gated on both of these — this section restates the evidence for the summary artifact, it does not re-decide pass/fail.)"
+                echo "(Smoke Tests 1/7 and 2/7 already independently verified and gated on both of these — this section restates the evidence for the summary artifact, it does not re-decide pass/fail.)"
+                echo ""
+                echo "## Build/deployment traceability (PBI-14-06)"
+                echo "- API image: \`$(apiDeployedImage)\`"
+                echo "- API commit: \`$(Build.SourceVersion)\`"
+                echo "- API revision: \`$(apiRevision)\`"
+                echo "- Web image: \`$(webDeployedImage)\`"
+                echo "- Web commit: \`$(Build.SourceVersion)\`"
+                echo "- Web revision: \`$(webRevision)\`"
+                echo "- Expected source commit: \`$(Build.SourceVersion)\`"
+                echo "- Both images were built from this same pipeline run (\$(Build.BuildNumber)) with the same --build-arg COMMIT_SHA/VITE_COMMIT_SHA — API and Web can never diverge in which commit they were built from."
+                echo "- Smoke Tests 3/7 and 4/7 already independently verified the DEPLOYED (not just built) API/Web report this exact commit — this section restates that evidence, it does not re-decide pass/fail."
                 echo ""
                 echo "## Infrastructure (Bicep) deploy — Stage 4b"
                 case "$(infraDeployResult)" in

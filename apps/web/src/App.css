@@ -194,6 +194,18 @@
   color: #888888;
 }
 
+/* Build/deployment version indicator (PBI-14-06) — low-noise, bottom of the sidebar. */
+.sidebar__version {
+  margin-top: 0.35rem;
+  font-size: 0.7rem;
+  color: #aaaaaa;
+  cursor: default;
+}
+
+.sidebar__version--drift {
+  color: #b45309;
+}
+
 .sidebar__new-conversation {
   width: 100%;
   padding: 0.6rem 0.8rem;

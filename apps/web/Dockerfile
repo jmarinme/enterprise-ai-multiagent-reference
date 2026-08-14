@@ -24,6 +24,17 @@ ENV VITE_ENTRA_API_SCOPE=$VITE_ENTRA_API_SCOPE
 ENV VITE_ENTRA_REDIRECT_URI=$VITE_ENTRA_REDIRECT_URI
 ENV VITE_ENTRA_POST_LOGOUT_REDIRECT_URI=$VITE_ENTRA_POST_LOGOUT_REDIRECT_URI
 
+# Build/deployment traceability (PBI-14-06) — mirrors apps/api/Dockerfile's own
+# APP_VERSION/BUILD_NUMBER/COMMIT_SHA ARGs. The pipeline always passes real
+# Build.BuildNumber/Build.SourceVersion values for the same source commit used for the API
+# image; the defaults below apply only to a local `docker build` run outside the pipeline.
+ARG VITE_APP_VERSION=14.6.0
+ARG VITE_BUILD_NUMBER=local
+ARG VITE_COMMIT_SHA=unknown
+ENV VITE_APP_VERSION=$VITE_APP_VERSION
+ENV VITE_BUILD_NUMBER=$VITE_BUILD_NUMBER
+ENV VITE_COMMIT_SHA=$VITE_COMMIT_SHA
+
 COPY package.json package-lock.json ./
 RUN npm ci
 
