@@ -158,6 +158,41 @@ async def post_chat(
             requires_clarification=requires_clarification,
             alternative_intents=alternative_intents,
         )
+
+        # PBI-14-07: ONE authoritative structured log event for this turn's routing decision —
+        # reuses exactly the values already unpacked above for record_run(), computes nothing
+        # new. Never logs the raw user message (CLAUDE.md §10/§16) — only correlation
+        # identifiers and the deterministic classification fields already produced by
+        # src.supervisor.semantic_routing.resolve_turn. "semantic_routing_fallback" vs
+        # "semantic_routing_decision" mirrors semanticCallSucceeded so a technical failure is
+        # never visually indistinguishable from a genuine clarification/low-confidence outcome
+        # in raw log output.
+        semantic_call_succeeded = routing_diagnostics.get("semanticCallSucceeded") == "True"
+        semantic_error_category = routing_diagnostics.get("semanticErrorCategory") or None
+        _logger.info(
+            "Semantic routing decision" if semantic_call_succeeded else "Semantic routing fallback",
+            extra={
+                "event": (
+                    "semantic_routing_decision"
+                    if semantic_call_succeeded
+                    else "semantic_routing_fallback"
+                ),
+                "conversationId": agent_response.conversation_id,
+                "messageId": message_id,
+                "runId": run_id,
+                "semanticCallAttempted": True,
+                "semanticCallSucceeded": semantic_call_succeeded,
+                "detectedIntent": agent_response.intent.value,
+                "intentConfidence": intent_confidence,
+                "alternativeIntents": alternative_intents,
+                "requiresClarification": requires_clarification,
+                "routingSource": routing_diagnostics.get("routingSource"),
+                "routingReason": routing_diagnostics.get("routingReason"),
+                "selectedAgent": agent_response.agent,
+                "semanticErrorCategory": semantic_error_category,
+                "durationMs": round(total_latency_ms, 1),
+            },
+        )
     except Exception:
         # already swallows its own failures, but this route must never fail the chat response
         # for any reason connected to observability, including a bug in the call site itself.

@@ -219,7 +219,14 @@ def _routing_diagnostics_payload(decision: RoutingDecision) -> dict[str, str]:
     computed, so this can never drift from the actual routing decision it describes.
     alternativeIntents/requiresClarification are new in PBI-14-04; routingConfidence/
     routingSource/routingReason existed since PBI-14-03 and keep their exact prior meaning where
-    routing_source is still "deterministic_keyword"-shaped (now "deterministic_fallback")."""
+    routing_source is still "deterministic_keyword"-shaped (now "deterministic_fallback").
+    semanticCallSucceeded/semanticErrorCategory are new in PBI-14-07 — surfaced so
+    apps/api/src/api/routes/chat.py can emit a structured routing-decision log event without
+    re-deriving them from routing_source/routing_reason (which alone cannot distinguish "the
+    semantic call succeeded with low confidence" from "the semantic call itself failed" — both
+    use routing_source=deterministic_fallback). semanticErrorCategory is "" (never a Python
+    None) to keep this dict's existing dict[str, str] contract — chat.py maps "" back to a JSON
+    null for the log event."""
     alternative_intents: list[AlternativeIntent] = decision.turn_interpretation.alternative_intents
     return {
         "routingConfidence": str(decision.turn_interpretation.intent_confidence),
@@ -227,4 +234,6 @@ def _routing_diagnostics_payload(decision: RoutingDecision) -> dict[str, str]:
         "routingReason": decision.routing_reason,
         "requiresClarification": str(decision.requires_clarification),
         "alternativeIntents": ",".join(a.intent for a in alternative_intents),
+        "semanticCallSucceeded": str(decision.semantic_call_succeeded),
+        "semanticErrorCategory": decision.semantic_error_category or "",
     }
