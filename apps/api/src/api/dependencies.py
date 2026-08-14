@@ -332,4 +332,10 @@ def get_supervisor() -> SupervisorOrchestrator:
         conversation_repository=repository,
         intent_resolver=RuleBasedIntentResolver(),
         agent_registry=registry,
+        # PBI-14-04: the Supervisor now owns the ONE per-turn semantic call that used to run
+        # inside each specialist Agent (see src.supervisor.semantic_routing / ADR-0014) — reuses
+        # the exact same cached PromptManager/LLMProvider instances every Agent already used,
+        # never a second, competing pair.
+        prompt_manager=prompt_manager,
+        llm_provider=llm_provider,
     )

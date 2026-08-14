@@ -45,7 +45,11 @@ from src.agents.shared.memory import (
     update_memory,
 )
 from src.agents.shared.semantic_interpreter import interpret_semantics
-from src.agents.shared.semantic_models import BrokerSemanticInterpretation
+from src.agents.shared.semantic_models import (
+    BrokerSemanticInterpretation,
+    TurnInterpretation,
+    to_domain_interpretation,
+)
 from src.agents.shared.state_persistence import carry_forward_other_agent_state, load_agent_state
 from src.core.tool_calling.exceptions import ToolCallingError
 from src.core.tool_calling.models import (
@@ -129,6 +133,8 @@ class BrokerAgent:
         request: AgentRequest,
         context: ConversationContext,
         on_react_event: ReActEventSink | None = None,
+        turn_interpretation: TurnInterpretation | None = None,
+        turn_interpretation_diagnostic: str = "",
     ) -> AgentResponse:
         state = load_agent_state(context.metadata, _STATE_METADATA_KEY, BrokerInquiryState)
         # PBI-09-01 final validation: see claims_agent.py's identical rationale — a domain
@@ -144,28 +150,34 @@ class BrokerAgent:
         memory = load_memory(context.metadata)
         state = _prefill_from_memory(state, memory)
 
-        # PBI-14-03: the ONE shared semantic interpretation call (repurposes what was previously
-        # annotate_with_prompt_and_llm's discarded-output call — LLM calls per turn are
-        # unchanged) runs before the deterministic state machine so its structured entities/
-        # confirmation can inform this turn's extraction and confirmation handling.
-        semantic, diagnostics = await interpret_semantics(
-            schema_name="broker_semantic_interpretation",
-            schema_type=BrokerSemanticInterpretation,
-            prompt_identifier="broker.system",
-            prompt_manager=self._prompt_manager,
-            llm_provider=self._llm_provider,
-            render_context=PromptRenderContext(
+        # PBI-14-04: the Supervisor now performs the ONE shared semantic interpretation call
+        # BEFORE routing (src.supervisor.semantic_routing) and hands the result to whichever
+        # Agent it selects — reused here, never re-requested for the same turn. Falls back to
+        # calling interpret_semantics itself only when turn_interpretation is None (no
+        # Supervisor in front, e.g. a direct unit test) — the exact PBI-14-03 behavior,
+        # preserved as a backward-compatible resilience path, not a normal-path second call.
+        if turn_interpretation is not None:
+            semantic = to_domain_interpretation(turn_interpretation, BrokerSemanticInterpretation)
+            diagnostics = turn_interpretation_diagnostic
+        else:
+            semantic, diagnostics = await interpret_semantics(
+                schema_name="broker_semantic_interpretation",
+                schema_type=BrokerSemanticInterpretation,
+                prompt_identifier="broker.system",
+                prompt_manager=self._prompt_manager,
+                llm_provider=self._llm_provider,
+                render_context=PromptRenderContext(
+                    conversation_id=context.conversation_id,
+                    user_id=request.user_id,
+                    intent=IntentCategory.BROKER.value,
+                    conversation_summary=context.summary,
+                    agent_name=self.name,
+                ),
+                user_message=request.message,
+                correlation_id=request.correlation_id,
                 conversation_id=context.conversation_id,
                 user_id=request.user_id,
-                intent=IntentCategory.BROKER.value,
-                conversation_summary=context.summary,
-                agent_name=self.name,
-            ),
-            user_message=request.message,
-            correlation_id=request.correlation_id,
-            conversation_id=context.conversation_id,
-            user_id=request.user_id,
-        )
+            )
 
         try:
             state, notices = await advance_broker_inquiry(

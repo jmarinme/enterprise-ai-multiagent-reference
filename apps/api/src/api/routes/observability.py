@@ -93,6 +93,12 @@ class RunResponse(_CamelModel):
     intent_confidence: float | None = None
     selected_agent: str | None = None
     routing_reason: str | None = None
+    # PBI-14-04: which mechanism produced the routing decision (never fabricated as "semantic"
+    # when the deterministic-fallback path fired) and whether FallbackAgent asked a clarifying
+    # question instead of guessing. See src.supervisor.semantic_routing.RoutingDecision.
+    routing_source: str | None = None
+    requires_clarification: bool | None = None
+    alternative_intents: list[str] = Field(default_factory=list)
     tool_calls: list[RunToolCallResponse] = Field(default_factory=list)
     model: str | None = None
     input_tokens: int | None = None
@@ -133,6 +139,9 @@ def _to_run_response(run: RunRecord) -> RunResponse:
         intent_confidence=run.intent_confidence,
         selected_agent=run.selected_agent,
         routing_reason=run.routing_reason,
+        routing_source=run.routing_source,
+        requires_clarification=run.requires_clarification,
+        alternative_intents=run.alternative_intents or [],
         tool_calls=[
             RunToolCallResponse(
                 call_id=call.call_id,

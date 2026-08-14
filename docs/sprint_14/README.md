@@ -16,6 +16,10 @@ improvement actually worked, without turning this sprint into another observabil
       for it beyond this entry and the citations in `decisions.md`/ADR-0013.
 - [x] PBI-14-03 (implementation): shared semantic interpretation layer, per-agent integration,
       Supervisor routing fix, observability corrections, tests, documentation.
+- [x] PBI-14-04 (implementation): moved the ONE per-turn semantic call from inside each
+      specialist agent to the Supervisor, so semantic understanding runs BEFORE routing — the
+      remaining root cause a live Azure validation surfaced (a keyword-free Claims message was
+      misrouted to FallbackAgent, which never calls an LLM at all).
 
 ## Out of scope (this sprint)
 
@@ -28,6 +32,12 @@ improvement actually worked, without turning this sprint into another observabil
   "observability is secondary, do not redesign the dashboard" instruction.
 - LLM-as-a-Judge / self-reflection quality scoring.
 - Any deployment — no Azure resource was created, modified, or deployed.
+- PBI-14-04: a second semantic LLM call per turn (routing stayed at exactly one call, moved not
+  duplicated); a ReAct-capable Supervisor; hundreds of new keyword synonyms (only the two
+  PBI-14-03 keyword gaps and its one compound rule remain — see ADR-0014); deleting
+  `RuleBasedIntentResolver` (kept as the resilience fallback); a dashboard/observability
+  redesign (only three new, additive `RunRecord` fields were populated); Entra ID, Azure
+  resources, Container Apps topology, or Cosmos DB changes; any deployment.
 
 ## Deliverables
 
@@ -53,6 +63,17 @@ improvement actually worked, without turning this sprint into another observabil
 - [x] `ADR-0013` (shared semantic interpretation layer).
 - [x] Tests: shared-component unit tests, Supervisor routing regression, three end-to-end
       conversational regression scenarios (one per agent), observability cost-aggregation tests.
+- [x] PBI-14-04: `src/agents/shared/semantic_models.py` extended with `TurnInterpretation`/
+      `AlternativeIntent`/`to_domain_interpretation`; new
+      `configs/prompts/supervisor/turn_interpretation.md`; new `src/supervisor/semantic_routing.py`
+      (`resolve_turn`, `SemanticRoutingConfig`); `src/supervisor/orchestrator.py` now owns the
+      one pre-routing semantic call; `src/supervisor/registry.py` (`Agent` Protocol) and all
+      three specialist agents + `src/agents/fallback_agent.py` gained
+      `turn_interpretation`/`turn_interpretation_diagnostic` params;
+      `apps/api/src/api/dependencies.py` wires `PromptManager`/`LLMProvider` into the Supervisor;
+      `RunRecord`/`ObservabilityService`/`chat.py`/`observability.py` routes gained
+      `routing_source`/`requires_clarification`/`alternative_intents`; `ADR-0014`; `CLAUDE.md`
+      §4.1 updated to describe semantic-first routing.
 
 ## Acceptance criteria
 
@@ -67,6 +88,9 @@ deviation from the original task framing.
   schema, never redesigns it.
 - `src.agents.shared.annotation.annotate_with_prompt_and_llm` (PBI-01-05/01-07) — the exact call
   site repurposed by `interpret_semantics`.
+- PBI-14-04: `src.agents.shared.semantic_interpreter.interpret_semantics` (unchanged, reused
+  verbatim by `src.supervisor.semantic_routing.resolve_turn`); `src.supervisor.intent.
+  RuleBasedIntentResolver` (kept as the resilience fallback, not deleted).
 
 ## Risks
 
@@ -76,12 +100,24 @@ deviation from the original task framing.
 - Commercial Intake's conversation now takes one additional turn (explicit confirmation) before
   registration — an intentional Human-in-the-Loop change, not a regression, but a visible
   behavior difference from before this sprint.
+- PBI-14-04: `SemanticRoutingConfig`'s confidence thresholds (0.7/0.4 defaults) are operational
+  starting values, not calibrated against real production traffic — see ADR-0014's Consequences.
+- PBI-14-04: real Azure OpenAI classification quality for the specific paraphrase test cases
+  (sections 11-14) was not verified against live Azure in this sandbox (`LLM_PROVIDER=mock`
+  locally, no Azure OpenAI credentials configured) — the routing/reuse LOGIC is fully tested;
+  real-model classification accuracy for these exact phrasings remains a live-deployment
+  concern. See `decisions.md`.
 
 ## Deliverable Log
 
 - PBI-14-01: Multi-agent conversational intelligence gap analysis (read-only) — 2026-08-09.
 - PBI-14-03: Shared semantic interpretation layer, per-agent integration, Supervisor routing
   fix, observability corrections, tests, documentation — 2026-08-13.
+- PBI-14-04: Semantic-first Supervisor routing — the one per-turn semantic call now runs before
+  routing and is reused (not re-requested) by the selected specialist; RuleBasedIntentResolver
+  demoted to a resilience fallback; FallbackAgent gained deterministic clarification templates;
+  observability gained routing_source/requires_clarification/alternative_intents; ADR-0014;
+  CLAUDE.md §4.1 updated — 2026-08-14.
 
 ## Sprint validation
 
@@ -95,3 +131,14 @@ conversational defect PBI-14-01 found. Keeping the Supervisor's routing 100% det
 (a narrower reading than the driving PBI's own framing technically required) turned out to be
 the lower-risk choice: the one concrete regression case (incendio/fábrica) was resolvable with a
 compound keyword rule, so no LLM-informed routing redesign was needed.
+
+PBI-14-04 addendum: live validation proved PBI-14-03's own "keep the Supervisor deterministic
+by never letting semantic interpretation affect routing" resolution (see this file's original
+retrospective note above) was too conservative — it left the actual reported defect unfixed,
+because a keyword-free message never reached a specialist agent's semantic layer at all. The
+correct fix was not "make the Supervisor smarter" but "move the SAME call earlier and let fixed
+conditionals consume its output," which is what ADR-0014 does — the Supervisor is exactly as
+deterministic after this PBI as before it, just fed richer, pre-computed input. The
+backward-compatible design (each specialist agent still calls `interpret_semantics` itself when
+no `turn_interpretation` is supplied) meant every existing PBI-14-03 test — including all three
+conversational regression scenarios — kept passing completely unmodified.

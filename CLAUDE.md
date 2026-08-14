@@ -53,7 +53,7 @@ All business systems, policies, claims, brokers, payments, commissions, adjuster
 
 ### 4.1 Agent topology
 
-- **Supervisor Agent**: single logical entry point; validates user context, classifies intent, applies guardrails, routes to a domain agent, maintains context, and escalates below the confidence threshold. It does not execute business logic.
+- **Supervisor Agent**: single logical entry point; validates user context, classifies intent, applies guardrails, routes to a domain agent, maintains context, and escalates below the confidence threshold. It does not execute business logic. Intent classification is semantic-first (PBI-14-04, ADR-0014): one shared structured LLM interpretation runs before routing and is reused, unchanged, by whichever specialist agent is selected — never a second call for the same turn. Deterministic keyword matching (`RuleBasedIntentResolver`) is retained only as a resilience fallback for when the semantic call is unavailable, and as a corroboration signal at medium confidence — it is not the primary routing authority. The Supervisor itself still never "reasons": it applies fixed, deterministic conditionals to the LLM's structured output, exactly as it previously applied fixed conditionals to keyword matches.
 - **Claims Agent**: uses approved claims Tools and delegates long-running processes to Durable Functions.
 - **Broker Services Agent**: uses approved broker Tools and enforces broker-level authorization boundaries.
 - **Commercial Intake Agent**: uses approved intake Tools and supports synthetic lead preregistration and routing.
