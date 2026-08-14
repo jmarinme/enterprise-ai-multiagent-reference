@@ -36,6 +36,19 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# APP_VERSION/BUILD_NUMBER/COMMIT_SHA (PBI-14-06): build/deployment traceability, exposed
+# read-only via GET /version. commit_sha/build_number are immutable CI artifacts — the pipeline
+# always passes real values (Build.BuildNumber/Build.SourceVersion, the same identity already
+# embedded in this image's own registry tag); the defaults below apply only to a local
+# `docker build` run outside the pipeline. Mirrors the existing VITE_API_URL ARG/ENV pattern in
+# apps/web/Dockerfile.
+ARG APP_VERSION=14.6.0
+ARG BUILD_NUMBER=local
+ARG COMMIT_SHA=unknown
+ENV APP_VERSION=$APP_VERSION
+ENV BUILD_NUMBER=$BUILD_NUMBER
+ENV COMMIT_SHA=$COMMIT_SHA
+
 COPY apps/api/pyproject.toml ./
 RUN pip install --no-cache-dir \
     "fastapi>=0.115,<1" \

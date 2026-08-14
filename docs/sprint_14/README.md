@@ -118,6 +118,11 @@ deviation from the original task framing.
   demoted to a resilience fallback; FallbackAgent gained deterministic clarification templates;
   observability gained routing_source/requires_clarification/alternative_intents; ADR-0014;
   CLAUDE.md §4.1 updated — 2026-08-14.
+- PBI-14-06: Live DEV deployment evidence (confirmed PBI-14-03/PBI-14-04 both deployed) +
+  build/version traceability — `GET /version` extended with `app_version`/`build_number`/
+  `commit_sha`/`component`; Web build metadata via new Dockerfile ARG/ENV; a low-noise Sidebar
+  version indicator with Web/API drift detection; `azure-pipelines.yml` now injects the same
+  commit identity into both images and verifies it post-deploy (2 new Smoke Tests) — 2026-08-14.
 
 ## Sprint validation
 

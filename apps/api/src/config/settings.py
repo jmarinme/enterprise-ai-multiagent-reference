@@ -17,6 +17,18 @@ class Settings(BaseSettings):
     api_port: int = 8000
     log_level: str = "INFO"
     api_version: str = "0.1.0"
+    # Build/deployment traceability (PBI-14-06). app_version is a maintained, human-readable
+    # release identifier (sprint.PBI form, e.g. "14.6.0") — bumped by hand alongside
+    # apps/api/pyproject.toml, not sourced from CI. build_number/commit_sha are immutable CI
+    # artifacts and must NEVER be hardcoded: azure-pipelines.yml injects them at image-build
+    # time from its own Build.BuildNumber/Build.SourceVersion variables (the same values already
+    # embedded in the deployed image's tag, see the pipeline's `imageTag` variable) via Docker
+    # build-args, mirroring the existing VITE_API_URL ARG/ENV pattern in apps/web/Dockerfile.
+    # The "local"/"unknown" defaults below apply only when running outside that pipeline (local
+    # dev, docker-compose) and must never be mistaken for real deployment evidence.
+    app_version: str = "14.6.0"
+    build_number: str = "local"
+    commit_sha: str = "unknown"
     # cors_allowed_origins (PBI-04-02): comma-separated origins, never "*" — the Web app is the
     # only real caller today. Configuration-driven per environment: docker-compose/local dev
     # default to the local Vite preview port; ops/bicep/main.bicep sets this to the deployed

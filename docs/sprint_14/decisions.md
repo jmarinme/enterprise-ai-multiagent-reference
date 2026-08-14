@@ -174,3 +174,87 @@ WHEN the existing semantic call runs, not WHETHER the Supervisor "reasons").
    `validation.md`. This is disclosed as a real, unavoidable limitation, not silently assumed
    away — an actual pipeline run against Azure DevOps remains the only way to observe this
    change's real-world behavior end to end.
+
+## PBI-14-06 (deployment verification + build/version visibility — unrelated theme, see README.md)
+
+Unlike PBI-14-05, this session had genuine, authenticated `az` CLI access (subscription Owner on
+the real DEV subscription) — a capability not available/exercised in earlier PBIs of this sprint.
+This let section 1's deployment-state evidence and part of section 8's live diagnostic be
+answered with real Azure queries rather than the "no Azure credentials available" disclaimer
+PBI-14-04/14-05 both carried. See `validation.md` for the full evidence.
+
+1. **`app_version` is a hand-maintained `Settings`/Dockerfile-`ARG` default (`"14.6.0"`), never
+   sourced from CI — only `build_number`/`commit_sha` are.** The driving task explicitly forbids
+   hardcoding the commit SHA but treats the human-readable app version as a separate, legitimately
+   maintained identifier (its own example: `"App Version: 14.06"` alongside a CI-sourced build
+   number). `apps/api/pyproject.toml`/root `pyproject.toml`/`apps/web/package.json` all still say
+   `"0.1.0"` and were deliberately left untouched — nothing in the runtime code path reads any of
+   them today (confirmed by grep), so wiring `app_version` to parse one of them at startup would
+   add real complexity (a `tomllib`/`package.json` read) to synchronize with a value nothing else
+   depends on, not remove one — the opposite of "do not introduce another version-management
+   system." `app_version` in `Settings`/`env.ts` is the one new, single source of truth this PBI
+   introduces; the three pre-existing, disconnected `"0.1.0"` fields are an unrelated, pre-existing
+   concern out of this PBI's scope to unify.
+
+2. **Extended the existing `GET /version` (already returning `name`/`version`/`environment`)
+   rather than creating a new endpoint or extending `/health`.** The driving task explicitly
+   offered this option ("extend an existing health/readiness endpoint if that is architecturally
+   cleaner"). `/health` is a narrow liveness probe (`{"status": "ok"}`, no dependencies, used by
+   orchestrators); `/version` already exists, is already unauthenticated, and already returns
+   exactly the kind of identity/build metadata this PBI adds to — appending four new keys to its
+   existing response is the smaller, more architecturally consistent change, and the frontend
+   already fetches it once via `useApiStatus()` with zero new network calls needed.
+
+3. **Web/API version-drift detection is a single equality check inside `Sidebar.tsx`, not a new
+   service or polling loop.** Reuses the `VersionResponse` `useApiStatus()` already fetches once
+   on mount; compares `apiVersionInfo.app_version`/`commit_sha` against the Web bundle's own
+   build-time `webAppVersion`/`webCommitSha` constants (`apps/web/src/config/env.ts`). Drift is
+   only flagged when both sides report a real pipeline-injected commit (never when either is the
+   local-dev placeholder `"unknown"`), so a developer running `docker-compose` locally never sees
+   a spurious drift warning. No new runtime complexity per the driving task's own section 5
+   constraint.
+
+4. **Two new Smoke Tests (3/7, 4/7) verify the DEPLOYED, RUNNING application's build identity,
+   not just its image tag.** Smoke Tests 1/7-2/7 (pre-existing, PBI-14-05) already verify the
+   Container App's `properties.template.containers[0].image` field matches this run's
+   `$(imageTag)` — proof the *reference* was updated. 3/7 calls the live `GET /version` and
+   asserts `commit_sha`/`build_number` equal `$(Build.SourceVersion)`/`$(Build.BuildNumber)`; 4/7
+   fetches the live Web app's served JS bundle and asserts the same commit SHA literal appears in
+   it. This closes a real, distinct failure mode the driving task called out directly ("a
+   deployment must not be considered successful if Azure is still serving an older application
+   build") — an image-reference update that doesn't actually result in new content being served
+   (a stuck/cached revision, a container that didn't restart) would pass 1/7-2/7 but fail 3/7-4/7.
+
+5. **Section 8's live diagnostic was run for real, against the real DEV Azure OpenAI resource,
+   using this repo's own unmodified `resolve_turn`/`AzureOpenAIProvider` code — but could not be
+   completed as the deployed application's own identity.** Two independent, disclosed auth
+   boundaries block it, neither touched or worked around: (a) a delegated Entra ID user token for
+   this API's own `access_as_user` scope requires interactive browser consent, unobtainable
+   non-interactively (`az account get-access-token` fails with `AADSTS65001 consent_required`) —
+   the same limitation already disclosed under PBI-14-04's decisions item 4; (b) this session's
+   own Azure CLI identity (subscription Owner) was tested directly against the real Azure OpenAI
+   data-plane endpoint and received a definitive `401 PermissionDenied` for
+   `Microsoft.CognitiveServices/accounts/OpenAI/deployments/chat/completions/action` — expected
+   Azure RBAC behavior (the built-in Owner role's `DataActions` is empty by design; only the
+   deployed app's own managed identity `id-tmxap-dev` was explicitly granted "Cognitive Services
+   OpenAI User," confirmed via `az role assignment list`). Granting the same role to this
+   session's identity would be a real Azure IAM change outside "implement code for the current
+   PBI" and was not made without explicit authorization. What WAS conclusively verified: prompt
+   rendering (`configs/prompts/supervisor/turn_interpretation.md@1.0.0` renders successfully),
+   request construction (correct model/deployment/temperature handling for the `gpt-5-mini`
+   reasoning-family capability gap), and network reachability of the real endpoint — the entire
+   code path up to the identity boundary is proven correct. Real-model classification quality for
+   this exact sentence remains unverified in this sandbox, same disclosed category as PBI-14-04's
+   own decisions item 4 (paraphrase classification quality) — not a new gap this PBI introduced.
+
+6. **The pipeline's `SmokeTests` `POST /chat` calls carry no `Authorization` header — an
+   incidental, pre-existing gap discovered while investigating section 8, left unfixed.**
+   Confirmed via `apps/api/src/api/auth/dependency.py`'s `get_current_user()` (unconditionally
+   requires a Bearer token, zero bypass) that these specific smoke-test calls would 401 against a
+   real Entra-enforcing deployment; they do not currently block `DeployDev` since `SmokeTests`
+   is not in `DeployDev`'s own `dependsOn`. Fixing this would mean either minting a real
+   service-principal-backed token in CI or relaxing auth for smoke traffic — both are
+   authentication changes, explicitly out of this PBI's scope ("Do not modify... the delegated
+   Entra `access_as_user` flow"). Reported here as a disclosed finding for a future PBI, not
+   silently fixed or silently ignored.
+

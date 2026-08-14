@@ -10,6 +10,11 @@ export interface VersionResponse {
   name: string;
   version: string;
   environment: string;
+  /** Build/deployment traceability (PBI-14-06) — see apps/api/src/api/routes/version.py. */
+  app_version: string;
+  build_number: string;
+  commit_sha: string;
+  component: string;
 }
 
 async function getJson<T>(path: string): Promise<T> {
