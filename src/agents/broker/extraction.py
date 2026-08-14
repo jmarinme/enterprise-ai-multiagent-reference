@@ -17,9 +17,6 @@ _BROKER_ID_PATTERN = re.compile(r"\b(SYN-BRK-\d{3,6}|BRK-SYN-\d{3,6})\b", re.IGN
 _POLICY_NUMBER_PATTERN = re.compile(r"\b(SYN-POL-\d{3,6})\b", re.IGNORECASE)
 _TRANSACTION_REFERENCE_PATTERN = re.compile(r"\b(SYN-TXN-\d{3,6})\b", re.IGNORECASE)
 
-_YES_WORDS = {"yes", "yeah", "yep", "affirmative", "correct", "si", "sí", "claro", "correcto"}
-_NO_WORDS = {"no", "nope", "negative", "none", "para nada"}
-
 # Checked in order (most distinctive keyword first, mirroring
 # src.supervisor.intent.RuleBasedIntentResolver's own ordered-keyword-list pattern) so a
 # message mentioning both "policy" and "commission" resolves to the more specific commission
@@ -42,7 +39,6 @@ _PAYMENT_REQUEST_KEYWORDS = (
     "procesar el pago",
 )
 
-_YES_NO_FIELDS = {"wants_payment_request"}
 _FREE_TEXT_FALLBACK_FIELDS = {"broker_name"}
 
 # "soy Synthetic Brokerage One", "somos Synthetic Brokerage One", "mi correduría es Synthetic
@@ -97,13 +93,6 @@ def extract_fields(message: str, state: BrokerInquiryState) -> BrokerInquiryStat
         period = resolve_commission_period(normalized)
         if period:
             updated.commission_period = period
-
-    if state.last_asked_field in _YES_NO_FIELDS and getattr(updated, state.last_asked_field) is None:
-        first_word = lowered.split()[0].strip(",.!?") if lowered else ""
-        if first_word in _YES_WORDS:
-            setattr(updated, state.last_asked_field, True)
-        elif first_word in _NO_WORDS:
-            setattr(updated, state.last_asked_field, False)
 
     if (
         state.last_asked_field in _FREE_TEXT_FALLBACK_FIELDS

@@ -109,7 +109,11 @@ class CosmosObservabilityRepository:
         now = datetime.now(UTC)
         input_tokens = run.token_usage.prompt_tokens if run.token_usage else 0
         output_tokens = run.token_usage.completion_tokens if run.token_usage else 0
-        cost = run.estimated_cost_usd or 0.0
+        # PBI-14-03: never coerce an unknown per-run cost to 0.0 — see
+        # ConversationSummary.total_estimated_cost_usd's own docstring for the "once
+        # Unavailable, stays Unavailable" rule this function implements below (mirrors
+        # src.services.observability_store.in_memory.InMemoryObservabilityRepository.record_run).
+        cost = run.estimated_cost_usd
 
         if existing is None:
             summary = ConversationSummary(
@@ -126,6 +130,8 @@ class CosmosObservabilityRepository:
                 business_outcome=run.final_status,
             )
         else:
+            previous_total = existing.total_estimated_cost_usd
+            new_total = None if previous_total is None or cost is None else previous_total + cost
             summary = existing.model_copy(
                 update={
                     "updated_at": now,
@@ -133,7 +139,7 @@ class CosmosObservabilityRepository:
                     "run_count": existing.run_count + 1,
                     "total_input_tokens": existing.total_input_tokens + input_tokens,
                     "total_output_tokens": existing.total_output_tokens + output_tokens,
-                    "total_estimated_cost_usd": existing.total_estimated_cost_usd + cost,
+                    "total_estimated_cost_usd": new_total,
                     "business_outcome": run.final_status or existing.business_outcome,
                 }
             )
@@ -233,7 +239,8 @@ class CosmosObservabilityRepository:
             "SELECT COUNT(1) AS conversationCount, SUM(c.runCount) AS runCount, "
             "SUM(c.totalInputTokens) AS totalInputTokens, "
             "SUM(c.totalOutputTokens) AS totalOutputTokens, "
-            "SUM(c.totalEstimatedCostUsd) AS totalEstimatedCostUsd "
+            "SUM(c.totalEstimatedCostUsd) AS totalEstimatedCostUsd, "
+            "COUNT(c.totalEstimatedCostUsd) AS costKnownCount "
             f"FROM c WHERE {where}"
         )
 
@@ -245,12 +252,22 @@ class CosmosObservabilityRepository:
 
         results = await self._resilient_call(_query, operation_name="query_items(kpis)")
         row = results[0] if results else {}
+        conversation_count = row.get("conversationCount")
+        cost_known_count = row.get("costKnownCount")
+        total_cost = row.get("totalEstimatedCostUsd")
+        # PBI-14-03: Cosmos's COUNT(field) skips a document where that field is null/undefined,
+        # but SUM(field) silently treats it as if it contributed 0 rather than making the whole
+        # aggregate Unavailable — without this check, one conversation with a genuinely unknown
+        # cost would silently vanish from the total instead of correctly making it Unavailable
+        # (see ConversationSummary.total_estimated_cost_usd's own docstring).
+        if conversation_count and cost_known_count is not None and cost_known_count < conversation_count:
+            total_cost = None
         return SummaryKpis(
-            conversation_count=row.get("conversationCount"),
+            conversation_count=conversation_count,
             run_count=row.get("runCount"),
             total_input_tokens=row.get("totalInputTokens"),
             total_output_tokens=row.get("totalOutputTokens"),
-            total_estimated_cost_usd=row.get("totalEstimatedCostUsd"),
+            total_estimated_cost_usd=total_cost,
             # success_rate/average_latency_ms require scanning `run` docs individually (no
             # pre-aggregated success/latency total on ConversationSummary) — left Unavailable
             # in the Cosmos path for V1 rather than adding a second, more expensive

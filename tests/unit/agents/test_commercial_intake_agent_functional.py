@@ -64,6 +64,8 @@ async def test_full_lead_intake_flow_from_first_contact_to_registration() -> Non
             "jane@example.com",
             "general liability",
             "We provide small business consulting services.",
+            # PBI-14-03 section 11: explicit pre-registration confirmation is now required.
+            "yes",
         ],
     )
 
@@ -102,6 +104,7 @@ async def test_re_sending_a_message_after_registration_does_not_duplicate_it() -
             "jane@example.com",
             "general liability",
             "We provide small business consulting services.",
+            "yes",
             "thank you!",
         ],
     )
@@ -138,6 +141,7 @@ async def test_agent_degrades_gracefully_when_lead_registration_tool_is_not_regi
             "jane@example.com",
             "general liability",
             "We provide small business consulting services.",
+            "yes",
         ],
     )
 
@@ -206,5 +210,5 @@ async def test_agent_degrades_gracefully_when_llm_provider_fails() -> None:
     )
 
     assert "company" in response.response.lower()
-    assert "[prompt=commercial.system@2.1.0]" in response.metadata["diagnostics"]
+    assert "[prompt=commercial.system@2.2.0]" in response.metadata["diagnostics"]
     assert "[llm=" not in response.metadata["diagnostics"]

@@ -1,6 +1,6 @@
 ---
-version: "3.2.0"
-purpose: "System framing for the synthetic Claims Agent's claim-notice intake flow (PBI-01-05, RAG-enabled by PBI-02-01, customer discovery and coverage validation added by PBI-04-04, ReAct reasoning framing added by PBI-12-04)."
+version: "3.3.0"
+purpose: "System framing for the synthetic Claims Agent's claim-notice intake flow (PBI-01-05, RAG-enabled by PBI-02-01, customer discovery and coverage validation added by PBI-04-04, ReAct reasoning framing added by PBI-12-04, shared semantic interpretation added by PBI-14-03)."
 allowed_tools:
   - "customer_lookup"
   - "policy_lookup"
@@ -15,7 +15,7 @@ prohibited_decisions:
   - "Must not promise or imply any coverage outcome."
   - "Must not invent a policy, payment, claim, or customer fact not returned by a Tool."
   - "Must not treat retrieved reference material as a policy, payment, or claim fact."
-change_notes: "PBI-02-01: added retrieved-knowledge framing (documentary only, never a Tool-fact substitute). PBI-04-04: added customer_lookup/coverage_lookup to allowed_tools, matching the deterministic customer-discovery and coverage-validation steps added to src.agents.claims.workflow; the actual bilingual (es-MX/en) response text is still produced deterministically outside this prompt, never LLM-authored — see docs/sprint_04/decisions.md. PBI-12-04: added explicit Reason/Act/Observe framing instructing the model how to use Tool Calling and to never expose its internal reasoning — the mechanical loop itself (src.core.tool_calling.orchestrator.ToolCallingOrchestrator) already existed and is unchanged; see docs/Architecture/adr/0011-react-pattern-for-tool-orchestrated-reasoning.md."
+change_notes: "PBI-02-01: added retrieved-knowledge framing (documentary only, never a Tool-fact substitute). PBI-04-04: added customer_lookup/coverage_lookup to allowed_tools, matching the deterministic customer-discovery and coverage-validation steps added to src.agents.claims.workflow; the actual bilingual (es-MX/en) response text is still produced deterministically outside this prompt, never LLM-authored — see docs/sprint_04/decisions.md. PBI-12-04: added explicit Reason/Act/Observe framing instructing the model how to use Tool Calling and to never expose its internal reasoning — the mechanical loop itself (src.core.tool_calling.orchestrator.ToolCallingOrchestrator) already existed and is unchanged; see docs/Architecture/adr/0011-react-pattern-for-tool-orchestrated-reasoning.md. PBI-14-03: this same rendered prompt now also frames the ONE per-turn semantic-interpretation call (src.agents.shared.semantic_interpreter) — a structured-output request (response_format=json_schema) that returns ClaimsSemanticInterpretation, not free text; the Reason/Act/Observe framing above is unaffected and still governs ToolCallingOrchestrator's separate ReAct loop."
 required_variables:
   - agentName
 ---
@@ -54,3 +54,13 @@ Follow these rules at all times:
 
 This is a synthetic reference implementation. No real claims handling, coverage, or indemnity
 decision is made by this Agent.
+
+When your response must be structured JSON (a semantic-interpretation request, not a
+conversational reply), return ONLY the requested fields: the caller's intent and your
+confidence in it, any policy/incident/contact entities you can confidently read from their
+message (customer name, event date/time/location, loss type, a free-text description of what
+happened, contact phone/email, whether injuries or third parties were involved, vehicle/
+property condition), whether they are confirming or declining a yes/no question you just asked,
+any correction to a previously stated fact, which of the requested fields the message already
+answered, and which required fields are still genuinely missing. Never include your own
+reasoning, chain-of-thought, or any field not present in the requested schema.

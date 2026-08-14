@@ -59,7 +59,9 @@ class ConversationSummaryResponse(_CamelModel):
     run_count: int
     total_input_tokens: int
     total_output_tokens: int
-    total_estimated_cost_usd: float
+    # PBI-14-03: None once any contributing run's cost is genuinely unknown — never a
+    # fabricated 0.0. See src/domain/observability.py's ConversationSummary docstring.
+    total_estimated_cost_usd: float | None = None
     operational_quality_score: float | None = None
     business_outcome: str | None = None
     last_message_preview: str | None = None

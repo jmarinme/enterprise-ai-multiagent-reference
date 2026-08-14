@@ -71,22 +71,6 @@ def test_broker_id_and_policy_number_never_cross_contaminate() -> None:
     assert state.policy_number == "SYN-POL-0001"
 
 
-def test_yes_no_answer_is_only_interpreted_for_the_last_asked_yes_no_field() -> None:
-    state = BrokerInquiryState(last_asked_field="wants_payment_request")
-
-    updated = extract_fields("yes", state)
-
-    assert updated.wants_payment_request is True
-
-
-def test_no_answer_sets_wants_payment_request_false() -> None:
-    state = BrokerInquiryState(last_asked_field="wants_payment_request")
-
-    updated = extract_fields("no thanks", state)
-
-    assert updated.wants_payment_request is False
-
-
 def test_payment_request_keyword_sets_wants_payment_request_without_being_asked() -> None:
     state = extract_fields(
         "I'd like to request payment for my commission.", BrokerInquiryState()

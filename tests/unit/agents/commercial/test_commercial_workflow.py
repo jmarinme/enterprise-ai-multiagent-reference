@@ -43,6 +43,9 @@ async def test_full_multi_turn_conversation_registers_a_synthetic_lead() -> None
         "jane@example.com",
         "general liability",
         "We provide small business consulting services.",
+        # PBI-14-03 section 11: explicit pre-registration confirmation is now required — the
+        # lead is no longer registered automatically once the last required field is filled.
+        "yes",
     ]
 
     all_notices: list[str] = []
@@ -79,6 +82,7 @@ async def test_a_message_after_registration_does_not_register_a_second_lead() ->
         "jane@example.com",
         "general liability",
         "We provide small business consulting services.",
+        "yes",
     ]:
         state, _ = await advance_commercial_intake(state, message, executor, language="en")
     original_reference = state.lead_reference

@@ -23,6 +23,18 @@ from src.supervisor.models import IntentCategory
         ("Se inundó mi casa.", IntentCategory.CLAIMS),
         ("Me robaron el auto anoche.", IntentCategory.CLAIMS),
         ("Hubo un incendio en mi negocio.", IntentCategory.CLAIMS),
+        # PBI-14-03 section 5 hard regression case: contains "incendio" (a _CLAIMS_KEYWORDS
+        # entry) but describes a NEW commercial insurance request against that peril, not a
+        # claim being reported — must route to Commercial, never Claims.
+        (
+            "quiero asegurar una fábrica en Monterrey por 20 millones contra incendio",
+            IntentCategory.COMMERCIAL,
+        ),
+        ("I want to insure our new business against fire damage.", IntentCategory.COMMERCIAL),
+        # Spanish policy-status inquiry gap fix (PBI-14-01 finding): no English "policy"
+        # keyword and no compound "pago de comisión" phrase.
+        ("¿Cuál es el estado de mi póliza?", IntentCategory.BROKER),
+        ("Quiero saber el estado de mi pago.", IntentCategory.BROKER),
     ],
 )
 async def test_resolve_returns_expected_category(

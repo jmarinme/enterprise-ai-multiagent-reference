@@ -247,6 +247,15 @@ class AzureOpenAIProvider:
                 create_kwargs["temperature"] = request.settings.temperature
             if request.tools:
                 create_kwargs["tools"] = _to_openai_tools(request.tools)
+            if request.response_schema is not None:
+                create_kwargs["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": request.response_schema.name,
+                        "schema": request.response_schema.schema_,
+                        "strict": request.response_schema.strict,
+                    },
+                }
 
             async def _call_completions_api() -> Any:
                 return await client.chat.completions.create(**create_kwargs)

@@ -188,7 +188,7 @@ async def test_agent_degrades_gracefully_when_llm_provider_fails() -> None:
     )
 
     assert "please provide the synthetic policy number" in response.response.lower()
-    assert "[prompt=broker.system@2.1.0]" in response.metadata["diagnostics"]
+    assert "[prompt=broker.system@2.2.0]" in response.metadata["diagnostics"]
     assert "[llm=" not in response.metadata["diagnostics"]
 
 

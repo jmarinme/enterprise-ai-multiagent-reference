@@ -25,10 +25,25 @@ from src.agents.broker.state import (
     missing_required_fields,
     prompt_for_missing,
 )
+from src.agents.shared.confirmation import resolve_confirmation
 from src.agents.shared.language import Language
 from src.agents.shared.messages import t
+from src.agents.shared.semantic_merge import apply_semantic_entities
+from src.agents.shared.semantic_models import BrokerSemanticInterpretation
 from src.tools.executor import ToolExecutor
 from src.tools.models import ToolRequest
+
+# Multi-field extraction (PBI-14-03 section 6): the free-text/ambiguous BrokerInquiryState
+# fields a high-confidence semantic interpretation may fill in when this turn's deterministic
+# extract_fields() left them empty — never broker_id/broker_active/policy_status/
+# transaction_status/commission_amount/commission_status/payment_request_reference, which only
+# ever come from a Tool result.
+_SEMANTIC_FALLBACK_FIELDS: tuple[str, ...] = (
+    "broker_name",
+    "policy_number",
+    "transaction_reference",
+    "commission_period",
+)
 
 _ToolContext = dict[str, str | None]
 _HandlerResult = tuple[BrokerInquiryState, list[str], bool]
@@ -186,11 +201,36 @@ async def advance_broker_inquiry(
     correlation_id: str | None = None,
     conversation_id: str | None = None,
     user_id: str | None = None,
+    semantic: BrokerSemanticInterpretation | None = None,
 ) -> tuple[BrokerInquiryState, list[str]]:
     """Extract any recognizable fields from message, then drive the state machine forward
     until it needs more information from the user. Returns the updated state and the ordered
-    list of user-facing notices produced this turn."""
+    list of user-facing notices produced this turn.
+
+    semantic (PBI-14-03, default None): this turn's shared structured semantic interpretation
+    (src.agents.shared.semantic_interpreter, the same repurposed per-turn LLM call this Agent
+    already made). Deterministic extract_fields() always runs first and always wins; semantic
+    entities only fill a field extract_fields left empty, and only above
+    src.agents.shared.semantic_merge.MIN_CONFIDENCE_TO_APPLY. The "would you like to request
+    payment?" question additionally consults semantic.confirmation when the deterministic
+    word-set fast path in src.agents.shared.confirmation is inconclusive."""
     current_state = extract_fields(message, state)
+    if semantic is not None:
+        current_state, _ = apply_semantic_entities(
+            current_state,
+            semantic.entities,
+            semantic.intent_confidence,
+            fields=_SEMANTIC_FALLBACK_FIELDS,
+        )
+    if state.last_asked_field == "wants_payment_request" and current_state.wants_payment_request is None:
+        resolved_confirmation = resolve_confirmation(
+            message,
+            semantic_confirmation=semantic.confirmation if semantic is not None else None,
+        )
+        if resolved_confirmation is not None:
+            current_state = current_state.model_copy(
+                update={"wants_payment_request": resolved_confirmation}
+            )
     tool_context: _ToolContext = {
         "correlation_id": correlation_id,
         "conversation_id": conversation_id,

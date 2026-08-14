@@ -18,10 +18,14 @@ from src.agents.shared.language import Language
 
 
 class CommercialIntakeStatus(str, Enum):
-    """The commercial-intake state machine."""
+    """The commercial-intake state machine. CONFIRMING (PBI-14-03) sits between
+    COLLECTING_INFORMATION and READY_TO_REGISTER: a lead is no longer registered automatically
+    the instant the last required field is filled — the caller must explicitly confirm first
+    (CLAUDE.md §5, Human-in-the-Loop; PBI-14-03 section 11)."""
 
     NEW = "new"
     COLLECTING_INFORMATION = "collecting_information"
+    CONFIRMING = "confirming"
     READY_TO_REGISTER = "ready_to_register"
     REGISTERED = "registered"
 
@@ -38,6 +42,20 @@ class CommercialIntakeState(BaseModel):
     contact_phone: str | None = None
     insurance_need: str | None = None
     risk_description: str | None = None
+
+    # Qualification/intake context only (PBI-14-03 section 6) — never sent to
+    # LeadRegistrationTool, never used to price, quote, underwrite, or approve risk/coverage
+    # (CLAUDE.md §2). Populated only by the shared semantic-interpretation layer (there is no
+    # deterministic regex/keyword extractor for these), shown back to the caller in the
+    # pre-registration confirmation summary so they can correct a mis-heard value.
+    industry: str | None = None
+    location: str | None = None
+    insured_value: str | None = None
+
+    # Explicit pre-registration confirmation (PBI-14-03 section 11) — None until asked,
+    # True/False once the caller answers. Mirrors src.agents.claims.state.ClaimsIntakeState's
+    # own `confirmed` field.
+    confirmed: bool | None = None
 
     lead_reference: str | None = None
 

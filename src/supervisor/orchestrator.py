@@ -80,10 +80,27 @@ class SupervisorOrchestrator:
 
         intent = await self._intent_resolver.resolve(request.message)
         agent = self._resolve_agent(intent, context)
+        routing_source, routing_reason = _routing_diagnostics(intent, context, agent)
 
         agent_start = time.perf_counter()
         response = await agent.handle(request=request, context=context, on_react_event=on_react_event)
         agent_handle_ms = (time.perf_counter() - agent_start) * 1000
+        # PBI-14-03 section 20: real (never fabricated) routing telemetry for observability —
+        # this Supervisor is, and remains, entirely deterministic/keyword-based (ADR-0011); no
+        # LLM is ever involved in routing, so routing_source only ever distinguishes a direct
+        # keyword match from the existing conversation-continuity fallback below, never a
+        # "semantic routing" path that does not exist in this implementation. Set on the
+        # dedicated routing_diagnostics field (never `metadata`, which persists into the
+        # Conversation document) — see AgentResponse.routing_diagnostics's own docstring.
+        response = response.model_copy(
+            update={
+                "routing_diagnostics": {
+                    "routingConfidence": str(intent.confidence),
+                    "routingSource": routing_source,
+                    "routingReason": routing_reason,
+                }
+            }
+        )
 
         persist_start = time.perf_counter()
         await self._persist_turn(context=context, request=request, response=response)
@@ -157,3 +174,19 @@ class SupervisorOrchestrator:
             metadata=response.metadata,
             current_agent=response.agent,
         )
+
+
+def _routing_diagnostics(
+    intent: Intent, context: ConversationContext, agent: Agent
+) -> tuple[str, str]:
+    """(routing_source, routing_reason) for observability (PBI-14-03 section 20) — recomputed
+    independently from SupervisorOrchestrator._resolve_agent's own branching rather than
+    threading a side value out of it, so this can never drift from the actual routing decision
+    it describes. Both a real, honest description of what this fully deterministic Supervisor
+    just did — never a fabricated "semantic routing" value, since no LLM is ever involved in
+    routing (ADR-0011)."""
+    if intent.category != IntentCategory.UNKNOWN:
+        return "deterministic_keyword", f"keyword_match:{intent.category.value}"
+    if context.current_agent is not None:
+        return "conversation_continuity_fallback", f"continued_with:{agent.name}"
+    return "unresolved", "no_keyword_match"

@@ -62,7 +62,6 @@ from __future__ import annotations
 
 from src.agents.claims.state import ClaimsIntakeState, ClaimsIntakeStatus
 from src.agents.claims.workflow import advance_claims_intake
-from src.agents.shared.annotation import annotate_with_prompt_and_llm
 from src.agents.shared.language import LANGUAGE_METADATA_KEY, Language, resolve_language
 from src.agents.shared.memory import (
     GLOBAL_MEMORY_METADATA_KEY,
@@ -71,6 +70,8 @@ from src.agents.shared.memory import (
     save_memory,
     update_memory,
 )
+from src.agents.shared.semantic_interpreter import interpret_semantics
+from src.agents.shared.semantic_models import ClaimsSemanticInterpretation
 from src.agents.shared.state_persistence import carry_forward_other_agent_state, load_agent_state
 from src.agents.shared.summary import build_progress_summary
 from src.core.tool_calling.exceptions import ToolCallingError
@@ -230,6 +231,31 @@ class ClaimsAgent:
         if state.status == ClaimsIntakeStatus.NEW:
             state = _prefill_from_memory(state, memory)
 
+        # PBI-14-03: the ONE shared semantic interpretation call (repurposes what was previously
+        # annotate_with_prompt_and_llm's discarded-output call — LLM calls per turn are
+        # unchanged) runs before the deterministic state machine so its structured entities/
+        # confirmation can inform this turn's extraction and confirmation handling, never the
+        # reverse. Degrades to a safe, empty, zero-confidence interpretation on any failure —
+        # never blocks the deterministic business flow (CLAUDE.md §11).
+        semantic, diagnostics = await interpret_semantics(
+            schema_name="claims_semantic_interpretation",
+            schema_type=ClaimsSemanticInterpretation,
+            prompt_identifier="claims.system",
+            prompt_manager=self._prompt_manager,
+            llm_provider=self._llm_provider,
+            render_context=PromptRenderContext(
+                conversation_id=context.conversation_id,
+                user_id=request.user_id,
+                intent=IntentCategory.CLAIMS.value,
+                conversation_summary=context.summary,
+                agent_name=self.name,
+            ),
+            user_message=request.message,
+            correlation_id=request.correlation_id,
+            conversation_id=context.conversation_id,
+            user_id=request.user_id,
+        )
+
         try:
             state, notices = await advance_claims_intake(
                 state=state,
@@ -240,6 +266,7 @@ class ClaimsAgent:
                 conversation_id=context.conversation_id,
                 user_id=request.user_id,
                 workflow_provider=self._workflow_provider,
+                semantic=semantic,
             )
         except Exception:  # noqa: BLE001
             # Intentional broad catch: this is the boundary between the claims-intake state
@@ -282,28 +309,9 @@ class ClaimsAgent:
 
         response_text = " ".join(notices) if notices else _NO_NOTICE_FALLBACK[language]
         response_text = _maybe_add_progress_summary(state, response_text, language)
-        # PBI-04-04: the [prompt=...]/[llm=...] diagnostic is metadata-only now (technical
-        # detail end users must never see) — response_text itself is untouched by it.
-        diagnostics = await annotate_with_prompt_and_llm(
-            prompt_identifier="claims.system",
-            prompt_manager=self._prompt_manager,
-            llm_provider=self._llm_provider,
-            render_context=PromptRenderContext(
-                conversation_id=context.conversation_id,
-                user_id=request.user_id,
-                intent=IntentCategory.CLAIMS.value,
-                conversation_summary=context.summary,
-                tool_summaries=notices,
-                agent_name=self.name,
-                retrieved_knowledge=(
-                    [grounded_context.context_text] if grounded_context.context_text else []
-                ),
-            ),
-            user_message=request.message,
-            correlation_id=request.correlation_id,
-            conversation_id=context.conversation_id,
-            user_id=request.user_id,
-        )
+        # PBI-04-04: the [prompt=...]/[llm=...] diagnostic is metadata-only (technical detail
+        # end users must never see) — response_text itself is untouched by it. PBI-14-03: this
+        # diagnostic now comes from the semantic-interpretation call above, not a second call.
         grounded_response = self._grounder.build_response(response_text, grounded_context)
 
         tool_calling_response = await self._run_controlled_tool_calling(

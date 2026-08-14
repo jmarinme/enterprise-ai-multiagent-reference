@@ -127,6 +127,12 @@ async def post_chat(
 
     total_latency_ms = (time.perf_counter() - pipeline_start) * 1000
     try:
+        # PBI-14-03 section 20: real routing telemetry, set by SupervisorOrchestrator itself
+        # (never fabricated here) via the dedicated AgentResponse.routing_diagnostics field —
+        # observability-only, never persisted to the conversation store.
+        routing_diagnostics = agent_response.routing_diagnostics or {}
+        raw_confidence = routing_diagnostics.get("routingConfidence")
+        intent_confidence = float(raw_confidence) if raw_confidence is not None else None
         await observability.record_run(
             run_id=run_id,
             conversation_id=agent_response.conversation_id,
@@ -138,6 +144,8 @@ async def post_chat(
             detected_intent=agent_response.intent.value,
             agent_response=agent_response,
             react_events=react_events,
+            intent_confidence=intent_confidence,
+            routing_reason=routing_diagnostics.get("routingReason"),
         )
     except Exception:
         # already swallows its own failures, but this route must never fail the chat response

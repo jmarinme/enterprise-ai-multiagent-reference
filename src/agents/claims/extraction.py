@@ -73,12 +73,17 @@ _LOSS_TYPE_KEYWORDS: dict[str, str] = {
 # and re-prompts, rather than silently accepting bad data.
 _FREE_TEXT_FALLBACK_FIELDS = {"event_location", "loss_description", "customer_name", "loss_type"}
 _YES_NO_FIELDS = {
-    "injuries_reported", "third_parties_involved", "confirmed",
+    "injuries_reported", "third_parties_involved",
     # A caller may answer "¿El vehículo todavía puede circular?"/"¿Pueden permanecer en la
     # propiedad?" with a bare "sí"/"no" instead of a full explanatory phrase — the phrase-level
     # _detect_bool_phrase check above runs first and takes precedence when a richer phrase is
     # used; this is the fallback for a plain yes/no reply.
     "vehicle_drivable", "property_habitable",
+    # "confirmed" is deliberately NOT in this set (PBI-14-03): the pre-registration confirmation
+    # question is resolved by the shared src.agents.shared.confirmation.resolve_confirmation
+    # module instead (src.agents.claims.workflow.advance_claims_intake), which understands a
+    # much wider vocabulary ("sip", "va", "nel", "todavía no", ...) than this module's narrow
+    # _YES_WORDS/_NO_WORDS first-word check.
 }
 
 # "en Reforma", "at the mall" — captures everything after the connector up to the end of that
