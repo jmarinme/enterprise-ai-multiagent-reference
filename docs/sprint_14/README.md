@@ -123,6 +123,11 @@ deviation from the original task framing.
   `commit_sha`/`component`; Web build metadata via new Dockerfile ARG/ENV; a low-noise Sidebar
   version indicator with Web/API drift detection; `azure-pipelines.yml` now injects the same
   commit identity into both images and verifies it post-deploy (2 new Smoke Tests) — 2026-08-14.
+- PBI-14-08: Fixed a real production DEV incident (build #50 deployed `pending-first-build`
+  instead of the new image) — `InfrastructureDeploy` and `DeployDev` were unsequenced sibling
+  stages that both write the same Container Apps' image, so whichever finished last won;
+  `DeployDev` now depends on `InfrastructureDeploy` for ordering only (its result is never
+  checked, preserving "infra issues must never block DEV delivery") — 2026-08-14.
 
 ## Sprint validation
 
