@@ -138,3 +138,39 @@ WHEN the existing semantic call runs, not WHETHER the Supervisor "reasons").
    more detail" fallback (used when `alternative_intents` is empty, more than one candidate pair
    is present, or a candidate is `unknown`) covers every reachable case without over-building a
    templating system for combinations that cannot occur.
+
+## PBI-14-05 (`azure-pipelines.yml` delivery consistency — unrelated theme, see README.md)
+
+1. **The `apps/web`-changed diff check was kept, not deleted, inside `ContainerBuildAndPush`
+   (renamed output `webChanged` -> `webChangedInfoOnly`) — it just no longer gates anything.**
+   The driving task said "remove or bypass" the optimization for the main path; bypassing
+   (computing the same signal for `DeploymentSummary`'s informational "did apps/web literally
+   change" line, but never branching on it for build/push/deploy) was chosen over outright
+   deletion because the signal itself is harmless and mildly useful evidence in the summary
+   artifact — the actual defect was ONLY that it gated real delivery, not that the detection
+   existed. The variable was explicitly renamed (not just re-documented) specifically so a
+   future edit cannot accidentally re-wire the old `webChanged` name back into a conditional by
+   muscle memory — the new name states in the identifier itself that it must never gate
+   anything.
+
+2. **A new Smoke Tests step (deployed Web image-tag verification) was added rather than only
+   relying on `DeploymentSummary`'s own tag-consistency check.** The driving task's own
+   validation list (#3, "API and Web use the same BuildId + commit-SHA image tag") and its
+   explicit "do not weaken smoke tests" / "verify that both match the current pipeline imageTag"
+   instructions both point to Smoke Tests as the actual PASS/FAIL gate — `DeploymentSummary`
+   only publishes evidence and does not fail the pipeline on a mismatch by itself (it runs after
+   Smoke Tests and depends on it having succeeded). Putting the real gate in Smoke Tests (which
+   already fails the pipeline via `exit 1` + `set -e`) means a future Web-deploy regression is
+   caught before the pipeline reports success, not merely noted afterward.
+
+3. **This sandbox cannot execute a real Azure DevOps pipeline run.** Validation for this PBI is
+   therefore: (a) YAML syntax parsed successfully (`python -c "import yaml; yaml.safe_load(...)"`,
+   11 stages enumerated, matching the pre-change stage count exactly); (b) a line-by-line
+   structural diff review confirming every hunk falls strictly within
+   `ContainerBuildAndPush`/`DeployDev`/`SmokeTests`/`DeploymentSummary` (main-deploy-only
+   stages) and never touches `ContainerBuildValidation`, `BackendQuality`, `FrontendQuality`,
+   `SecurityScan`, `InfrastructureValidation`, or `InfrastructureDeploy`; (c) an explicit
+   citation, per required-validation item, of exactly which lines implement it — see
+   `validation.md`. This is disclosed as a real, unavoidable limitation, not silently assumed
+   away — an actual pipeline run against Azure DevOps remains the only way to observe this
+   change's real-world behavior end to end.

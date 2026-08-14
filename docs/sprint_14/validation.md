@@ -123,3 +123,95 @@ constructor-argument updates above, which are call-site adaptations, not behavio
   "live-like local validation" note in the final PBI-14-04 report.
 - Cosmos DB, Azure deployment, `docker build` — same reasons as PBI-14-03 above; nothing new in
   this PBI changed that boundary.
+
+## PBI-14-05 — `azure-pipelines.yml` delivery consistency
+
+This sandbox has no Azure DevOps project connection and cannot execute a real pipeline run
+(see `decisions.md` item 3). Validation is therefore YAML-syntax verification plus a
+line-cited structural walkthrough proving each of the 6 required-validation items, run against
+the actual committed file content.
+
+### YAML syntax
+
+```
+$ python -c "import yaml; yaml.safe_load(open('azure-pipelines.yml', encoding='utf-8'))"
+YAML parsed OK — 11 stages (unchanged count from before this PBI):
+BackendQuality, FrontendQuality, SecurityScan, InfrastructureValidation, InfrastructureDeploy,
+ContainerBuildValidation, ContainerBuildAndPush, DeployDev, SmokeTests, DeploymentSummary,
+ArtifactPublication
+```
+
+### 1. On a main deploy run, Web build executes even when apps/web did not change
+
+`ContainerBuildAndPush` (`azure-pipelines.yml:753`, `condition: eq(variables.isDeployRun, true)`
+— main only) builds the Web image at line 840
+(`echo "=== Building Web image (always; context apps/web, ...)"` immediately followed by
+`docker build ... apps/web`) with NO `if` guard around it — the previous
+`if [ "$(detectWebChange.webChanged)" = "true" ]` conditional was removed. The
+`detectWebChange` step (lines ~793-810) still computes the diff, but its output
+(`webChangedInfoOnly`) is consumed ONLY by `DeploymentSummary` for reporting, never by any
+build/push/deploy step.
+
+### 2. On a main deploy run, Web deploy executes even when apps/web did not change
+
+`DeployDev` (`azure-pipelines.yml:869`, same `isDeployRun` condition) runs
+`az containerapp update --name "$WEB_APP_NAME" ...` at line ~900-901 with NO `if` guard —
+the previous `if [ "$(webChanged)" = "true" ]` conditional, and the stage's own `webChanged`
+variable declaration that read it from `ContainerBuildAndPush`'s output, were both removed.
+
+### 3. API and Web use the same BuildId + commit-SHA image tag
+
+`imageTag: 'dev-$(Build.BuildId)-$(Build.SourceVersion)'` (`azure-pipelines.yml:186`) is a
+single pipeline-level variable, evaluated once per run. Both the API build
+(`-t "$ACR_LOGIN_SERVER/$(apiImageName):$(imageTag)"`) and the Web build
+(`-t "$ACR_LOGIN_SERVER/$(webImageName):$(imageTag)"`) reference this exact same variable
+inside the SAME `AzureCLI@2` inline script in `ContainerBuildAndPush` — they cannot diverge
+within one run. `DeployDev` and the new Smoke Tests step both re-derive
+`$(apiImageName):$(imageTag)` / `$(webImageName):$(imageTag)` the same way and compare them
+against each Container App's actual deployed `properties.template.containers[0].image` —
+Smoke Tests 1/5 and 2/5 (`azure-pipelines.yml:953`, `:973`) fail the pipeline (`exit 1`) on any
+mismatch.
+
+### 4. PR validation still does not deploy anything
+
+`ContainerBuildValidation` (`azure-pipelines.yml:665`,
+`condition: ne(variables.isDeployRun, true)`) contains no `AzureCLI@2` task, no
+`azureSubscription`, and no `docker push` — only two plain `docker build ... ` steps whose
+images are discarded when the job ends (confirmed unchanged: zero diff hunks fall inside this
+stage's line range). `isDeployRun` (`azure-pipelines.yml:187`) is only `true` when
+`Build.SourceBranch == refs/heads/main`; a PR's source branch is never `refs/heads/main`, so
+`ContainerBuildAndPush`, `InfrastructureDeploy`, `DeployDev`, `SmokeTests`, and
+`DeploymentSummary` (all `condition: eq(variables.isDeployRun, true)`) never run on a PR run,
+exactly as before this PBI.
+
+### 5. No Azure resources are recreated
+
+`InfrastructureDeploy` (`azure-pipelines.yml:593`) — the ONLY stage that runs
+`az deployment group create`/`validate` — has zero diff hunks (confirmed: every hunk in this
+PBI's diff starts at old-line 736 or later, and `InfrastructureDeploy` ends at line 650 in the
+pre-change file). `DeployDev`'s only Azure-mutating call is
+`az containerapp update --image ...` (image reference only — `azure-pipelines.yml:882`'s own
+comment: "image only, no infra recreation"), unchanged in kind from before this PBI, now simply
+called unconditionally for both apps instead of conditionally for Web.
+
+### 6. Existing quality/security/build gates remain intact
+
+`BackendQuality` (line 196), `FrontendQuality` (line 296), `SecurityScan` (line 376),
+`InfrastructureValidation` (line 535), and `ContainerBuildValidation` (line 665) all have zero
+diff hunks — confirmed via `git diff -- azure-pipelines.yml | grep '^@@'`, every hunk's starting
+line falls at 736 or later, strictly after all five of these stages end in the pre-change file.
+`ContainerBuildAndPush`/`DeployDev`/`SmokeTests`/`DeploymentSummary` still `dependsOn` the same
+upstream stages as before (`BackendQuality`/`FrontendQuality`/`SecurityScan` for
+`ContainerBuildAndPush`; `ContainerBuildAndPush`/`InfrastructureValidation` for `DeployDev`) —
+none of those `dependsOn` lists were touched.
+
+### Not run (and why)
+
+- A real Azure DevOps pipeline execution — no Azure DevOps project/service connection is
+  reachable from this sandbox (see `decisions.md` item 3). The structural evidence above is a
+  faithful, line-cited substitute, not a substitute for an actual run confirming DEV's Web
+  Container App ends up on the correct image — that confirmation can only come from the next
+  real `main` pipeline run once this change is merged.
+- `apps/web/vite.config.ts` — deliberately not modified, and not re-tested, per the explicit
+  instruction not to touch it absent contradicting evidence (none was found — see this file's
+  PBI-14-05 root-cause section in `README.md`).

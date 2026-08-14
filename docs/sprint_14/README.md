@@ -142,3 +142,32 @@ deterministic after this PBI as before it, just fed richer, pre-computed input. 
 backward-compatible design (each specialist agent still calls `interpret_semantics` itself when
 no `turn_interpretation` is supplied) meant every existing PBI-14-03 test — including all three
 conversational regression scenarios — kept passing completely unmodified.
+
+## PBI-14-05 (addendum — CI/CD delivery consistency, not multi-agent semantic intelligence)
+
+Tracked here only because of its assigned PBI number (Sprint 14, item 5) — its actual subject
+is `azure-pipelines.yml` delivery consistency, unrelated to this sprint's own semantic-
+intelligence objective above. See `decisions.md` and `validation.md` for the full PBI-14-05
+write-up.
+
+**Problem:** DEV's Web Container App repeatedly served a stale frontend (most visibly, a Vite
+"Blocked request" error `apps/web/vite.config.ts` had already fixed on `main`) because
+`ContainerBuildAndPush`/`DeployDev` only built/pushed/deployed the Web image when `apps/web`
+changed in the triggering commit's own diff against its immediate parent — a CI-minutes
+optimization that was correctly scoped for `ContainerBuildValidation` (PR builds, which never
+deploy anything) but incorrectly ALSO gated the real DEV deployment path, so any main push
+whose own commit didn't happen to touch `apps/web` left DEV's Web app on whatever image a
+previous run had built — silently drifting behind `main`.
+
+**Fix:** `ContainerBuildAndPush` and `DeployDev` (both main-deploy-only stages) now always
+build, push, and deploy BOTH images, unconditionally, every deploy run — both tagged with the
+exact same `$(imageTag)` (`dev-$(Build.BuildId)-$(Build.SourceVersion)`, unchanged). The
+`apps/web`-changed diff check is kept ONLY inside `ContainerBuildValidation` (the PR-only,
+never-deploys validation path), where it still saves CI minutes without any risk of DEV drift.
+Smoke Tests gained a Web deployed-image-tag verification step (mirroring the pre-existing API
+one) — exactly the check that would have caught this class of drift had it existed before.
+
+**Explicitly not touched:** `apps/web/vite.config.ts` (already correct — its own PBI-08-02
+comment already documented this exact root cause from a prior occurrence), Entra ID, Azure
+resource definitions/topology, `InfrastructureDeploy`'s `az deployment group create` path,
+`BackendQuality`/`FrontendQuality`/`SecurityScan`/`InfrastructureValidation` gates.
