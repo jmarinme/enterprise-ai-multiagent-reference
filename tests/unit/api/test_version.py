@@ -1,8 +1,9 @@
 """Unit tests for GET /version."""
 
-from config.settings import Settings, get_settings
 from fastapi.testclient import TestClient
 from main import app
+
+from config.settings import Settings, get_settings
 
 client = TestClient(app)
 
