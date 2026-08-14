@@ -258,3 +258,57 @@ PBI-14-04/14-05 both carried. See `validation.md` for the full evidence.
    Entra `access_as_user` flow"). Reported here as a disclosed finding for a future PBI, not
    silently fixed or silently ignored.
 
+## PBI-14-08 (DeployDev / InfrastructureDeploy race condition — unrelated theme, see README.md)
+
+**Root cause.** `InfrastructureDeploy` (stage 4b) and `DeployDev` (stage 5) were unsequenced
+sibling stages — both `dependsOn: [InfrastructureValidation]` only, with no ordering relationship
+to each other. `ops/bicep/parameters/dev.bicepparam` hardcodes `apiImageTag`/`webImageTag =
+'pending-first-build'` (the original bootstrap placeholder, never updated to track the real
+running image), and `ops/bicep/modules/container-app.bicep` declares each Container App as a
+full, non-`existing` resource whose `image` is bound directly to that parameter. Every
+`az deployment group create` run therefore resets both Container Apps back to
+`pending-first-build`, regardless of what `DeployDev`'s own `az containerapp update` had just
+set — whichever of the two stages happened to finish last determined the actual deployed image.
+
+**Why `pending-first-build` reappeared.** This was scheduling luck, not a deterministic bug,
+which is why it went undetected until build #50. Verified via the Azure DevOps Timeline REST API
+for two real builds:
+
+- Build #46 (`ad67be6`): stage 4b finished at `16:59:14Z`, stage 5 started `16:59:20Z` and
+  finished `17:00:21Z` — `DeployDev` ran *after* Bicep's reset, so its update "won"; the correct
+  image was live (this is the run PBI-14-06's own investigation happened to observe).
+- Build #50 (`321ce9f`): stage 5 finished at `23:14:37Z`, stage 4b ran `23:14:42Z`–`23:17:50Z` —
+  `InfrastructureDeploy` finished *after* `DeployDev`, silently reverting both Container Apps
+  (new revisions `ca-tmxap-dev-api--0000037` / `ca-tmxap-dev-web--0000019`, both
+  `tmx-*:pending-first-build`, both at 100% traffic under `activeRevisionsMode: Single`) — caught
+  by Smoke Test 1/7 at `23:18:25Z`.
+
+`DeployDev`'s own step log for build #50 was independently confirmed correct at the time it ran
+(`az containerapp update` for both apps succeeded, `provisioningState: Succeeded`, revisions
+`ca-tmxap-dev-api--0000036` / `ca-tmxap-dev-web--0000018` with the correct
+`dev-50-321ce9fe...` images) — it never "falsely reported success"; the corruption happened
+entirely from the later, un-sequenced `InfrastructureDeploy` run. Both `dev-50-321ce9fe...`
+images were independently confirmed present in ACR throughout, proving `ContainerBuildAndPush`
+was never implicated.
+
+**Fix.** `DeployDev` now lists `InfrastructureDeploy` in its `dependsOn`, forcing Azure DevOps to
+wait for it to reach a terminal state before `DeployDev` starts — its own image update now always
+runs last and always wins, deterministically. `InfrastructureDeploy`'s result is deliberately
+**not** checked in `DeployDev`'s condition (explicit `in(dependencies.<X>.result, 'Succeeded')`
+checks replace the previous bare `succeeded()`, which would otherwise have started requiring
+`InfrastructureDeploy` to succeed too, the moment it appeared in `dependsOn`) — mirroring the
+identical, already-established pattern `DeploymentSummary` uses for the same dependency. This
+preserves the pipeline's own explicit, pre-existing design principle: an infrastructure-only
+issue (e.g. the documented Function App quota block) must never block DEV API/Web delivery.
+
+**Why Bicep was intentionally not changed.** The driving task scoped this as a surgical CI/CD
+sequencing fix only — `ops/bicep/modules/container-app.bicep` and
+`ops/bicep/parameters/dev.bicepparam` were explicitly out of scope. Sequencing `DeployDev` strictly
+after `InfrastructureDeploy` fully closes the observed defect (the two writers can no longer race,
+so the deploy-time writer always applies last) without touching infrastructure-as-code at all — the
+smallest change that eliminates the actual failure mode. The underlying Bicep design (a hardcoded
+placeholder image parameter on a non-`existing` resource) remains a real, if now
+sequencing-neutralized, architectural sharp edge; a future PBI could still consider parameterizing
+`dev.bicepparam`'s image tags dynamically or referencing the Container Apps as `existing` post-
+bootstrap, but neither is required to close this specific defect.
+

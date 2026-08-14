@@ -886,7 +886,35 @@ stages:
     dependsOn:
       - ContainerBuildAndPush
       - InfrastructureValidation
-    condition: and(succeeded(), eq(variables.isDeployRun, true))
+      # InfrastructureDeploy (PBI-14-08): sequencing-only dependency, deliberately NOT gated on
+      # in the condition below. ops/bicep/parameters/dev.bicepparam hardcodes
+      # apiImageTag/webImageTag='pending-first-build', and ops/bicep/modules/container-app.bicep
+      # declares the Container Apps as full (non-`existing`) resources whose image is bound
+      # directly to that parameter — so every `az deployment group create` run resets both
+      # Container Apps back to that placeholder. Before this dependsOn entry,
+      # InfrastructureDeploy and DeployDev were unsequenced siblings of InfrastructureValidation,
+      # so their relative finish order was scheduler-dependent: build #50's real pipeline run
+      # (dev-50-321ce9f...) proved InfrastructureDeploy can finish AFTER DeployDev, silently
+      # reverting the just-correctly-deployed image back to pending-first-build (confirmed via
+      # Azure DevOps Timeline API: stage 5 finished at 23:14:37Z, stage 4b at 23:17:50Z, then
+      # Smoke Tests caught the drift at 23:18:25Z) — see docs/sprint_14/decisions.md (PBI-14-08).
+      # Listing it here forces Azure DevOps to wait for InfrastructureDeploy to reach a terminal
+      # state before DeployDev starts, so DeployDev's own image update always runs last and
+      # always wins, deterministically, regardless of scheduling order.
+      - InfrastructureDeploy
+    # PBI-14-08: explicit per-dependency checks, not bare succeeded() — succeeded() would also
+    # start requiring InfrastructureDeploy's OWN result now that it's listed above, which would
+    # reintroduce exactly the "infra issues block DEV delivery" problem this stage's original
+    # design (see the stage-level comment block above) explicitly rejects. InfrastructureDeploy's
+    # result (succeeded / partial-quota-blocked / failed) is intentionally never checked here —
+    # mirrors the identical, already-established pattern DeploymentSummary uses for the same
+    # dependency below.
+    condition: >
+      and(
+        eq(variables.isDeployRun, true),
+        in(dependencies.ContainerBuildAndPush.result, 'Succeeded'),
+        in(dependencies.InfrastructureValidation.result, 'Succeeded')
+      )
     jobs:
       - job: DeployDevJob
         displayName: Update DEV Container App revisions

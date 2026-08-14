@@ -317,3 +317,36 @@ for the full writeup.
   disclosed auth boundaries (see Section 8 above), neither of which this PBI is authorized to
   work around (would require either an IAM grant or touching authentication, both out of scope).
 
+## PBI-14-08 (DeployDev / InfrastructureDeploy race condition)
+
+Unlike prior PBIs in this sprint, this diagnosis was backed by a REAL Azure DevOps pipeline
+execution — the `azure-devops` `az` CLI extension successfully queried the actual build #50
+timeline and step logs (previously listed as "Not run (and why)" in earlier PBIs of this sprint;
+this access was exercised for the first time here).
+
+| Check | Command | Result |
+|---|---|---|
+| Real build timeline (stage start/finish) | `az devops invoke --area build --resource Timeline --route-parameters buildId=50 ...` | Confirmed: stage 5 (DeployDev) finished `23:14:37Z`, stage 4b (InfrastructureDeploy) finished `23:17:50Z` — 4b after 5 |
+| Cross-check against a known-good run | same query, `buildId=46` | Confirmed opposite ordering (4b finished `16:59:14Z`, before 5's `17:00:21Z`) — proves the race is real and non-deterministic, not a new deterministic regression |
+| DeployDev's own step log | `az devops invoke --area build --resource Logs --route-parameters buildId=50 logId=94 ...` | Confirmed both `az containerapp update` calls succeeded with the correct `dev-50-321ce9fe...` images at the time they ran |
+| Live Azure state (API) | `az containerapp show --name ca-tmxap-dev-api ...` | `pending-first-build`, revision `--0000037`, created `23:17:22Z` (inside 4b's window) |
+| Live Azure state (Web) | `az containerapp show --name ca-tmxap-dev-web ...` | `pending-first-build`, revision `--0000019`, created `23:16:02Z` |
+| ACR contents | `az acr repository show-tags --name acrtmxapdevl3fgxt --repository tmx-api/tmx-web` | Both `dev-50-321ce9fe...` tags present — confirms build/push was never at fault |
+| `ops/bicep/parameters/dev.bicepparam` | `grep pending-first-build ops/bicep/parameters/*.bicepparam` | `apiImageTag`/`webImageTag = 'pending-first-build'` confirmed hardcoded |
+| `ops/bicep/modules/container-app.bicep` | manual read | `resource containerApp ... = {...}` (full, non-`existing` declaration), `image: '${...}/${imageName}:${imageTag}'` bound directly to the hardcoded parameter |
+
+### After the fix
+
+| Check | Command | Result |
+|---|---|---|
+| YAML parses | `python -c "import yaml; yaml.safe_load(open('azure-pipelines.yml'))"` | Parsed OK, **11 stages** — identical count to the pre-change file |
+| `DeployDev.dependsOn` includes `InfrastructureDeploy` | same script, inspect `dependsOn` | `['ContainerBuildAndPush', 'InfrastructureValidation', 'InfrastructureDeploy']` |
+| `DeployDev.condition` never checks `InfrastructureDeploy`'s result | same script, inspect `condition` | Explicit `in(dependencies.ContainerBuildAndPush.result, 'Succeeded')` / `in(dependencies.InfrastructureValidation.result, 'Succeeded')` checks only — no reference to `InfrastructureDeploy` |
+| `git diff --stat` | `git diff --stat` | `azure-pipelines.yml` — single hunk, 29 insertions/1 deletion, strictly inside `DeployDev`'s own block |
+| Nothing else touched | `git status --short ops/bicep/ src/ apps/` | Empty — zero Bicep or application code changes |
+
+### Not run (and why)
+
+- A real Azure DevOps pipeline execution of THIS fix — per explicit instruction, this PBI does
+  not deploy; the fix's real-world effect can only be confirmed on the next actual `main` run.
+
