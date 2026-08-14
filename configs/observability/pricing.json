@@ -1,0 +1,5 @@
+{
+  "catalogVersion": "2026-08-12.0-unconfigured",
+  "notes": "No verified price entries have been added yet. This file ships empty deliberately: this repository has no confirmed, current Azure OpenAI price list for any deployed model, and PBI-13-01 requires unknown pricing to display 'Unavailable' rather than a fabricated figure. Add one entry per model/deployment with a real, dated price from https://azure.microsoft.com/pricing/details/cognitive-services/openai-service/ (or your negotiated enterprise rate) before cost figures will populate. See docs/Architecture/observability.md for the exact schema and an example entry.",
+  "entries": []
+}

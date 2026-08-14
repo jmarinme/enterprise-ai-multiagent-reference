@@ -17,6 +17,14 @@ param cosmosContainerName = 'conversations'
 param cosmosConsistencyLevel = 'Session'
 param cosmosCapacityMode = 'Serverless'
 param cosmosConversationTtlSeconds = -1
+// PBI-13-01: the observability_runs container is provisioned unconditionally (harmless, no
+// cost beyond its own on-demand serverless RU usage), but observabilityStoreProvider stays
+// in_memory here deliberately — this exact Cosmos observability path has not yet been
+// validated against a real deployed Azure Cosmos account; flip to 'cosmos' only after that
+// validation, as its own documented decision (see docs/Architecture/adr/0012-observability-
+// persistence-model.md and docs/sprint_13/decisions.md).
+param observabilityRunsContainerName = 'observability_runs'
+param observabilityStoreProvider = 'in_memory'
 
 param aiSearchSkuName = 'free'
 param aiSearchIndexName = 'tmxap-knowledge-index'

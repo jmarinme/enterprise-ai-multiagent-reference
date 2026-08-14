@@ -49,6 +49,7 @@ from src.agents.shared.state_persistence import carry_forward_other_agent_state,
 from src.core.tool_calling.exceptions import ToolCallingError
 from src.core.tool_calling.models import (
     DEFAULT_MAX_TOOL_CALL_ITERATIONS,
+    ReActEventSink,
     ToolCallingContext,
     ToolCallingResponse,
 )
@@ -112,7 +113,12 @@ class CommercialIntakeAgent:
         self._tool_calling_orchestrator = tool_calling_orchestrator
         self._tool_calling_max_iterations = tool_calling_max_iterations
 
-    async def handle(self, request: AgentRequest, context: ConversationContext) -> AgentResponse:
+    async def handle(
+        self,
+        request: AgentRequest,
+        context: ConversationContext,
+        on_react_event: ReActEventSink | None = None,
+    ) -> AgentResponse:
         state = load_agent_state(context.metadata, _STATE_METADATA_KEY, CommercialIntakeState)
         # PBI-09-01 final validation: see claims_agent.py's identical rationale — a domain
         # re-entry message must never be blindly attributed to a stale last-asked question.
@@ -185,7 +191,9 @@ class CommercialIntakeAgent:
             user_id=request.user_id,
         )
 
-        tool_calling_response = await self._run_controlled_tool_calling(request, context)
+        tool_calling_response = await self._run_controlled_tool_calling(
+            request, context, on_react_event
+        )
 
         return AgentResponse(
             conversation_id=context.conversation_id,
@@ -200,10 +208,15 @@ class CommercialIntakeAgent:
                 "diagnostics": diagnostics,
             },
             tool_calls=tool_calling_response.tool_calls,
+            model=tool_calling_response.model,
+            token_usage=tool_calling_response.usage,
         )
 
     async def _run_controlled_tool_calling(
-        self, request: AgentRequest, context: ConversationContext
+        self,
+        request: AgentRequest,
+        context: ConversationContext,
+        on_react_event: ReActEventSink | None = None,
     ) -> ToolCallingResponse:
         """Additive, isolated ReAct proof that the LLM can request one of this Agent's
         allow-listed Tools through ToolCallingOrchestrator (PBI-12-04, generalizing PBI-02-04's
@@ -239,6 +252,7 @@ class CommercialIntakeAgent:
                     user_id=request.user_id,
                     max_iterations=self._tool_calling_max_iterations,
                 ),
+                on_event=on_react_event,
             )
         except ToolCallingError:
             return ToolCallingResponse(text="", iterations=0)

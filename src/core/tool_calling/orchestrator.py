@@ -23,10 +23,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any
 
 from src.core.tool_calling.exceptions import ToolCallingError
-from src.core.tool_calling.models import ToolCallingContext, ToolCallingResponse, ToolCallResult
+from src.core.tool_calling.models import (
+    LLMUsageTotal,
+    ReActEvent,
+    ReActEventSink,
+    ToolCallingContext,
+    ToolCallingResponse,
+    ToolCallResult,
+)
 from src.llm.models import (
     LLMGenerationSettings,
     LLMMessage,
@@ -89,18 +97,35 @@ class ToolCallingOrchestrator:
         messages: list[LLMMessage],
         context: ToolCallingContext,
         settings: LLMGenerationSettings | None = None,
+        on_event: ReActEventSink | None = None,
     ) -> ToolCallingResponse:
         """Runs the controlled LLM<->Tool loop (this platform's ReAct implementation — see this
         module's own docstring) and returns the final response. Never raises for an
         unauthorized/unknown/duplicate/failed tool call (all represented as typed
         ToolCallResult data) or for a timed-out/max-iterations-exceeded loop (represented as
         typed ToolCallingResponse flags) — only ToolCallingError for genuine misconfiguration
-        (see build_tool_definitions)."""
+        (see build_tool_definitions).
+
+        on_event (PBI-13-01, optional, default None — every prior caller's behavior is
+        unchanged): a best-effort observability hook. Exceptions it raises are swallowed, never
+        propagated — see _emit."""
         tool_definitions = self.build_tool_definitions(context.allowed_tools)
         generation_settings = settings or LLMGenerationSettings()
         conversation: list[LLMMessage] = list(messages)
         all_results: list[ToolCallResult] = []
         llm_response_text = ""
+        usage_total = LLMUsageTotal()
+        last_model: str | None = None
+
+        def _emit(event: ReActEvent) -> None:
+            if on_event is None:
+                return
+            try:
+                on_event(event)
+            except Exception:  # noqa: BLE001, S110 — a raising observer must never break the
+                # loop; no logger is threaded into this reusable src/ module (see class
+                # docstring's dependency-direction rule), so there is nothing safe to log here.
+                pass
         # PBI-12-04: bounds duplicate tool-call requests (same tool + same arguments, seen
         # anywhere earlier in this single run() invocation) — a real risk for a ReAct loop that
         # a max_iterations cap alone does not address (a misbehaving LLM could otherwise spend
@@ -111,27 +136,43 @@ class ToolCallingOrchestrator:
         seen_call_signatures: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
 
         for iteration in range(1, context.max_iterations + 1):
+            _emit(ReActEvent(event_type="reasoning_iteration_started", iteration=iteration))
             try:
                 llm_response = await self._generate(
                     conversation, tool_definitions, generation_settings, context
                 )
             except TimeoutError:
+                _emit(ReActEvent(event_type="stopped_timeout", iteration=iteration))
                 return ToolCallingResponse(
                     text=llm_response_text,
                     tool_calls=all_results,
                     iterations=iteration - 1,
                     stopped_due_to_max_iterations=False,
                     stopped_due_to_timeout=True,
+                    model=last_model,
+                    usage=usage_total,
                 )
             llm_response_text = llm_response.text
+            last_model = llm_response.model
+            usage_total = LLMUsageTotal(
+                prompt_tokens=usage_total.prompt_tokens + llm_response.usage.prompt_tokens,
+                completion_tokens=(
+                    usage_total.completion_tokens + llm_response.usage.completion_tokens
+                ),
+                total_tokens=usage_total.total_tokens + llm_response.usage.total_tokens,
+            )
 
             if not llm_response.tool_calls:
+                _emit(ReActEvent(event_type="final_answer_reached", iteration=iteration))
                 return ToolCallingResponse(
                     text=llm_response_text,
                     tool_calls=all_results,
                     iterations=iteration,
                     stopped_due_to_max_iterations=False,
+                    model=last_model,
+                    usage=usage_total,
                 )
+            _emit(ReActEvent(event_type="tool_required", iteration=iteration))
 
             # PBI-04-03: the model's own tool-calling request must be persisted as an
             # ASSISTANT message *before* the TOOL result message(s) that answer it — per the
@@ -153,7 +194,13 @@ class ToolCallingOrchestrator:
             )
 
             for call in llm_response.tool_calls:
+                _emit(
+                    ReActEvent(
+                        event_type="tool_selected", iteration=iteration, tool_name=call.tool_name
+                    )
+                )
                 signature = _call_signature(call)
+                call_start = time.perf_counter()
                 if signature in seen_call_signatures:
                     result = ToolCallResult(
                         call_id=call.call_id,
@@ -168,6 +215,16 @@ class ToolCallingOrchestrator:
                 else:
                     seen_call_signatures.add(signature)
                     result = await self._execute_tool_call(call, context)
+                call_latency_ms = (time.perf_counter() - call_start) * 1000
+                _emit(
+                    ReActEvent(
+                        event_type="tool_executed",
+                        iteration=iteration,
+                        tool_name=call.tool_name,
+                        success=result.success,
+                        latency_ms=round(call_latency_ms, 1),
+                    )
+                )
                 all_results.append(result)
                 conversation.append(
                     LLMMessage(
@@ -177,11 +234,16 @@ class ToolCallingOrchestrator:
                     )
                 )
 
+        _emit(
+            ReActEvent(event_type="stopped_max_iterations", iteration=context.max_iterations)
+        )
         return ToolCallingResponse(
             text=llm_response_text,
             tool_calls=all_results,
             iterations=context.max_iterations,
             stopped_due_to_max_iterations=True,
+            model=last_model,
+            usage=usage_total,
         )
 
     async def _generate(

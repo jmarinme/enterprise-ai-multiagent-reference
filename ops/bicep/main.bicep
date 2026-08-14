@@ -68,6 +68,13 @@ param cosmosDatabaseName string = '${projectName}-conversation-db'
 @description('Conversation container name.')
 param cosmosContainerName string = 'conversations'
 
+@description('Business/agentic observability run-telemetry container name (PBI-13-01) — distinct from cosmosContainerName, never holds chat message content.')
+param observabilityRunsContainerName string = 'observability_runs'
+
+@description('Selects the ObservabilityRepository backend. in_memory (default) requires no Cosmos DB connectivity; cosmos activates the observability_runs container above.')
+@allowed(['in_memory', 'cosmos'])
+param observabilityStoreProvider string = 'in_memory'
+
 @description('Cosmos DB consistency level.')
 @allowed(['Eventual', 'ConsistentPrefix', 'Session', 'BoundedStaleness', 'Strong'])
 param cosmosConsistencyLevel string = 'Session'
@@ -339,6 +346,7 @@ module cosmosDb 'modules/cosmos-db.bicep' = {
     capacityMode: cosmosCapacityMode
     throughput: cosmosThroughput
     conversationTtlSeconds: cosmosConversationTtlSeconds
+    observabilityRunsContainerName: observabilityRunsContainerName
     dataContributorPrincipalId: managedIdentity.outputs.principalId
     enablePublicNetworkAccess: !enablePrivateNetworking
   }
@@ -603,6 +611,12 @@ module apiContainerApp 'modules/container-app.bicep' = {
       { name: 'COSMOS_DB_ENDPOINT', value: cosmosDb.outputs.documentEndpoint }
       { name: 'COSMOS_DB_DATABASE', value: cosmosDb.outputs.databaseName }
       { name: 'COSMOS_DB_CONTAINER', value: cosmosDb.outputs.containerName }
+      // PBI-13-01: business/agentic observability. OBSERVABILITY_STORE_PROVIDER defaults to
+      // in_memory (see the param's own description) — flipping it to 'cosmos' is a config-only
+      // change once this DEV environment operator has confirmed the observability_runs
+      // container's cost/retention posture; it is never flipped automatically by this template.
+      { name: 'OBSERVABILITY_STORE_PROVIDER', value: observabilityStoreProvider }
+      { name: 'OBSERVABILITY_RUNS_CONTAINER', value: cosmosDb.outputs.observabilityRunsContainerName }
       // PBI-06-01: Claims Tool Layer / Durable Functions Workflow Engine provider selection.
       // PBI-08-01A: the Function App is now only provisioned when deployServerlessToolLayer is
       // true (see that param's description) — AZURE_FUNCTIONS_BASE_URL/DURABLE_FUNCTIONS_BASE_URL
@@ -720,6 +734,7 @@ output cosmosAccountName string = cosmosDb.outputs.accountName
 output cosmosDocumentEndpoint string = cosmosDb.outputs.documentEndpoint
 output cosmosDatabaseName string = cosmosDb.outputs.databaseName
 output cosmosContainerName string = cosmosDb.outputs.containerName
+output observabilityRunsContainerName string = cosmosDb.outputs.observabilityRunsContainerName
 output cosmosAccountId string = cosmosDb.outputs.accountId
 
 output aiSearchName string = aiSearch.outputs.name

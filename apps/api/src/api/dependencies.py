@@ -25,15 +25,19 @@ from src.core.workflow_provider.factory import (
 )
 from src.core.workflow_provider.protocol import ClaimsWorkflowProvider
 from src.domain.conversation_repository import ConversationRepository
+from src.domain.observability_repository import ObservabilityRepository
 from src.domain.secret_provider import SecretProvider
 from src.llm.factory import get_llm_provider as build_llm_provider
 from src.llm.provider import LLMProvider
+from src.observability.pricing import PricingCatalog
+from src.observability.service import ObservabilityService
 from src.prompts.filesystem_provider import FileSystemPromptProvider
 from src.prompts.manager import PromptManager
 from src.rag.factory import get_knowledge_provider as build_knowledge_provider
 from src.rag.grounder import Grounder
 from src.rag.retriever import KnowledgeRetriever
 from src.services.conversation_store.factory import get_conversation_repository
+from src.services.observability_store.factory import get_observability_repository
 from src.services.secret_store.factory import get_secret_provider as build_secret_provider
 from src.services.tools.adjuster_assignment_tool import AdjusterAssignmentTool
 from src.services.tools.broker_account_lookup_tool import BrokerAccountLookupTool
@@ -61,6 +65,8 @@ from src.config.settings import (
     ConversationStoreSettings,
     KnowledgeSettings,
     LLMSettings,
+    ObservabilitySettings,
+    ObservabilityStoreSettings,
     SecretProviderSettings,
     ToolCallingSettings,
     ToolProviderSettings,
@@ -230,6 +236,33 @@ def get_conversation_repository_dep() -> ConversationRepository:
     history endpoints reuse this exact instance — never a second, competing repository).
     """
     return get_conversation_repository(ConversationStoreSettings())
+
+
+@lru_cache
+def get_observability_repository_dep() -> ObservabilityRepository:
+    """Build and cache the process-wide ObservabilityRepository (PBI-13-01), mirroring
+    get_conversation_repository_dep() exactly — a distinct repository/container from the
+    conversation store, never touching the `conversations` container."""
+    return get_observability_repository(ObservabilityStoreSettings())
+
+
+@lru_cache
+def get_pricing_catalog() -> PricingCatalog:
+    """Build and cache the process-wide PricingCatalog (PBI-13-01 §15), loaded once from
+    ObservabilitySettings.observability_price_catalog_path — never hardcoded prices in Python
+    or React."""
+    return PricingCatalog(ObservabilitySettings().observability_price_catalog_path)
+
+
+@lru_cache
+def get_observability_service() -> ObservabilityService:
+    """Build and cache the process-wide ObservabilityService (PBI-13-01) — the single shared
+    abstraction every observability call site (chat.py, observability.py routes) depends on,
+    never a repository directly."""
+    return ObservabilityService(
+        repository=get_observability_repository_dep(),
+        pricing_catalog=get_pricing_catalog(),
+    )
 
 
 @lru_cache

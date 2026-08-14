@@ -4,6 +4,7 @@ apps/api/src/config/settings.py, which configures the API transport layer specif
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -22,6 +23,43 @@ class ConversationStoreSettings(BaseSettings):
     cosmos_db_endpoint: str | None = None
     cosmos_db_database: str = "tmxap-conversation-db"
     cosmos_db_container: str = "conversations"
+
+
+class ObservabilityStoreSettings(BaseSettings):
+    """Selects and configures the ObservabilityRepository implementation (PBI-13-01).
+
+    Defaults to the in-memory provider — same reasoning as ConversationStoreSettings. Reuses
+    ConversationStoreSettings.cosmos_db_endpoint's database (cosmos_db_database) but writes to
+    a distinct container (observability_runs_container), never `conversations` — see
+    src/services/observability_store/cosmos.py's module docstring.
+    """
+
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    observability_store_provider: Literal["in_memory", "cosmos"] = "in_memory"
+    cosmos_db_endpoint: str | None = None
+    cosmos_db_database: str = "tmxap-conversation-db"
+    observability_runs_container: str = "observability_runs"
+
+
+class ObservabilitySettings(BaseSettings):
+    """General business/agentic observability configuration (PBI-13-01), distinct from
+    ObservabilityStoreSettings (which selects the persistence backend) and from apps/api's own
+    ObservabilityAccessSettings (which selects who may call the observability API).
+    """
+
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    observability_enabled: bool = True
+    # PII masking (CLAUDE.md §17/PBI-13-01 §17): applied server-side, before observability data
+    # ever leaves the API. True by default — an operator must explicitly opt out, never in.
+    observability_pii_masking: bool = True
+    observability_price_catalog_path: Path = Path("configs/observability/pricing.json")
+    # Retention/TTL for detailed run telemetry (PBI-13-01 §17). -1 (default) matches this
+    # repo's existing ConversationStore TTL convention (no expiry) until an explicit retention
+    # policy is set; only meaningful for the Cosmos adapter (Cosmos DB TTL), the in-memory
+    # adapter never persists across a process restart regardless.
+    observability_detail_ttl_days: int = -1
 
 
 class SecretProviderSettings(BaseSettings):

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class AuthenticatedUser(BaseModel):
@@ -20,3 +20,11 @@ class AuthenticatedUser(BaseModel):
     tid: str
     name: str | None = None
     email: str | None = None
+    # PBI-13-01: the token's `roles` claim, if present — App Roles are NOT configured on this
+    # platform's Entra App Registration today (nothing assigns a real value to this claim yet),
+    # so this is always an empty list in practice until a future PBI activates App Roles. Parsed
+    # now, ahead of activation, purely so OBSERVABILITY_ACCESS_MODE=roles (prepared but not
+    # activated — see apps/api/src/config/settings.py ObservabilityAccessSettings) has a real,
+    # already-wired claim to read the moment it is turned on, with zero further token-parsing
+    # changes required.
+    roles: list[str] = Field(default_factory=list)

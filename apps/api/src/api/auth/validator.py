@@ -117,12 +117,18 @@ class EntraTokenValidator:
         tid = claims.get("tid")
         if not oid or not tid:
             raise TokenValidationError("token is missing required oid/tid claims")
+        roles = claims.get("roles")
         return AuthenticatedUser(
             user_id=f"{tid}:{oid}",
             oid=str(oid),
             tid=str(tid),
             name=claims.get("name"),
             email=claims.get("preferred_username") or claims.get("email"),
+            # PBI-13-01: this App Registration does not define any App Roles today, so `roles`
+            # is always absent from a real token — this is inert until a future PBI activates
+            # App Roles (see AuthenticatedUser.roles' own docstring). isinstance-guarded so a
+            # malformed/unexpected claim shape can never raise here.
+            roles=[str(r) for r in roles] if isinstance(roles, list) else [],
         )
 
 

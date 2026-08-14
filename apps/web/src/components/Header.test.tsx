@@ -1,7 +1,27 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import type { AccountInfo } from "@azure/msal-browser";
 import { Header } from "./Header";
+
+interface HeaderTestProps {
+  account: AccountInfo;
+  onSignOut: () => void;
+  showObservabilityNav: boolean;
+}
+
+function renderHeader(props: Partial<HeaderTestProps> = {}) {
+  return render(
+    <MemoryRouter>
+      <Header
+        account={fakeAccount}
+        onSignOut={vi.fn()}
+        showObservabilityNav={false}
+        {...props}
+      />
+    </MemoryRouter>,
+  );
+}
 
 const fakeAccount: AccountInfo = {
   homeAccountId: "test-home-account-id",
@@ -32,7 +52,7 @@ describe("Header", () => {
       } as Response);
     });
 
-    render(<Header account={fakeAccount} onSignOut={vi.fn()} />);
+    renderHeader();
 
     await waitFor(() => expect(screen.getByText("Conectado")).toBeInTheDocument());
   });
@@ -40,7 +60,7 @@ describe("Header", () => {
   it("shows Sin conexión when the API is unreachable", async () => {
     globalThis.fetch = vi.fn().mockRejectedValue(new Error("network error"));
 
-    render(<Header account={fakeAccount} onSignOut={vi.fn()} />);
+    renderHeader();
 
     await waitFor(() => expect(screen.getByText("Sin conexión")).toBeInTheDocument());
   });
@@ -48,7 +68,7 @@ describe("Header", () => {
   it("displays the authenticated account's name (PBI-11-01) — display only, never an authorization key", () => {
     globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ status: "ok" }) } as Response);
 
-    render(<Header account={fakeAccount} onSignOut={vi.fn()} />);
+    renderHeader();
 
     expect(screen.getByText("Test User")).toBeInTheDocument();
   });
@@ -56,10 +76,27 @@ describe("Header", () => {
   it("calls onSignOut when Cerrar sesión is clicked", async () => {
     globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ status: "ok" }) } as Response);
     const onSignOut = vi.fn();
-    render(<Header account={fakeAccount} onSignOut={onSignOut} />);
+    renderHeader({ onSignOut });
 
     screen.getByRole("button", { name: "Cerrar sesión" }).click();
 
     expect(onSignOut).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides the Observability nav when showObservabilityNav is false (default)", () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ status: "ok" }) } as Response);
+
+    renderHeader();
+
+    expect(screen.queryByText("Observability")).not.toBeInTheDocument();
+  });
+
+  it("shows the Observability nav link when showObservabilityNav is true", () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ status: "ok" }) } as Response);
+
+    renderHeader({ showObservabilityNav: true });
+
+    expect(screen.getByText("Observability")).toBeInTheDocument();
+    expect(screen.getByText("Chat")).toBeInTheDocument();
   });
 });
