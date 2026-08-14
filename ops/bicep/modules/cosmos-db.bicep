@@ -42,6 +42,12 @@ param throughput int = 400
 @description('Container default TTL in seconds. -1 provisions TTL support without expiring anything by default; a real retention value requires its own ADR before being set.')
 param conversationTtlSeconds int = -1
 
+@description('Business/agentic observability run-telemetry container name (PBI-13-01). Distinct from containerName/conversations — holds RunRecord and ConversationSummary documents, never chat message content. See docs/Architecture/adr/0012-observability-persistence-model.md.')
+param observabilityRunsContainerName string = 'observability_runs'
+
+@description('Observability run-telemetry container default TTL in seconds, mirroring ObservabilitySettings.observability_detail_ttl_days (PBI-13-01 §17). -1 (default) means no expiry until an explicit retention policy is set via its own ADR, same convention as conversationTtlSeconds.')
+param observabilityRunsTtlSeconds int = -1
+
 @description('Principal ID of the identity granted the built-in Cosmos DB "Data Contributor" data-plane role. Empty string skips the role assignment.')
 param dataContributorPrincipalId string = ''
 
@@ -121,6 +127,32 @@ resource container 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/container
   }
 }
 
+// PBI-13-01: partition key /conversationId (not /userId like `container` above) — run
+// telemetry and conversation-aggregate documents are read/written per-conversation, never
+// per-user, and this write pattern (one small document per processing run, high volume) is
+// deliberately kept out of the `conversations` container to avoid growing its embedded
+// messages document or causing write amplification there. See
+// docs/Architecture/adr/0012-observability-persistence-model.md for the full decision.
+resource observabilityRunsContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-05-15' = {
+  parent: database
+  name: observabilityRunsContainerName
+  properties: {
+    resource: {
+      id: observabilityRunsContainerName
+      partitionKey: {
+        paths: [
+          '/conversationId'
+        ]
+        kind: 'Hash'
+      }
+      defaultTtl: observabilityRunsTtlSeconds
+    }
+    options: {
+      throughput: capacityMode == 'Provisioned' ? throughput : null
+    }
+  }
+}
+
 resource dataContributorRoleAssignment 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-05-15' = if (!empty(dataContributorPrincipalId)) {
   parent: account
   name: guid(account.id, dataContributorPrincipalId, cosmosDataContributorRoleId)
@@ -135,4 +167,5 @@ output accountName string = account.name
 output documentEndpoint string = account.properties.documentEndpoint
 output databaseName string = database.name
 output containerName string = container.name
+output observabilityRunsContainerName string = observabilityRunsContainer.name
 output accountId string = account.id

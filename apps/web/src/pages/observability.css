@@ -1,0 +1,257 @@
+/* Styles scoped to the Observability dashboard/detail pages only (PBI-13-01) — never touches
+   App.css/index.css, so the existing chat experience is visually unaffected. Uses CSS custom
+   properties + prefers-color-scheme so the dashboard supports dark mode even though the rest
+   of the app (index.css/App.css) has no theming system today — see the ADR. */
+
+:root {
+  --obs-bg: #f5f6f8;
+  --obs-surface: #ffffff;
+  --obs-border: #d8dce3;
+  --obs-text: #14213d;
+  --obs-text-muted: #5a6272;
+  --obs-accent: #14213d;
+  --obs-accent-contrast: #ffffff;
+  --obs-error-bg: #fdecea;
+  --obs-error-text: #7a1f1f;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --obs-bg: #14161c;
+    --obs-surface: #1e2129;
+    --obs-border: #33384a;
+    --obs-text: #e8eaf0;
+    --obs-text-muted: #a2a8ba;
+    --obs-accent: #7aa2ff;
+    --obs-accent-contrast: #0d0f14;
+    --obs-error-bg: #3a1f1f;
+    --obs-error-text: #f3b4b4;
+  }
+}
+
+.observability-dashboard,
+.observability-detail {
+  padding: 24px;
+  background: var(--obs-bg);
+  color: var(--obs-text);
+  flex: 1;
+  min-height: 0;
+  box-sizing: border-box;
+  overflow-x: auto;
+  overflow-y: auto;
+}
+
+.observability-dashboard__title {
+  margin: 0 0 16px;
+  font-size: 1.5rem;
+}
+
+.observability-dashboard__error {
+  background: var(--obs-error-bg);
+  color: var(--obs-error-text);
+  padding: 10px 14px;
+  border-radius: 6px;
+  margin-bottom: 16px;
+}
+
+.observability-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.observability-kpi-card {
+  background: var(--obs-surface);
+  border: 1px solid var(--obs-border);
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.observability-kpi-card__value {
+  font-size: 1.3rem;
+  font-weight: 600;
+}
+
+.observability-kpi-card__label {
+  font-size: 0.8rem;
+  color: var(--obs-text-muted);
+  margin-top: 4px;
+}
+
+.observability-search {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.observability-search input {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid var(--obs-border);
+  border-radius: 6px;
+  background: var(--obs-surface);
+  color: var(--obs-text);
+}
+
+.observability-search button,
+.observability-pagination button {
+  padding: 8px 14px;
+  border: 1px solid var(--obs-border);
+  border-radius: 6px;
+  background: var(--obs-accent);
+  color: var(--obs-accent-contrast);
+  cursor: pointer;
+}
+
+.observability-search button:disabled,
+.observability-pagination button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.observability-table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--obs-border);
+  border-radius: 8px;
+}
+
+.observability-table {
+  width: 100%;
+  min-width: 640px;
+  border-collapse: collapse;
+  background: var(--obs-surface);
+}
+
+.observability-table th,
+.observability-table td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--obs-border);
+  font-size: 0.9rem;
+}
+
+.observability-table a {
+  color: var(--obs-accent);
+}
+
+.observability-pagination {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  font-size: 0.85rem;
+  color: var(--obs-text-muted);
+}
+
+.observability-detail__breadcrumb {
+  margin-bottom: 16px;
+}
+
+.observability-detail__breadcrumb a {
+  color: var(--obs-accent);
+}
+
+.observability-detail__panels {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr 1fr;
+  gap: 16px;
+}
+
+@media (max-width: 900px) {
+  .observability-detail__panels {
+    grid-template-columns: 1fr;
+  }
+}
+
+.observability-detail__panel {
+  background: var(--obs-surface);
+  border: 1px solid var(--obs-border);
+  border-radius: 8px;
+  padding: 14px;
+  max-height: 75vh;
+  overflow-y: auto;
+}
+
+.observability-detail__panel h2 {
+  margin-top: 0;
+  font-size: 1rem;
+}
+
+.observability-detail__messages {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.observability-detail__message {
+  border: 1px solid var(--obs-border);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.observability-detail__message--user {
+  background: color-mix(in srgb, var(--obs-accent) 8%, var(--obs-surface));
+}
+
+.observability-detail__message-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--obs-text-muted);
+  margin-bottom: 4px;
+}
+
+.observability-detail__message-text {
+  font-size: 0.9rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.observability-detail__run-link {
+  margin-top: 6px;
+  font-size: 0.75rem;
+  border: 1px solid var(--obs-border);
+  background: transparent;
+  color: var(--obs-accent);
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.observability-detail__run-link--active {
+  background: var(--obs-accent);
+  color: var(--obs-accent-contrast);
+}
+
+.observability-detail__fields {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  font-size: 0.85rem;
+}
+
+.observability-detail__fields dt {
+  color: var(--obs-text-muted);
+}
+
+.observability-detail__fields dd {
+  margin: 0;
+}
+
+.observability-detail__tool-calls {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.observability-detail__timeline {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}

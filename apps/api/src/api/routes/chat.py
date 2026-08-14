@@ -7,19 +7,26 @@ result back into an HTTP response.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+import logging
+import time
+import uuid
+from datetime import UTC, datetime
+
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
-from src.core.tool_calling.models import ToolCallResult
+from src.core.tool_calling.models import ReActEvent, ToolCallResult
+from src.observability.service import ObservabilityService
 from src.rag.grounding_models import Citation, GroundingMetadata
 from src.supervisor.models import AgentRequest
 from src.supervisor.orchestrator import SupervisorOrchestrator
 
 from api.auth.dependency import get_current_user
 from api.auth.models import AuthenticatedUser
-from api.dependencies import get_supervisor
+from api.dependencies import get_observability_service, get_supervisor
 
 router = APIRouter(tags=["chat"])
+_logger = logging.getLogger(__name__)
 
 
 class _CamelModel(BaseModel):
@@ -59,8 +66,10 @@ class ChatResponse(_CamelModel):
 @router.post("/chat", response_model=ChatResponse)
 async def post_chat(
     chat_request: ChatRequest,
+    http_request: Request,
     current_user: AuthenticatedUser = Depends(get_current_user),
     supervisor: SupervisorOrchestrator = Depends(get_supervisor),
+    observability: ObservabilityService = Depends(get_observability_service),
 ) -> ChatResponse:
     """Route a chat message through the Supervisor and return the selected agent's response.
 
@@ -68,13 +77,76 @@ async def post_chat(
     the token's own tid/oid claims) is the only identity ever used, never
     chat_request.user_id (deprecated, ignored for authorization).
     """
+    # PBI-13-01: correlation_id was already generated/propagated by CorrelationIdMiddleware
+    # (apps/api/src/api/middleware/correlation_id.py) but was never previously threaded into
+    # AgentRequest — this is the fix. message_id/run_id are new identifiers this route
+    # generates: message_id becomes the persisted assistant Message's own id (see
+    # AgentRequest.message_id / SupervisorOrchestrator._persist_turn), run_id identifies this
+    # one processing run for observability purposes only (never persisted to the conversation
+    # store).
+    correlation_id = getattr(http_request.state, "correlation_id", None)
+    message_id = str(uuid.uuid4())
+    run_id = str(uuid.uuid4())
+    started_at = datetime.now(UTC)
+    pipeline_start = time.perf_counter()
+
+    react_events: list[ReActEvent] = []
+
+    def _collect_event(event: ReActEvent) -> None:
+        react_events.append(event)
+
     agent_request = AgentRequest(
         message=chat_request.message,
         user_id=current_user.user_id,
         conversation_id=chat_request.conversation_id,
+        correlation_id=correlation_id,
+        message_id=message_id,
     )
 
-    agent_response = await supervisor.handle(agent_request)
+    try:
+        agent_response = await supervisor.handle(agent_request, on_react_event=_collect_event)
+    except Exception as exc:
+        # PBI-13-01 §3: telemetry must never affect the chat response — this records an
+        # "error" run for observability purposes only, then re-raises the *original* exception
+        # completely unchanged (same type, same traceback), so the HTTP error behavior this
+        # route already had is byte-for-byte identical to before this PBI.
+        await observability.record_run(
+            run_id=run_id,
+            conversation_id=chat_request.conversation_id or "",
+            message_id=message_id,
+            trace_id=correlation_id,
+            user_id=current_user.user_id,
+            started_at=started_at,
+            total_latency_ms=(time.perf_counter() - pipeline_start) * 1000,
+            detected_intent=None,
+            agent_response=None,
+            react_events=react_events,
+            error_category=type(exc).__name__,
+        )
+        raise
+
+    total_latency_ms = (time.perf_counter() - pipeline_start) * 1000
+    try:
+        await observability.record_run(
+            run_id=run_id,
+            conversation_id=agent_response.conversation_id,
+            message_id=message_id,
+            trace_id=correlation_id,
+            user_id=current_user.user_id,
+            started_at=started_at,
+            total_latency_ms=total_latency_ms,
+            detected_intent=agent_response.intent.value,
+            agent_response=agent_response,
+            react_events=react_events,
+        )
+    except Exception:
+        # already swallows its own failures, but this route must never fail the chat response
+        # for any reason connected to observability, including a bug in the call site itself.
+        _logger.warning(
+            "observability_record_run_call_failed",
+            extra={"correlationId": correlation_id, "runId": run_id},
+            exc_info=True,
+        )
 
     return ChatResponse(
         conversation_id=agent_response.conversation_id,

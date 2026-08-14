@@ -8,6 +8,8 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  row-gap: 0.5rem;
   padding: 0.75rem 1.25rem;
   background-color: #14213d;
   color: #ffffff;
@@ -16,6 +18,32 @@
 .app-header__title {
   font-weight: 600;
   font-size: 1rem;
+}
+
+.app-header__nav {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: 1.5rem;
+}
+
+.app-header__nav-link {
+  padding: 0.3rem 0.7rem;
+  border-radius: 6px;
+  color: #cbd3e6;
+  font-size: 0.85rem;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.app-header__nav-link:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+
+.app-header__nav-link--active {
+  background-color: rgba(255, 255, 255, 0.16);
+  color: #ffffff;
 }
 
 .app-header__status {

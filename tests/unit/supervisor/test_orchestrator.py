@@ -4,6 +4,7 @@ Uses InMemoryConversationRepository + RuleBasedIntentResolver + InMemoryAgentReg
 stub agents — 100% deterministic, no Azure dependency.
 """
 
+from src.core.tool_calling.models import ReActEventSink
 from src.domain.conversation import MessageRole
 from src.services.conversation_store.in_memory import InMemoryConversationRepository
 from src.supervisor.intent import RuleBasedIntentResolver
@@ -33,7 +34,13 @@ class _StubAgent:
         self.received_requests: list[AgentRequest] = []
         self.received_contexts: list[ConversationContext] = []
 
-    async def handle(self, request: AgentRequest, context: ConversationContext) -> AgentResponse:
+    async def handle(
+        self,
+        request: AgentRequest,
+        context: ConversationContext,
+        on_react_event: ReActEventSink | None = None,
+    ) -> AgentResponse:
+        del on_react_event
         self.received_requests.append(request)
         self.received_contexts.append(context)
         return AgentResponse(

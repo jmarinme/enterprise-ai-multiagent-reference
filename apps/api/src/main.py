@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.middleware.correlation_id import CORRELATION_ID_HEADER, CorrelationIdMiddleware
-from api.routes import chat, conversations, health, version
+from api.routes import chat, conversations, health, observability, version
 from config.settings import get_settings
 from observability.logging import configure_logging
 
@@ -37,6 +37,11 @@ def create_app() -> FastAPI:
     app.include_router(version.router)
     app.include_router(chat.router)
     app.include_router(conversations.router)
+    # PBI-13-01: OBSERVABILITY_ENABLED lets an operator remove the feature's HTTP surface
+    # entirely (routes return 404, not 403) — distinct from OBSERVABILITY_ACCESS_MODE, which
+    # controls who may call it once enabled. Defaults to enabled.
+    if settings.observability_enabled:
+        app.include_router(observability.router)
     return app
 
 

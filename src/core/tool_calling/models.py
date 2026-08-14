@@ -5,6 +5,8 @@ the Tool execution framework (src.tools.models.ToolRequest/ToolResult).
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -59,6 +61,16 @@ class ToolCallingContext(BaseModel):
     timeout_seconds: float | None = Field(default=None, gt=0)
 
 
+class LLMUsageTotal(BaseModel):
+    """Token usage accumulated across every LLM call this run() invocation made — the ReAct
+    loop's own calls only (src.llm.models.LLMUsage per-call values summed), never a fabricated
+    total (PBI-13-01 §7)."""
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+
 class ToolCallingResponse(BaseModel):
     """The orchestrator's final output: the LLM's last text response, plus every ToolCallResult
     produced across every iteration of the loop. Internal-only (an Agent unpacks this into its
@@ -75,3 +87,39 @@ class ToolCallingResponse(BaseModel):
     # PBI-12-04: True only if ToolCallingContext.timeout_seconds elapsed waiting on a single LLM
     # call — same safe-stop guarantee as stopped_due_to_max_iterations above, never a raise.
     stopped_due_to_timeout: bool = False
+    # PBI-13-01: observability additions, both purely additive (default empty/None preserves
+    # every existing caller's exact prior behavior). `model` is the last LLM call's deployment/
+    # model name; `usage` sums every LLM call's token usage across the whole run() invocation.
+    model: str | None = None
+    usage: LLMUsageTotal = Field(default_factory=LLMUsageTotal)
+
+
+ReActEventType = Literal[
+    "reasoning_iteration_started",
+    "tool_required",
+    "tool_selected",
+    "tool_executed",
+    "final_answer_reached",
+    "stopped_max_iterations",
+    "stopped_timeout",
+]
+
+
+class ReActEvent(BaseModel):
+    """One safe, structural lifecycle event from a run() invocation — execution metadata only
+    (event type, iteration number, tool name, success, latency). NEVER carries LLM reasoning
+    text, prompt content, or tool arguments/results (CLAUDE.md §10, PBI-13-01 §8) — there is no
+    field here capable of holding any of that."""
+
+    event_type: ReActEventType
+    iteration: int
+    tool_name: str | None = None
+    success: bool | None = None
+    latency_ms: float | None = None
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+ReActEventSink = Callable[[ReActEvent], None]
+"""A synchronous, best-effort observer. run() calls it inline and swallows any exception it
+raises (PBI-13-01 §3: telemetry must never affect business behavior) — never awaited, never
+required to succeed."""

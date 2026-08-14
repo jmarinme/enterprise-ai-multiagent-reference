@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useMsal } from "@azure/msal-react";
 import type { AccountInfo, IPublicClientApplication } from "@azure/msal-browser";
 import { InteractionStatus } from "@azure/msal-browser";
+import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { Header } from "./components/Header";
 import { Sidebar } from "./components/Sidebar";
 import { MessageArea } from "./components/MessageArea";
@@ -20,6 +21,9 @@ import {
   getStoredActiveConversationId,
   setStoredActiveConversationId,
 } from "./utils/activeConversation";
+import { ObservabilityDashboardPage } from "./pages/ObservabilityDashboardPage";
+import { ObservabilityConversationDetailPage } from "./pages/ObservabilityConversationDetailPage";
+import { isObservabilityEnabled } from "./config/env";
 import "./App.css";
 
 const WELCOME_MESSAGE: Message = {
@@ -63,7 +67,7 @@ export function App() {
     return <SignInScreen instance={instance} isSigningIn={inProgress !== InteractionStatus.None} />;
   }
 
-  return <ChatApp instance={instance} account={account} />;
+  return <AuthenticatedApp instance={instance} account={account} />;
 }
 
 function SignInScreen({
@@ -91,6 +95,50 @@ function SignInScreen({
         </button>
       </div>
     </div>
+  );
+}
+
+interface AuthenticatedAppProps {
+  instance: IPublicClientApplication;
+  account: AccountInfo;
+}
+
+/** Shared shell for every authenticated route (PBI-13-01): Header renders once, outside the
+ * route switch, so both the chat experience and the new Observability pages get the same
+ * top-level navigation/account/sign-out chrome. ChatApp's own rendered UI is otherwise
+ * unchanged — only Header moved one level up from inside it to here. */
+function AuthenticatedApp({ instance, account }: AuthenticatedAppProps) {
+  function handleSignOut(): void {
+    void instance.logoutPopup();
+  }
+
+  return (
+    <BrowserRouter>
+      <div className="app-shell">
+        <Header
+          account={account}
+          onSignOut={handleSignOut}
+          showObservabilityNav={isObservabilityEnabled}
+        />
+        <Routes>
+          <Route path="/" element={<ChatApp instance={instance} account={account} />} />
+          {isObservabilityEnabled && (
+            <>
+              <Route
+                path="/observability"
+                element={<ObservabilityDashboardPage instance={instance} account={account} />}
+              />
+              <Route
+                path="/observability/conversations/:conversationId"
+                element={
+                  <ObservabilityConversationDetailPage instance={instance} account={account} />
+                }
+              />
+            </>
+          )}
+        </Routes>
+      </div>
+    </BrowserRouter>
   );
 }
 
@@ -225,36 +273,29 @@ function ChatApp({ instance, account }: ChatAppProps) {
     void loadConversation(targetConversationId);
   }
 
-  function handleSignOut(): void {
-    void instance.logoutPopup();
-  }
-
   return (
-    <div className="app-shell">
-      <Header account={account} onSignOut={handleSignOut} />
-      <div className="app-body">
-        <Sidebar
-          conversations={conversations}
-          isLoadingConversations={isLoadingConversations}
-          activeConversationId={conversationId}
-          onSelectConversation={handleSelectConversation}
-          onSelectExample={(text) => void handleSend(text)}
-          onNewConversation={handleNewConversation}
-          disabled={isSending}
-        />
-        <main className="app-main">
-          <MessageArea messages={messages} isAssistantTyping={isSending} />
-          {lastFailedMessage && !isSending && (
-            <div className="retry-banner">
-              <span>El último mensaje no se pudo enviar.</span>
-              <button type="button" className="retry-banner__button" onClick={handleRetry}>
-                Reintentar
-              </button>
-            </div>
-          )}
-          <MessageInput onSend={(text) => void handleSend(text)} disabled={isSending} />
-        </main>
-      </div>
+    <div className="app-body">
+      <Sidebar
+        conversations={conversations}
+        isLoadingConversations={isLoadingConversations}
+        activeConversationId={conversationId}
+        onSelectConversation={handleSelectConversation}
+        onSelectExample={(text) => void handleSend(text)}
+        onNewConversation={handleNewConversation}
+        disabled={isSending}
+      />
+      <main className="app-main">
+        <MessageArea messages={messages} isAssistantTyping={isSending} />
+        {lastFailedMessage && !isSending && (
+          <div className="retry-banner">
+            <span>El último mensaje no se pudo enviar.</span>
+            <button type="button" className="retry-banner__button" onClick={handleRetry}>
+              Reintentar
+            </button>
+          </div>
+        )}
+        <MessageInput onSend={(text) => void handleSend(text)} disabled={isSending} />
+      </main>
     </div>
   );
 }

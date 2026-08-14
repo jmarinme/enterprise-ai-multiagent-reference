@@ -9,6 +9,7 @@ for UNKNOWN specifically). Deterministic response only, same as the other mock a
 from __future__ import annotations
 
 from src.agents.shared.language import LANGUAGE_METADATA_KEY, resolve_language
+from src.core.tool_calling.models import ReActEventSink
 from src.supervisor.models import AgentRequest, AgentResponse, ConversationContext, IntentCategory
 
 _MESSAGES = {
@@ -22,7 +23,13 @@ class FallbackAgent:
 
     name = "FallbackAgent"
 
-    async def handle(self, request: AgentRequest, context: ConversationContext) -> AgentResponse:
+    async def handle(
+        self,
+        request: AgentRequest,
+        context: ConversationContext,
+        on_react_event: ReActEventSink | None = None,
+    ) -> AgentResponse:
+        del on_react_event  # No LLM/Tool Calling loop here — nothing to observe.
         language = resolve_language(context.metadata, request.message)
         return AgentResponse(
             conversation_id=context.conversation_id,

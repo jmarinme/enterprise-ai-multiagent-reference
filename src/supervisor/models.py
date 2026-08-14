@@ -10,7 +10,7 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
-from src.core.tool_calling.models import ToolCallResult
+from src.core.tool_calling.models import LLMUsageTotal, ToolCallResult
 from src.domain.conversation import Message
 from src.rag.grounding_models import Citation, GroundingMetadata
 
@@ -38,6 +38,12 @@ class AgentRequest(BaseModel):
     user_id: str
     conversation_id: str | None = None
     correlation_id: str | None = None
+    # PBI-13-01: when the caller (apps/api/src/api/routes/chat.py) pre-generates a message id,
+    # SupervisorOrchestrator._persist_turn uses it for the persisted user/assistant Message
+    # pair instead of letting Message.id auto-generate — so the caller can correlate a run with
+    # the exact message it produced without re-reading the conversation. None (default)
+    # preserves every existing caller's exact prior behavior (auto-generated ids).
+    message_id: str | None = None
 
 
 class ConversationContext(BaseModel):
@@ -72,6 +78,12 @@ class AgentResponse(BaseModel):
     citations: list[Citation] = Field(default_factory=list)
     grounding_metadata: GroundingMetadata | None = None
     tool_calls: list[ToolCallResult] = Field(default_factory=list)
+    # PBI-13-01: business/agentic observability additions, both purely additive (default None/
+    # empty preserves every existing caller's exact prior behavior). Populated only by an Agent
+    # that actually ran the Tool Calling loop (see ToolCallingResponse.model/usage) — None for
+    # FallbackAgent, which never calls an LLM.
+    model: str | None = None
+    token_usage: LLMUsageTotal | None = None
 
 
 class SupervisorConfig(BaseModel):

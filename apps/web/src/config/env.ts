@@ -29,3 +29,11 @@ export const entraRedirectUri: string =
  * above (that page has no UI and would leave the user on a blank screen post-logout). */
 export const entraPostLogoutRedirectUri: string =
   import.meta.env.VITE_ENTRA_POST_LOGOUT_REDIRECT_URI ?? window.location.origin;
+
+/** PBI-13-01: a purely client-side kill switch for the Observability nav link/routes —
+ * mirrors the backend's own OBSERVABILITY_ENABLED. Real authorization is always enforced
+ * server-side (api.observability_access.require_observability_access); this only decides
+ * whether the frontend bothers rendering the nav link and routes at all. Defaults to enabled,
+ * matching the backend default. */
+export const isObservabilityEnabled: boolean =
+  (import.meta.env.VITE_OBSERVABILITY_ENABLED ?? "true") !== "false";

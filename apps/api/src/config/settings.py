@@ -1,6 +1,7 @@
 """Application configuration loaded from environment variables."""
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -42,10 +43,29 @@ class Settings(BaseSettings):
     # value without a proven, live v1-token requirement.
     entra_api_audience: str = "67d95215-5a31-416a-99ab-5fe203fb7c32"
 
+    # Observability access control (PBI-13-01 §16). V1 default is all_authenticated: any
+    # authenticated user may view every conversation's business/agentic observability data —
+    # a deliberate, disclosed V1 design choice (see docs/Architecture/observability.md), not an
+    # oversight. `roles` mode is prepared but never activated by this codebase itself — no
+    # Entra App Role is created or assigned; switching this value only changes which branch of
+    # apps/api/src/api/observability_access.py's dependency executes.
+    observability_enabled: bool = True
+    observability_access_mode: Literal["all_authenticated", "roles"] = "all_authenticated"
+    observability_allowed_roles: str = (
+        "Observability.Admin,Observability.Support,Observability.Auditor"
+    )
+
     @property
     def cors_allowed_origins_list(self) -> list[str]:
         """Parsed, whitespace-trimmed origin list — empty entries dropped."""
         return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
+
+    @property
+    def observability_allowed_roles_list(self) -> list[str]:
+        """Parsed, whitespace-trimmed allowed-roles list — empty entries dropped."""
+        return [
+            role.strip() for role in self.observability_allowed_roles.split(",") if role.strip()
+        ]
 
 
 @lru_cache

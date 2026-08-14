@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import logging
 import time
+from uuid import uuid4
 
+from src.core.tool_calling.models import ReActEventSink
 from src.domain.conversation import Conversation, Message, MessageRole
 from src.domain.conversation_repository import ConversationRepository
 from src.supervisor.context import load_conversation_context
@@ -62,7 +64,9 @@ class SupervisorOrchestrator:
         self._agent_registry = agent_registry
         self._config = config or SupervisorConfig()
 
-    async def handle(self, request: AgentRequest) -> AgentResponse:
+    async def handle(
+        self, request: AgentRequest, on_react_event: ReActEventSink | None = None
+    ) -> AgentResponse:
         pipeline_start = time.perf_counter()
 
         context_start = time.perf_counter()
@@ -78,7 +82,7 @@ class SupervisorOrchestrator:
         agent = self._resolve_agent(intent, context)
 
         agent_start = time.perf_counter()
-        response = await agent.handle(request=request, context=context)
+        response = await agent.handle(request=request, context=context, on_react_event=on_react_event)
         agent_handle_ms = (time.perf_counter() - agent_start) * 1000
 
         persist_start = time.perf_counter()
@@ -119,7 +123,13 @@ class SupervisorOrchestrator:
             content=request.message,
             correlation_id=request.correlation_id,
         )
+        # PBI-13-01: the ASSISTANT message's id is the caller's pre-generated one when present
+        # (see AgentRequest.message_id) — this is the id a RunRecord correlates with
+        # ("associated run_id for assistant responses"). Falls back to a freshly generated id
+        # otherwise, exactly equivalent to Message.id's own default_factory, so behavior is
+        # unchanged for every caller that does not set message_id.
         agent_message = Message(
+            id=request.message_id or str(uuid4()),
             role=MessageRole.ASSISTANT,
             content=response.response,
             correlation_id=request.correlation_id,

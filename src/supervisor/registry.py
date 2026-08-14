@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from src.core.tool_calling.models import ReActEventSink
 from src.supervisor.exceptions import AgentNotFoundError
 from src.supervisor.models import AgentRequest, AgentResponse, ConversationContext, IntentCategory
 
@@ -20,7 +21,15 @@ class Agent(Protocol):
 
     name: str
 
-    async def handle(self, request: AgentRequest, context: ConversationContext) -> AgentResponse:
+    async def handle(
+        self,
+        request: AgentRequest,
+        context: ConversationContext,
+        on_react_event: ReActEventSink | None = None,
+    ) -> AgentResponse:
+        """on_react_event (PBI-13-01, optional, default None — every prior caller unaffected):
+        forwarded into ToolCallingOrchestrator.run() by any Agent that uses controlled Tool
+        Calling; ignored by any Agent that does not (e.g. FallbackAgent)."""
         ...
 
 

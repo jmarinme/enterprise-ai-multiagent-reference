@@ -76,6 +76,7 @@ from src.agents.shared.summary import build_progress_summary
 from src.core.tool_calling.exceptions import ToolCallingError
 from src.core.tool_calling.models import (
     DEFAULT_MAX_TOOL_CALL_ITERATIONS,
+    ReActEventSink,
     ToolCallingContext,
     ToolCallingResponse,
 )
@@ -200,7 +201,12 @@ class ClaimsAgent:
         # registration + adjuster assignment run as a Durable Functions orchestration instead.
         self._workflow_provider = workflow_provider
 
-    async def handle(self, request: AgentRequest, context: ConversationContext) -> AgentResponse:
+    async def handle(
+        self,
+        request: AgentRequest,
+        context: ConversationContext,
+        on_react_event: ReActEventSink | None = None,
+    ) -> AgentResponse:
         state = load_agent_state(context.metadata, _STATE_METADATA_KEY, ClaimsIntakeState)
         # PBI-09-01 final validation: a message that switches the conversation back into this
         # Agent from a different one (e.g. "Let's continue with my claim from before.") is a
@@ -300,7 +306,9 @@ class ClaimsAgent:
         )
         grounded_response = self._grounder.build_response(response_text, grounded_context)
 
-        tool_calling_response = await self._run_controlled_tool_calling(request, context)
+        tool_calling_response = await self._run_controlled_tool_calling(
+            request, context, on_react_event
+        )
 
         return AgentResponse(
             conversation_id=context.conversation_id,
@@ -317,6 +325,8 @@ class ClaimsAgent:
             citations=grounded_response.citations,
             grounding_metadata=grounded_context.metadata,
             tool_calls=tool_calling_response.tool_calls,
+            model=tool_calling_response.model,
+            token_usage=tool_calling_response.usage,
         )
 
     async def _retrieve_knowledge(self, message: str) -> list[KnowledgeChunk]:
@@ -331,7 +341,10 @@ class ClaimsAgent:
         return result.chunks
 
     async def _run_controlled_tool_calling(
-        self, request: AgentRequest, context: ConversationContext
+        self,
+        request: AgentRequest,
+        context: ConversationContext,
+        on_react_event: ReActEventSink | None = None,
     ) -> ToolCallingResponse:
         """Additive, isolated proof that the LLM can request one of this Agent's allow-listed
         Tools through ToolCallingOrchestrator (PBI-02-04) — entirely independent of, and never
@@ -366,6 +379,7 @@ class ClaimsAgent:
                     user_id=request.user_id,
                     max_iterations=self._tool_calling_max_iterations,
                 ),
+                on_event=on_react_event,
             )
         except ToolCallingError:
             return ToolCallingResponse(text="", iterations=0)
