@@ -736,9 +736,22 @@ stages:
   # the REPO ROOT as its build context since PBI-03-02 (main.py depends on the shared,
   # reusable src/ packages) — the old context could never have produced a working image. See
   # docs/sprint_04/decisions.md.
+  #
+  # PBI-14-05: this stage now ALWAYS builds and pushes BOTH images, unconditionally. The
+  # previous "build Web only when apps/web changed since HEAD^" optimization was correct in
+  # intent (save CI minutes) but wrong in scope: applying it to the actual main/DEV delivery
+  # path (not just PR validation) meant any main push whose own single commit didn't happen to
+  # touch apps/web (a backend-only PBI merged after an earlier PBI's frontend fix, docs-only
+  # merges, etc.) silently left the previously-built Web image running in DEV — producing a
+  # DEV environment where API and Web came from DIFFERENT commits, most visibly as the Vite
+  # "Blocked request" regression (see apps/web/vite.config.ts's own PBI-08-02 comment — this
+  # exact drift already happened once before). ContainerBuildValidation above (PR-only, never
+  # deploys anything) KEEPS the webChanged optimization — it only affects CI minutes on
+  # validation runs, never DEV's actual deployed state. See ADR-0014's sibling
+  # docs/sprint_14/decisions.md PBI-14-05 entry for the full before/after evidence.
   # ============================================================================================
   - stage: ContainerBuildAndPush
-    displayName: '3 - Build (image build + push to ACR)'
+    displayName: '3 - Build (image build + push to ACR — API and Web, always both)'
     dependsOn:
       - BackendQuality
       - FrontendQuality
@@ -755,12 +768,11 @@ stages:
 
           - script: |
               set -e
-              # "Build Web image only when relevant" (PBI-07-01): compares this push against
-              # its immediate parent commit. fetchDepth: 2 above ensures HEAD^ exists for a
-              # normal push. A single merge/squash commit per PR (this project's flow) captures
-              # the PR's whole diff this way. If HEAD^ can't be resolved (e.g. the very first
-              # commit in the repo's history), default to "changed" — always build rather than
-              # silently skip on an edge case this check cannot reason about.
+              # PBI-14-05: informational only — this no longer gates whether the Web image is
+              # built/pushed/deployed (see the stage-level comment above). Retained solely so
+              # DeploymentSummary can report whether apps/web literally changed in this push's
+              # own commit, for audit/context purposes; it must never again be wired to skip a
+              # build or deploy step.
               if git rev-parse HEAD^ >/dev/null 2>&1; then
                 if git diff --name-only HEAD^ HEAD -- apps/web | grep -q .; then
                   WEB_CHANGED=true
@@ -771,13 +783,13 @@ stages:
                 echo "No parent commit found (first commit in history) — defaulting to changed=true."
                 WEB_CHANGED=true
               fi
-              echo "apps/web changed since parent commit: $WEB_CHANGED"
-              echo "##vso[task.setvariable variable=webChanged;isOutput=true]$WEB_CHANGED"
+              echo "apps/web changed since parent commit (informational only): $WEB_CHANGED"
+              echo "##vso[task.setvariable variable=webChangedInfoOnly;isOutput=true]$WEB_CHANGED"
             name: detectWebChange
-            displayName: 'Detect whether apps/web changed since the parent commit'
+            displayName: 'Detect whether apps/web changed since the parent commit (informational only — does not gate build/deploy)'
 
           - task: AzureCLI@2
-            displayName: 'Resolve existing ACR + API Container App FQDN, build, and push image(s)'
+            displayName: 'Resolve existing ACR + API Container App FQDN, build, and push both images (always)'
             inputs:
               azureSubscription: '${{ parameters.azureServiceConnection }}'
               scriptType: bash
@@ -818,22 +830,21 @@ stages:
                 # than waiting on a fresh deployment's output, unlike the original disabled
                 # Deploy_Dev stage's documented (from-scratch) assumption.
                 #
-                # "Build Web image only when relevant" (PBI-07-01): skipped when apps/web has no
-                # changes since the parent commit (detectWebChange step above) — DeployDev reads
-                # the same flag and correspondingly skips `az containerapp update` for Web too,
-                # so an unchanged Web app is never rebuilt, repushed, or redeployed.
-                if [ "$(detectWebChange.webChanged)" = "true" ]; then
-                  echo "=== Building Web image (apps/web changed; context apps/web, VITE_API_URL=https://$API_FQDN) ==="
-                  docker build \
-                    --build-arg VITE_API_URL="https://$API_FQDN" \
-                    -t "$ACR_LOGIN_SERVER/$(webImageName):$(imageTag)" \
-                    apps/web
+                # PBI-14-05: the Web image is now built and pushed on EVERY main deploy run,
+                # unconditionally — never skipped based on whether apps/web changed in this
+                # specific commit. This guarantees API and Web always ship from the same
+                # pipeline run, tagged with the same $(imageTag), even when apps/web's own
+                # source is unchanged (its build still picks up VITE_API_URL fresh each run,
+                # and — more importantly — this is what keeps DEV's Web Container App from
+                # silently drifting behind whatever main actually contains).
+                echo "=== Building Web image (always; context apps/web, VITE_API_URL=https://$API_FQDN) ==="
+                docker build \
+                  --build-arg VITE_API_URL="https://$API_FQDN" \
+                  -t "$ACR_LOGIN_SERVER/$(webImageName):$(imageTag)" \
+                  apps/web
 
-                  echo "=== Pushing Web image ==="
-                  docker push "$ACR_LOGIN_SERVER/$(webImageName):$(imageTag)"
-                else
-                  echo "=== Skipping Web image build/push — apps/web unchanged since parent commit ==="
-                fi
+                echo "=== Pushing Web image ==="
+                docker push "$ACR_LOGIN_SERVER/$(webImageName):$(imageTag)"
             name: buildAndPush
 
   # ============================================================================================
@@ -847,18 +858,20 @@ stages:
   # "pending-first-build" tag). Deliberately does NOT dependsOn InfrastructureDeploy — API/Web
   # delivery must never be blocked by an infrastructure-only issue (the still-open Function App
   # quota block, or the new Infrastructure-deploy RBAC not being granted yet).
+  #
+  # PBI-14-05: both Container Apps are now updated on EVERY main deploy run, unconditionally —
+  # see ContainerBuildAndPush's own PBI-14-05 comment for why the previous "skip Web when
+  # apps/web didn't change in this commit" behavior caused DEV to silently drift to a stale Web
+  # image, one commit at a time, whenever a main push's own diff happened not to touch
+  # apps/web. Since ContainerBuildAndPush now always builds/pushes both images with the same
+  # $(imageTag), always deploying both here is what actually keeps API and Web coherent.
   # ============================================================================================
   - stage: DeployDev
-    displayName: '5 - Deploy DEV (existing Container Apps only)'
+    displayName: '5 - Deploy DEV (existing Container Apps only — API and Web, always both)'
     dependsOn:
       - ContainerBuildAndPush
       - InfrastructureValidation
     condition: and(succeeded(), eq(variables.isDeployRun, true))
-    variables:
-      # "Update Web only when changed" (PBI-07-01): same flag ContainerBuildAndPush computed and
-      # already used to skip building/pushing the Web image — read here via the same
-      # cross-stage output-variable pattern this file already uses for apiFqdn/apiAppName below.
-      webChanged: $[ stageDependencies.ContainerBuildAndPush.ContainerBuildAndPushJob.outputs['detectWebChange.webChanged'] ]
     jobs:
       - job: DeployDevJob
         displayName: Update DEV Container App revisions
@@ -866,7 +879,7 @@ stages:
           vmImage: ubuntu-latest
         steps:
           - task: AzureCLI@2
-            displayName: 'az containerapp update — API always, Web only when changed (image only, no infra recreation)'
+            displayName: 'az containerapp update — API and Web, always both (image only, no infra recreation)'
             inputs:
               azureSubscription: '${{ parameters.azureServiceConnection }}'
               scriptType: bash
@@ -884,38 +897,42 @@ stages:
                   --resource-group "${{ parameters.resourceGroupName }}" \
                   --image "$ACR_LOGIN_SERVER/$(apiImageName):$(imageTag)"
 
-                if [ "$(webChanged)" = "true" ]; then
-                  echo "Updating $WEB_APP_NAME -> $ACR_LOGIN_SERVER/$(webImageName):$(imageTag)"
-                  az containerapp update \
-                    --name "$WEB_APP_NAME" \
-                    --resource-group "${{ parameters.resourceGroupName }}" \
-                    --image "$ACR_LOGIN_SERVER/$(webImageName):$(imageTag)"
-                else
-                  echo "Skipping Web deployment — apps/web unchanged since parent commit (no new image was built)."
-                fi
+                echo "Updating $WEB_APP_NAME -> $ACR_LOGIN_SERVER/$(webImageName):$(imageTag)"
+                az containerapp update \
+                  --name "$WEB_APP_NAME" \
+                  --resource-group "${{ parameters.resourceGroupName }}" \
+                  --image "$ACR_LOGIN_SERVER/$(webImageName):$(imageTag)"
 
                 API_REVISION=$(az containerapp show --name "$API_APP_NAME" --resource-group "${{ parameters.resourceGroupName }}" --query "properties.latestRevisionName" -o tsv)
                 WEB_REVISION=$(az containerapp show --name "$WEB_APP_NAME" --resource-group "${{ parameters.resourceGroupName }}" --query "properties.latestRevisionName" -o tsv)
                 API_FQDN=$(az containerapp show --name "$API_APP_NAME" --resource-group "${{ parameters.resourceGroupName }}" --query "properties.configuration.ingress.fqdn" -o tsv)
+                WEB_FQDN=$(az containerapp show --name "$WEB_APP_NAME" --resource-group "${{ parameters.resourceGroupName }}" --query "properties.configuration.ingress.fqdn" -o tsv)
+                API_DEPLOYED_IMAGE=$(az containerapp show --name "$API_APP_NAME" --resource-group "${{ parameters.resourceGroupName }}" --query "properties.template.containers[0].image" -o tsv)
+                WEB_DEPLOYED_IMAGE=$(az containerapp show --name "$WEB_APP_NAME" --resource-group "${{ parameters.resourceGroupName }}" --query "properties.template.containers[0].image" -o tsv)
 
-                echo "API revision: $API_REVISION"
-                echo "Web revision: $WEB_REVISION"
+                echo "API revision: $API_REVISION ($API_DEPLOYED_IMAGE)"
+                echo "Web revision: $WEB_REVISION ($WEB_DEPLOYED_IMAGE)"
                 echo "##vso[task.setvariable variable=apiAppName;isOutput=true]$API_APP_NAME"
                 echo "##vso[task.setvariable variable=webAppName;isOutput=true]$WEB_APP_NAME"
                 echo "##vso[task.setvariable variable=apiRevision;isOutput=true]$API_REVISION"
                 echo "##vso[task.setvariable variable=webRevision;isOutput=true]$WEB_REVISION"
                 echo "##vso[task.setvariable variable=apiFqdn;isOutput=true]$API_FQDN"
+                echo "##vso[task.setvariable variable=webFqdn;isOutput=true]$WEB_FQDN"
+                echo "##vso[task.setvariable variable=apiDeployedImage;isOutput=true]$API_DEPLOYED_IMAGE"
+                echo "##vso[task.setvariable variable=webDeployedImage;isOutput=true]$WEB_DEPLOYED_IMAGE"
             name: deploy
 
   # ============================================================================================
   # PBI-07-01 STAGE 6 — Smoke Tests
-  # Six checks against the just-updated, real DEV API Container App: deployed revision/image
-  # tag matches this run; GET /health; POST /chat with a real Claims-triggering message,
-  # asserting X-Correlation-ID is echoed back unchanged; a second POST /chat reusing the same
-  # conversationId (continuity). `curl -f`/explicit `exit 1` on any check failure fails this
-  # step, which fails this stage, which blocks the summary stage — "pipeline must fail if smoke
-  # tests fail" with no extra error-handling code needed. Uses the existing synthetic policy
-  # SYN-POL-0001 (src/services/tools/synthetic/provider.py) — never real customer data.
+  # Checks against the just-updated, real DEV API and Web Container Apps: deployed API image
+  # tag matches this run; deployed Web image tag matches this run (PBI-14-05 — the exact check
+  # that would have caught the stale-Web drift this PBI fixes, had it existed before); GET
+  # /health; POST /chat with a real Claims-triggering message, asserting X-Correlation-ID is
+  # echoed back unchanged; a second POST /chat reusing the same conversationId (continuity).
+  # `curl -f`/explicit `exit 1` on any check failure fails this step, which fails this stage,
+  # which blocks the summary stage — "pipeline must fail if smoke tests fail" with no extra
+  # error-handling code needed. Uses the existing synthetic policy SYN-POL-0001
+  # (src/services/tools/synthetic/provider.py) — never real customer data.
   # ============================================================================================
   - stage: SmokeTests
     displayName: '6 - Smoke Tests'
@@ -925,14 +942,15 @@ stages:
     variables:
       apiFqdn: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.apiFqdn'] ]
       apiAppName: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.apiAppName'] ]
+      webAppName: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.webAppName'] ]
     jobs:
       - job: SmokeTestsJob
-        displayName: Run smoke tests against the deployed DEV API
+        displayName: Run smoke tests against the deployed DEV API and Web apps
         pool:
           vmImage: ubuntu-latest
         steps:
           - task: AzureCLI@2
-            displayName: 'Smoke test 1/4: verify deployed revision/image tag'
+            displayName: 'Smoke test 1/5: verify deployed API image tag'
             inputs:
               azureSubscription: '${{ parameters.azureServiceConnection }}'
               scriptType: bash
@@ -941,27 +959,47 @@ stages:
                 set -e
                 DEPLOYED_IMAGE=$(az containerapp show --name "$(apiAppName)" --resource-group "${{ parameters.resourceGroupName }}" --query "properties.template.containers[0].image" -o tsv)
                 EXPECTED_IMAGE_SUFFIX="$(apiImageName):$(imageTag)"
-                echo "Deployed image: $DEPLOYED_IMAGE"
-                echo "Expected tag:   $EXPECTED_IMAGE_SUFFIX"
+                echo "Deployed API image: $DEPLOYED_IMAGE"
+                echo "Expected tag:        $EXPECTED_IMAGE_SUFFIX"
                 case "$DEPLOYED_IMAGE" in
                   *"$EXPECTED_IMAGE_SUFFIX")
-                    echo "Deployed image matches this pipeline run's image tag: OK" ;;
+                    echo "Deployed API image matches this pipeline run's image tag: OK" ;;
                   *)
-                    echo "MISMATCH: the live Container App is not running the image this run just built and deployed."
+                    echo "MISMATCH: the live API Container App is not running the image this run just built and deployed."
+                    exit 1 ;;
+                esac
+
+          - task: AzureCLI@2
+            displayName: 'Smoke test 2/5: verify deployed Web image tag (PBI-14-05 — catches stale-Web drift)'
+            inputs:
+              azureSubscription: '${{ parameters.azureServiceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -e
+                DEPLOYED_IMAGE=$(az containerapp show --name "$(webAppName)" --resource-group "${{ parameters.resourceGroupName }}" --query "properties.template.containers[0].image" -o tsv)
+                EXPECTED_IMAGE_SUFFIX="$(webImageName):$(imageTag)"
+                echo "Deployed Web image: $DEPLOYED_IMAGE"
+                echo "Expected tag:        $EXPECTED_IMAGE_SUFFIX"
+                case "$DEPLOYED_IMAGE" in
+                  *"$EXPECTED_IMAGE_SUFFIX")
+                    echo "Deployed Web image matches this pipeline run's image tag: OK" ;;
+                  *)
+                    echo "MISMATCH: the live Web Container App is not running the image this run just built and deployed — this is exactly the DEV drift PBI-14-05 fixes; if this fires, DeployDev's unconditional Web update did not actually take effect."
                     exit 1 ;;
                 esac
 
           - script: |
               set -e
-              echo "Smoke test 2/4: GET https://$(apiFqdn)/health"
+              echo "Smoke test 3/5: GET https://$(apiFqdn)/health"
               curl -sf --max-time 30 "https://$(apiFqdn)/health"
               echo ""
               echo "GET /health: OK"
-            displayName: 'Smoke test 2/4: GET /health'
+            displayName: 'Smoke test 3/5: GET /health'
 
           - script: |
               set -e
-              echo "Smoke test 3/4: POST /chat, turn 1 — Claims scenario + correlation ID"
+              echo "Smoke test 4/5: POST /chat, turn 1 — Claims scenario + correlation ID"
               CORR_ID="cicd-smoke-$(Build.BuildId)"
               HEADERS_FILE=$(mktemp)
               BODY=$(curl -sf --max-time 60 -D "$HEADERS_FILE" -X POST "https://$(apiFqdn)/chat" \
@@ -990,11 +1028,11 @@ stages:
                 exit 1
               fi
               echo "Correlation ID propagation: OK"
-            displayName: 'Smoke test 3/4: POST /chat — Claims scenario + correlation ID (turn 1)'
+            displayName: 'Smoke test 4/5: POST /chat — Claims scenario + correlation ID (turn 1)'
 
           - script: |
               set -e
-              echo "Smoke test 4/4: POST /chat, turn 2 — conversation continuity"
+              echo "Smoke test 5/5: POST /chat, turn 2 — conversation continuity"
               BODY2=$(curl -sf --max-time 60 -X POST "https://$(apiFqdn)/chat" \
                 -H "Content-Type: application/json" \
                 -d "{\"userId\":\"cicd-smoke-test\",\"conversationId\":\"$(conversationId)\",\"message\":\"Never mind, thank you.\"}")
@@ -1009,20 +1047,27 @@ stages:
               print(f\"POST /chat turn 2: OK (conversationId preserved: {actual})\")
               "
               echo "Conversation continuity: OK"
-            displayName: 'Smoke test 4/4: POST /chat — conversation continuity (turn 2, same conversationId)'
+            displayName: 'Smoke test 5/5: POST /chat — conversation continuity (turn 2, same conversationId)'
 
   # ============================================================================================
   # PBI-07-01 STAGE 7 (bonus, beyond this PBI's own 6-stage list) — Deployment Summary
-  # Publishes image tags, deployed Container App names/revisions, execution time, a test
-  # summary (parsed from the backend/frontend JUnit artifacts already published in Stages 1-2),
-  # and the Web-only-when-changed / Infrastructure-deploy outcomes as a single pipeline artifact
-  # and build-summary markdown. Deliberately depends on InfrastructureDeploy for ordering/output
-  # access but does NOT require it to have succeeded (see the explicit `dependencies.
-  # InfrastructureDeploy.result` check below, not the blanket `succeeded()` the other
-  # dependencies use) — this summary must still publish even when infra deploy hit the known,
-  # non-blocking quota condition (which itself already exits 0 — see that stage) or any other
-  # infra-only issue, consistent with "must not incorrectly mark unrelated API/Web delivery as
-  # failed."
+  # Publishes image tags, deployed Container App names/revisions/ACTUAL deployed image
+  # references, execution time, a test summary (parsed from the backend/frontend JUnit
+  # artifacts already published in Stages 1-2), and the Infrastructure-deploy outcome as a
+  # single pipeline artifact and build-summary markdown. Deliberately depends on
+  # InfrastructureDeploy for ordering/output access but does NOT require it to have succeeded
+  # (see the explicit `dependencies.InfrastructureDeploy.result` check below, not the blanket
+  # `succeeded()` the other dependencies use) — this summary must still publish even when infra
+  # deploy hit the known, non-blocking quota condition (which itself already exits 0 — see that
+  # stage) or any other infra-only issue, consistent with "must not incorrectly mark unrelated
+  # API/Web delivery as failed."
+  #
+  # PBI-14-05: both the API and Web sections below are now UNCONDITIONAL (both images are
+  # always built/pushed/deployed this run — see ContainerBuildAndPush/DeployDev's own PBI-14-05
+  # comments) and each is verified against $(imageTag) directly from the actual deployed image
+  # reference DeployDev captured (`apiDeployedImage`/`webDeployedImage`), not merely asserted —
+  # this is the same evidence Smoke Tests 1/5 and 2/5 already independently verify, surfaced
+  # here too so the summary is self-contained proof, not just a restatement of intent.
   # ============================================================================================
   - stage: DeploymentSummary
     displayName: '7 (bonus) - Deployment Summary'
@@ -1044,7 +1089,10 @@ stages:
       apiRevision: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.apiRevision'] ]
       webRevision: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.webRevision'] ]
       apiFqdn: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.apiFqdn'] ]
-      webChanged: $[ stageDependencies.ContainerBuildAndPush.ContainerBuildAndPushJob.outputs['detectWebChange.webChanged'] ]
+      webFqdn: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.webFqdn'] ]
+      apiDeployedImage: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.apiDeployedImage'] ]
+      webDeployedImage: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.webDeployedImage'] ]
+      webChangedInfoOnly: $[ stageDependencies.ContainerBuildAndPush.ContainerBuildAndPushJob.outputs['detectWebChange.webChangedInfoOnly'] ]
       infraDeployResult: $[ stageDependencies.InfrastructureDeploy.InfrastructureDeployJob.outputs['infraDeploy.infraDeployResult'] ]
     jobs:
       - job: DeploymentSummaryJob
@@ -1103,21 +1151,29 @@ stages:
                 echo "- **Build:** $(Build.BuildId)  **Commit:** $(Build.SourceVersion)  **Branch:** $(Build.SourceBranchName)"
                 echo "- **Execution time:** $EXEC_TIME"
                 echo ""
-                echo "## Image tags"
+                echo "## Image tags (PBI-14-05: both images always built and pushed this run)"
                 echo "- API: \`$(apiImageName):$(imageTag)\`"
-                if [ "$(webChanged)" = "true" ]; then
-                  echo "- Web: \`$(webImageName):$(imageTag)\` (rebuilt — apps/web changed)"
-                else
-                  echo "- Web: not rebuilt this run — apps/web unchanged since the parent commit"
-                fi
+                echo "- Web: \`$(webImageName):$(imageTag)\`"
+                echo "- (informational only, does not affect this run: apps/web changed since parent commit = $(webChangedInfoOnly))"
                 echo ""
-                echo "## Deployed Container Apps"
+                echo "## Deployed Container Apps (PBI-14-05: both always updated this run)"
                 echo "- API: \`$(apiAppName)\` — revision \`$(apiRevision)\` — https://$(apiFqdn)"
-                if [ "$(webChanged)" = "true" ]; then
-                  echo "- Web: \`$(webAppName)\` — revision \`$(webRevision)\` (redeployed)"
-                else
-                  echo "- Web: \`$(webAppName)\` — revision \`$(webRevision)\` (unchanged, not redeployed)"
-                fi
+                echo "  - Deployed image: \`$(apiDeployedImage)\`"
+                echo "- Web: \`$(webAppName)\` — revision \`$(webRevision)\` — https://$(webFqdn)"
+                echo "  - Deployed image: \`$(webDeployedImage)\`"
+                echo ""
+                echo "## Image tag consistency check"
+                case "$(apiDeployedImage)" in
+                  *"$(apiImageName):$(imageTag)") API_TAG_OK="yes" ;;
+                  *) API_TAG_OK="NO — MISMATCH" ;;
+                esac
+                case "$(webDeployedImage)" in
+                  *"$(webImageName):$(imageTag)") WEB_TAG_OK="yes" ;;
+                  *) WEB_TAG_OK="NO — MISMATCH" ;;
+                esac
+                echo "- API deployed image matches this run's \$(imageTag): $API_TAG_OK"
+                echo "- Web deployed image matches this run's \$(imageTag): $WEB_TAG_OK"
+                echo "(Smoke Tests 1/5 and 2/5 already independently verified and gated on both of these — this section restates the evidence for the summary artifact, it does not re-decide pass/fail.)"
                 echo ""
                 echo "## Infrastructure (Bicep) deploy — Stage 4b"
                 case "$(infraDeployResult)" in
@@ -1132,7 +1188,8 @@ stages:
                 esac
                 echo ""
                 echo "## Smoke tests (Stage 6)"
-                echo "- Deployed revision/image tag verified: passed"
+                echo "- Deployed API image tag verified: passed"
+                echo "- Deployed Web image tag verified: passed (PBI-14-05)"
                 echo "- GET /health: passed"
                 echo "- POST /chat (Claims scenario + correlation ID, turn 1): passed"
                 echo "- POST /chat (conversation continuity, turn 2): passed"
