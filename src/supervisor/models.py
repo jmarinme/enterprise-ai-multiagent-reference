@@ -97,3 +97,8 @@ class SupervisorConfig(BaseModel):
     """Runtime configuration injected into the Supervisor (never read from globals)."""
 
     max_history_messages: int = 20
+    # PBI-14-04 section 8: semantic-first routing confidence thresholds. Operational STARTING
+    # values, not a statistical guarantee — see src.supervisor.semantic_routing.
+    # SemanticRoutingConfig's own docstring for the full rationale.
+    semantic_routing_high_confidence: float = 0.7
+    semantic_routing_low_confidence: float = 0.4

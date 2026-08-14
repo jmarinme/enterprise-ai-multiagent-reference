@@ -127,12 +127,20 @@ async def post_chat(
 
     total_latency_ms = (time.perf_counter() - pipeline_start) * 1000
     try:
-        # PBI-14-03 section 20: real routing telemetry, set by SupervisorOrchestrator itself
-        # (never fabricated here) via the dedicated AgentResponse.routing_diagnostics field —
-        # observability-only, never persisted to the conversation store.
+        # PBI-14-03/PBI-14-04 section 20: real routing telemetry, set by SupervisorOrchestrator
+        # itself (never fabricated here) via the dedicated AgentResponse.routing_diagnostics
+        # field — observability-only, never persisted to the conversation store.
         routing_diagnostics = agent_response.routing_diagnostics or {}
         raw_confidence = routing_diagnostics.get("routingConfidence")
         intent_confidence = float(raw_confidence) if raw_confidence is not None else None
+        raw_alternative_intents = routing_diagnostics.get("alternativeIntents")
+        alternative_intents = (
+            [i for i in raw_alternative_intents.split(",") if i] if raw_alternative_intents else None
+        )
+        raw_requires_clarification = routing_diagnostics.get("requiresClarification")
+        requires_clarification = (
+            raw_requires_clarification == "True" if raw_requires_clarification is not None else None
+        )
         await observability.record_run(
             run_id=run_id,
             conversation_id=agent_response.conversation_id,
@@ -146,6 +154,9 @@ async def post_chat(
             react_events=react_events,
             intent_confidence=intent_confidence,
             routing_reason=routing_diagnostics.get("routingReason"),
+            routing_source=routing_diagnostics.get("routingSource"),
+            requires_clarification=requires_clarification,
+            alternative_intents=alternative_intents,
         )
     except Exception:
         # already swallows its own failures, but this route must never fail the chat response

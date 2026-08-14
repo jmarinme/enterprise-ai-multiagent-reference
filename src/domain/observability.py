@@ -75,6 +75,19 @@ class RunRecord(_CamelModel):
     intent_confidence: float | None = None
     selected_agent: str | None = None
     routing_reason: str | None = None
+    # PBI-14-04: which mechanism actually produced the routing decision
+    # ("semantic" | "deterministic_fallback" | "clarification") — never fabricated as "semantic"
+    # when the resilience fallback fired. See src.supervisor.semantic_routing.RoutingDecision.
+    routing_source: str | None = None
+    # True only when the shared turn interpretation flagged genuine cross-domain ambiguity and
+    # FallbackAgent asked a clarifying question instead of guessing (see
+    # src.agents.fallback_agent). None when routing never reached that decision (e.g. error path).
+    requires_clarification: bool | None = None
+    # Runner-up intent labels the semantic interpretation considered, in order — empty list (not
+    # None) when the call succeeded but found no plausible alternative; None only when routing
+    # never completed (e.g. the error path, or the deterministic-fallback path, which never asks
+    # the LLM for alternatives at all).
+    alternative_intents: list[str] | None = None
 
     tool_calls: list[RunToolCall] = Field(default_factory=list)
 

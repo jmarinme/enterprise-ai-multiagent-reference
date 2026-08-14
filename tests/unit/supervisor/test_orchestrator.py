@@ -2,10 +2,24 @@
 
 Uses InMemoryConversationRepository + RuleBasedIntentResolver + InMemoryAgentRegistry with
 stub agents — 100% deterministic, no Azure dependency.
-"""
 
+PBI-14-04: SupervisorOrchestrator now performs the ONE per-turn semantic call
+(src.supervisor.semantic_routing.resolve_turn) before resolving an Agent. Every test here uses
+a bare MockLLMProvider (no structured_response_plan/structured_response_sequence configured)
+so that call deterministically DEGRADES (interpret_semantics never raises — see
+src.agents.shared.semantic_interpreter) and routing falls back to the exact same
+RuleBasedIntentResolver keyword logic these tests already exercised before this PBI — this file
+intentionally proves the resilience-fallback path, not real semantic classification (see
+tests/unit/supervisor/test_semantic_routing.py for that)."""
+
+from pathlib import Path
+
+from src.agents.shared.semantic_models import TurnInterpretation
 from src.core.tool_calling.models import ReActEventSink
 from src.domain.conversation import MessageRole
+from src.llm.mock_provider import MockLLMProvider
+from src.prompts.filesystem_provider import FileSystemPromptProvider
+from src.prompts.manager import PromptManager
 from src.services.conversation_store.in_memory import InMemoryConversationRepository
 from src.supervisor.intent import RuleBasedIntentResolver
 from src.supervisor.models import (
@@ -17,6 +31,10 @@ from src.supervisor.models import (
 )
 from src.supervisor.orchestrator import SupervisorOrchestrator
 from src.supervisor.registry import InMemoryAgentRegistry
+
+
+def _build_prompt_manager() -> PromptManager:
+    return PromptManager(provider=FileSystemPromptProvider(prompts_root=Path("configs/prompts")))
 
 
 class _StubAgent:
@@ -33,16 +51,20 @@ class _StubAgent:
         self._metadata = metadata or {}
         self.received_requests: list[AgentRequest] = []
         self.received_contexts: list[ConversationContext] = []
+        self.received_turn_interpretations: list[TurnInterpretation | None] = []
 
     async def handle(
         self,
         request: AgentRequest,
         context: ConversationContext,
         on_react_event: ReActEventSink | None = None,
+        turn_interpretation: TurnInterpretation | None = None,
+        turn_interpretation_diagnostic: str = "",
     ) -> AgentResponse:
-        del on_react_event
+        del on_react_event, turn_interpretation_diagnostic
         self.received_requests.append(request)
         self.received_contexts.append(context)
+        self.received_turn_interpretations.append(turn_interpretation)
         return AgentResponse(
             conversation_id=context.conversation_id,
             agent=self.name,
@@ -67,6 +89,8 @@ def _build_supervisor() -> tuple[SupervisorOrchestrator, InMemoryConversationRep
         conversation_repository=repository,
         intent_resolver=RuleBasedIntentResolver(),
         agent_registry=registry,
+        prompt_manager=_build_prompt_manager(),
+        llm_provider=MockLLMProvider(),
     )
     return supervisor, repository, agents
 
@@ -147,6 +171,8 @@ async def test_handle_persists_agent_response_metadata_on_a_new_conversation() -
         conversation_repository=repository,
         intent_resolver=RuleBasedIntentResolver(),
         agent_registry=registry,
+        prompt_manager=_build_prompt_manager(),
+        llm_provider=MockLLMProvider(),
     )
 
     response = await supervisor.handle(
@@ -171,6 +197,8 @@ async def test_handle_updates_persisted_metadata_and_feeds_it_back_into_the_next
         conversation_repository=repository,
         intent_resolver=RuleBasedIntentResolver(),
         agent_registry=registry,
+        prompt_manager=_build_prompt_manager(),
+        llm_provider=MockLLMProvider(),
     )
 
     first = await supervisor.handle(AgentRequest(message="claim one", user_id="user-1"))
@@ -288,17 +316,23 @@ def test_supervisor_is_constructed_via_dependency_injection_not_globals() -> Non
     registry = InMemoryAgentRegistry()
     resolver = RuleBasedIntentResolver()
     config = SupervisorConfig(max_history_messages=5)
+    prompt_manager = _build_prompt_manager()
+    llm_provider = MockLLMProvider()
 
     supervisor = SupervisorOrchestrator(
         conversation_repository=repository,
         intent_resolver=resolver,
         agent_registry=registry,
+        prompt_manager=prompt_manager,
+        llm_provider=llm_provider,
         config=config,
     )
 
     assert supervisor._conversation_repository is repository
     assert supervisor._intent_resolver is resolver
     assert supervisor._agent_registry is registry
+    assert supervisor._prompt_manager is prompt_manager
+    assert supervisor._llm_provider is llm_provider
     assert supervisor._config is config
 
 
@@ -307,6 +341,8 @@ def test_supervisor_uses_default_config_when_none_provided() -> None:
         conversation_repository=InMemoryConversationRepository(),
         intent_resolver=RuleBasedIntentResolver(),
         agent_registry=InMemoryAgentRegistry(),
+        prompt_manager=_build_prompt_manager(),
+        llm_provider=MockLLMProvider(),
     )
 
     assert supervisor._config.max_history_messages == 20

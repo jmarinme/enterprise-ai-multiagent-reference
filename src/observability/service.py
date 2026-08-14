@@ -55,16 +55,20 @@ class ObservabilityService:
         error_category: str | None = None,
         intent_confidence: float | None = None,
         routing_reason: str | None = None,
+        routing_source: str | None = None,
+        requires_clarification: bool | None = None,
+        alternative_intents: list[str] | None = None,
     ) -> None:
         """Never raises. Call from a `try`/`except Exception: logger.warning(...)` at the call
         site is intentionally redundant defense-in-depth with the try/except inside this
         method — both exist because PBI-13-01 §3 requires telemetry failure to never affect the
         chat response under any circumstance.
 
-        intent_confidence/routing_reason (PBI-14-03 section 20): real routing telemetry from
-        src.supervisor.orchestrator's own fully-deterministic decision (ADR-0011) — never
-        fabricated, None when the caller has nothing real to report (e.g. the error path,
-        where routing never completed)."""
+        intent_confidence/routing_reason/routing_source/requires_clarification/
+        alternative_intents (PBI-14-03/PBI-14-04 section 20): real routing telemetry from
+        src.supervisor.semantic_routing's own fully-deterministic decision — never fabricated,
+        None when the caller has nothing real to report (e.g. the error path, where routing
+        never completed)."""
         try:
             run = self._build_run_record(
                 run_id=run_id,
@@ -80,6 +84,9 @@ class ObservabilityService:
                 error_category=error_category,
                 intent_confidence=intent_confidence,
                 routing_reason=routing_reason,
+                routing_source=routing_source,
+                requires_clarification=requires_clarification,
+                alternative_intents=alternative_intents,
             )
             await self._repository.record_run(run)
         except Exception:
@@ -105,6 +112,9 @@ class ObservabilityService:
         error_category: str | None,
         intent_confidence: float | None = None,
         routing_reason: str | None = None,
+        routing_source: str | None = None,
+        requires_clarification: bool | None = None,
+        alternative_intents: list[str] | None = None,
     ) -> RunRecord:
         tool_executed_events = [e for e in react_events if e.event_type == "tool_executed"]
         tool_calls: list[RunToolCall] = []
@@ -177,6 +187,9 @@ class ObservabilityService:
             intent_confidence=intent_confidence,
             selected_agent=agent_response.agent if agent_response else None,
             routing_reason=routing_reason,
+            routing_source=routing_source,
+            requires_clarification=requires_clarification,
+            alternative_intents=alternative_intents,
             tool_calls=tool_calls,
             model=model,
             token_usage=token_usage,

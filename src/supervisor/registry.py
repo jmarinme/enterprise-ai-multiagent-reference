@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from src.agents.shared.semantic_models import TurnInterpretation
 from src.core.tool_calling.models import ReActEventSink
 from src.supervisor.exceptions import AgentNotFoundError
 from src.supervisor.models import AgentRequest, AgentResponse, ConversationContext, IntentCategory
@@ -26,10 +27,23 @@ class Agent(Protocol):
         request: AgentRequest,
         context: ConversationContext,
         on_react_event: ReActEventSink | None = None,
+        turn_interpretation: TurnInterpretation | None = None,
+        turn_interpretation_diagnostic: str = "",
     ) -> AgentResponse:
         """on_react_event (PBI-13-01, optional, default None — every prior caller unaffected):
         forwarded into ToolCallingOrchestrator.run() by any Agent that uses controlled Tool
-        Calling; ignored by any Agent that does not (e.g. FallbackAgent)."""
+        Calling; ignored by any Agent that does not (e.g. FallbackAgent).
+
+        turn_interpretation / turn_interpretation_diagnostic (PBI-14-04, optional, default
+        None/"" — every prior direct caller, e.g. a unit test that calls Agent.handle() without
+        a Supervisor in front of it, is unaffected): the ONE per-turn semantic interpretation
+        SupervisorOrchestrator already produced (src.supervisor.semantic_routing.resolve_turn)
+        before selecting this Agent. A specialist Agent MUST reuse this — never call
+        src.agents.shared.semantic_interpreter.interpret_semantics itself when a non-None value
+        is supplied. When None (no Supervisor in front, e.g. a direct unit test), a specialist
+        Agent degrades to calling interpret_semantics itself, exactly matching PBI-14-03's own
+        behavior — this is a backward-compatible resilience path, never a second call for the
+        same Supervisor-routed turn."""
         ...
 
 

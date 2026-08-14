@@ -69,3 +69,64 @@ Sequenced to keep the "reuse the existing LLM call" constraint verifiable at eve
 - Regression scenarios were built from the exact synthetic fixtures already used elsewhere
   (Juan Pérez's two auto policies, Synthetic Brokerage One's 2026-Q1 commission) rather than
   inventing new synthetic data.
+
+## PBI-14-04 — Semantic-first Supervisor routing
+
+Sequenced to keep the "one semantic call per turn, no LLM-driven Supervisor" constraints
+verifiable at every step, and to preserve every PBI-14-03 test unmodified via a
+backward-compatible fallback:
+
+1. **Repository inspection** — confirmed the exact reported architectural gap (Supervisor routes
+   on `RuleBasedIntentResolver` keyword matching before `agent.handle()` runs; `interpret_
+   semantics` only exists inside each specialist agent; `FallbackAgent` never calls an LLM at
+   all) — matched the driving PBI's own description exactly, no discrepancy to report.
+2. **Shared `TurnInterpretation` model + prompt**
+   (`src/agents/shared/semantic_models.py`, `configs/prompts/supervisor/turn_interpretation.md`)
+   — one structured shape carrying routing signal AND all three domains' optional entity
+   objects in the same schema, plus `to_domain_interpretation` (an adapter back into the
+   unchanged per-domain `Claims/Broker/CommercialSemanticInterpretation` shapes, so no
+   `workflow.py` signature had to change).
+3. **`src/supervisor/semantic_routing.py`** (`resolve_turn`) — the ONE call
+   (`interpret_semantics`, reused unchanged) plus deterministic confidence-threshold routing
+   rules, keyword-corroboration at medium confidence, and `RuleBasedIntentResolver` as the
+   fallback for a degraded call (detected via both the diagnostic string AND an exact
+   safe-empty-sentinel check, since a malformed-JSON parse failure still carries a "[llm=...]"
+   diagnostic — found while writing `test_malformed_structured_output_falls_back_to_rule_based_
+   resolver`, not anticipated up front).
+4. **`SupervisorOrchestrator`** — new `PromptManager`/`LLMProvider` constructor dependencies
+   (reusing the exact same cached instances every agent already used, via
+   `apps/api/src/api/dependencies.py`); calls `resolve_turn` before `_resolve_agent`; passes the
+   resulting `TurnInterpretation` + diagnostic into `agent.handle(...)`; preserves the existing
+   conversation-continuity fallback (an `UNKNOWN`, non-clarification result with an active
+   `current_agent` still stays with that agent) but never applies continuity to a genuine
+   `requires_clarification` case, which always interrupts.
+5. **`Agent` Protocol + all three specialist agents + `FallbackAgent`** — two new optional
+   parameters (`turn_interpretation`, `turn_interpretation_diagnostic`). Each specialist agent
+   reuses a non-None `turn_interpretation` via `to_domain_interpretation` instead of calling
+   `interpret_semantics` itself; falls back to calling it directly only when `None` (no
+   Supervisor in front — the exact PBI-14-03 behavior, preserved as a resilience/backward-
+   compatibility path). `FallbackAgent` gained a small, fixed, bilingual clarification-template
+   catalog keyed by the unordered pair of plausible domains — never LLM-authored wording.
+6. **Observability** — `RunRecord`/`ObservabilityService`/`chat.py`/`observability.py` routes
+   gained `routing_source`/`requires_clarification`/`alternative_intents`, mirroring the exact
+   PBI-14-03 pattern (a dedicated `AgentResponse.routing_diagnostics` field, never the persisted
+   `metadata` channel).
+7. **Tests** — `resolve_turn` unit tests (every confidence band, clarification, both failure
+   modes), domain-paraphrase parametrized tests (sections 11-14's exact phrases), a
+   call-counting `MockLLMProvider` subclass proving exactly one structured call per turn through
+   the full Supervisor + real ClaimsAgent + real Tools pipeline, an intent-switching test
+   (Claims -> Broker -> Commercial across turns), `FallbackAgent` clarification-template tests,
+   and a `TurnInterpretation` schema-shape test asserting no chain-of-thought field exists.
+8. **Documentation** — `ADR-0014`, this sprint folder, `CLAUDE.md` §4.1.
+
+## PBI-14-04 testing strategy
+
+- The domain-paraphrase tests script a plausible, high-confidence classification per message and
+  assert the DOWNSTREAM routing logic converts it correctly — proving the architectural fix
+  (routing no longer blocks semantic understanding from being used), not real Azure OpenAI
+  classification quality for these exact phrasings, which this sandbox cannot verify
+  (`LLM_PROVIDER=mock` locally, no Azure OpenAI credentials configured) — see `decisions.md`.
+- The backward-compatible "fall back to calling `interpret_semantics` directly when
+  `turn_interpretation` is `None`" design meant zero of the ~800 pre-existing tests needed any
+  change for this PBI — confirmed by running the full suite after each implementation step, not
+  only at the end.
