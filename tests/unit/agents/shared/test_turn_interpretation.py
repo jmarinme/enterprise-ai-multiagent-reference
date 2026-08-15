@@ -4,7 +4,8 @@ Claims/Broker/CommercialSemanticInterpretation shape, so no workflow.py signatur
 to reuse it.
 """
 
-from typing import Any
+import pytest
+from pydantic import ValidationError
 
 from src.agents.shared.semantic_models import (
     AlternativeIntent,
@@ -14,6 +15,7 @@ from src.agents.shared.semantic_models import (
     ClaimsSemanticInterpretation,
     CommercialEntities,
     CommercialSemanticInterpretation,
+    CorrectionEntry,
     SemanticInterpretation,
     TurnInterpretation,
     _empty_domain_interpretation,
@@ -86,52 +88,119 @@ def test_turn_interpretation_schema_never_exposes_chain_of_thought() -> None:
 
 
 # ---------------------------------------------------------------------------------------------
-# PBI-14-10: Azure/OpenAI Structured Outputs strict-mode schema-compliance regression tests.
+# PBI-14-10 + PBI-14-12B: Azure/OpenAI Structured Outputs strict-mode schema-compliance
+# regression tests.
 #
 # Root cause this guards against: a live DEV Azure OpenAI HTTP 400 on every real semantic-
-# routing call, because Pydantic's default model_json_schema() output does not satisfy
-# strict=True's contract (every object must set additionalProperties=false; every defined
-# property must appear in `required`, with optionality expressed via nullable type unions, never
-# by omission). Fixed via a shared `_strict_schema_extra` model_config hook (see
-# src.agents.shared.semantic_models) applied to every class actually sent to Azure OpenAI as
-# response_schema (src.llm.models.LLMResponseSchema, strict=True by default, unchanged by this
-# PBI) — never by touching field types/defaults/validation, routing logic, confidence
-# thresholds, prompts, or RuleBasedIntentResolver keywords.
+# routing call. PBI-14-10 fixed one defect class (additionalProperties/required at the object
+# level). PBI-14-12's live diagnosis proved that fix was INCOMPLETE — the checker below (before
+# PBI-14-12B) only inspected object schemas that already had a `properties` key
+# (`if "properties" not in defn: return`), so it silently skipped `corrections`' free-form-map
+# schema entirely, and it never checked for unsupported keywords at all (Field(ge=..., le=...)
+# rendering `minimum`/`maximum` into the schema). PBI-14-12B fixes both the production schemas
+# AND this checker.
 #
-# This test walks the REAL, actual model_json_schema() output (never a hand-written expected
-# schema) so it fails automatically the moment ANY future field is added to one of these classes
-# without the class carrying the compliance hook — the exact regression class this PBI fixes.
+# The checker below is deliberately NOT a mirror of src.agents.shared.semantic_models'
+# _strict_schema_extra implementation (checking "did the hook run" would trivially pass even if
+# the hook itself were wrong, exactly as happened before PBI-14-12B). Instead it is built
+# independently from Azure OpenAI's own documented JSON Schema support/limitations
+# (learn.microsoft.com/en-us/azure/foundry/openai/how-to/structured-outputs, "JSON Schema
+# support and limitations" — fetched live during PBI-14-12's diagnosis, 2026-08-15) and recurses
+# into every place a nested schema can appear: root, $defs, properties, anyOf branches, and array
+# items — so it fails on a genuine violation regardless of which mechanism (or lack of one)
+# produced the schema.
 # ---------------------------------------------------------------------------------------------
 
+# Azure OpenAI Structured Outputs' own documented "Unsupported type-specific keywords" table,
+# transcribed independently of anything in src.agents.shared.semantic_models.
+_AZURE_UNSUPPORTED_KEYWORDS_BY_TYPE: dict[str, set[str]] = {
+    "string": {"minLength", "maxLength", "pattern", "format"},
+    "number": {"minimum", "maximum", "multipleOf"},
+    "integer": {"minimum", "maximum", "multipleOf"},
+    "object": {
+        "patternProperties",
+        "unevaluatedProperties",
+        "propertyNames",
+        "minProperties",
+        "maxProperties",
+    },
+    "array": {
+        "unevaluatedItems",
+        "contains",
+        "minContains",
+        "maxContains",
+        "minItems",
+        "maxItems",
+        "uniqueItems",
+    },
+}
 
-def _assert_object_schema_is_strict_compatible(path: str, defn: dict[str, Any]) -> None:
-    if "properties" not in defn:
-        return  # not an object schema (e.g. a bare array/$ref wrapper) - nothing to check here
-    properties = set(defn["properties"].keys())
-    required = set(defn.get("required", []))
-    assert defn.get("additionalProperties") is False, (
-        f"{path}: additionalProperties must be exactly False for Azure/OpenAI Structured "
-        f"Outputs strict=True (got {defn.get('additionalProperties')!r})"
-    )
-    assert required == properties, (
-        f"{path}: every defined property must appear in `required` under strict=True — "
-        f"missing {properties - required!r} (unexpected extra: {required - properties!r})"
-    )
+
+def _walk_schema_for_violations(node: object, path: str, violations: list[str]) -> None:
+    """Recurses into every place Azure OpenAI would itself need to validate: this node, its
+    object properties, array items, and anyOf branches — independent of $ref/$defs resolution
+    order, so a violation nested arbitrarily deep is still found."""
+    if not isinstance(node, dict):
+        return
+
+    node_type = node.get("type")
+
+    if node_type in _AZURE_UNSUPPORTED_KEYWORDS_BY_TYPE:
+        present = _AZURE_UNSUPPORTED_KEYWORDS_BY_TYPE[node_type] & node.keys()
+        for keyword in sorted(present):
+            violations.append(
+                f"{path}: unsupported keyword {keyword!r} present on type={node_type!r} "
+                f"(Azure OpenAI Structured Outputs strict mode does not support this)"
+            )
+
+    if node_type == "object":
+        additional_properties = node.get("additionalProperties", "<absent>")
+        if additional_properties is not False:
+            violations.append(
+                f"{path}: additionalProperties must be exactly False, got "
+                f"{additional_properties!r} — a schema value here (not the literal False) means "
+                f"an arbitrary-key dictionary/map, which strict mode cannot express"
+            )
+        if "properties" not in node:
+            violations.append(
+                f"{path}: type=object with no 'properties' key at all — this is a free-form "
+                f"map/dictionary schema (e.g. Pydantic's rendering of dict[str, X]), "
+                f"structurally incompatible with strict mode regardless of additionalProperties"
+            )
+        else:
+            properties = set(node["properties"].keys())
+            required = set(node.get("required", []))
+            if required != properties:
+                violations.append(
+                    f"{path}: every defined property must appear in required under strict=True "
+                    f"— missing {properties - required!r} (unexpected extra: "
+                    f"{required - properties!r})"
+                )
+
+    for prop_name, prop_schema in node.get("properties", {}).items():
+        _walk_schema_for_violations(prop_schema, f"{path}.{prop_name}", violations)
+    if "items" in node:
+        _walk_schema_for_violations(node["items"], f"{path}[]", violations)
+    for index, branch in enumerate(node.get("anyOf", [])):
+        _walk_schema_for_violations(branch, f"{path}(anyOf[{index}])", violations)
 
 
 def _assert_full_schema_is_strict_compatible(model: type) -> None:
     schema = model.model_json_schema()
-    _assert_object_schema_is_strict_compatible(f"{model.__name__} (root)", schema)
+    violations: list[str] = []
+    _walk_schema_for_violations(schema, f"{model.__name__} (root)", violations)
     for def_name, def_schema in schema.get("$defs", {}).items():
-        _assert_object_schema_is_strict_compatible(
-            f"{model.__name__} -> $defs.{def_name}", def_schema
+        _walk_schema_for_violations(
+            def_schema, f"{model.__name__} -> $defs.{def_name}", violations
         )
+    assert not violations, f"{model.__name__}: " + "; ".join(violations)
 
 
 def test_turn_interpretation_family_schemas_are_azure_openai_strict_compatible() -> None:
-    """PBI-14-10: TurnInterpretation and every nested object it can generate (AlternativeIntent,
-    ClaimsEntities, BrokerEntities, CommercialEntities) must satisfy strict=True — this is the
-    exact schema sent for the Supervisor's one pre-routing semantic call."""
+    """PBI-14-10 + PBI-14-12B: TurnInterpretation and every nested object it can generate
+    (AlternativeIntent, ClaimsEntities, BrokerEntities, CommercialEntities, CorrectionEntry) must
+    satisfy strict=True — this is the exact schema sent for the Supervisor's one pre-routing
+    semantic call, and the one PBI-14-12 proved was actually failing live in DEV."""
     _assert_full_schema_is_strict_compatible(TurnInterpretation)
 
 
@@ -145,15 +214,49 @@ def test_entity_schemas_are_azure_openai_strict_compatible() -> None:
     _assert_full_schema_is_strict_compatible(CommercialEntities)
 
 
+def test_correction_entry_schema_is_azure_openai_strict_compatible() -> None:
+    """PBI-14-12B: the fixed-shape replacement for the old free-form corrections dict."""
+    _assert_full_schema_is_strict_compatible(CorrectionEntry)
+
+
 def test_semantic_interpretation_family_schemas_are_azure_openai_strict_compatible() -> None:
-    """PBI-14-10: SemanticInterpretation and its three domain subclasses (each specialist
-    Agent's own backward-compat direct-call fallback path, src.agents.shared.semantic_interpreter
-    §4 call sites) share the identical defect class TurnInterpretation had — verified here so a
-    currently-latent path never surfaces the same live HTTP 400 the moment it IS exercised."""
+    """PBI-14-10 + PBI-14-12B: SemanticInterpretation and its three domain subclasses (each
+    specialist Agent's own backward-compat direct-call fallback path,
+    src.agents.shared.semantic_interpreter §4 call sites) share the identical defect classes
+    TurnInterpretation had — verified here so a currently-latent path never surfaces the same
+    live HTTP 400 the moment it IS exercised."""
     _assert_full_schema_is_strict_compatible(SemanticInterpretation)
     _assert_full_schema_is_strict_compatible(ClaimsSemanticInterpretation)
     _assert_full_schema_is_strict_compatible(BrokerSemanticInterpretation)
     _assert_full_schema_is_strict_compatible(CommercialSemanticInterpretation)
+
+
+def test_checker_actually_detects_a_free_form_map_violation() -> None:
+    """Proves the checker is a real oracle, not a rubber stamp: a deliberately reintroduced
+    free-form dict[str, str] property must be caught."""
+    from pydantic import BaseModel, ConfigDict
+
+    from src.agents.shared.semantic_models import _strict_schema_extra
+
+    class _Regression(BaseModel):
+        model_config = ConfigDict(json_schema_extra=_strict_schema_extra)
+        bad_field: dict[str, str] = {}
+
+    violations: list[str] = []
+    _walk_schema_for_violations(_Regression.model_json_schema(), "_Regression (root)", violations)
+    assert any("free-form map" in v for v in violations)
+
+
+def test_checker_actually_detects_an_unsupported_numeric_keyword_violation() -> None:
+    """Proves the checker catches minimum/maximum even if a future field reintroduces
+    Field(ge=..., le=...) on a class whose hook is bypassed or missing."""
+    violations: list[str] = []
+    _walk_schema_for_violations(
+        {"type": "object", "properties": {"x": {"type": "number", "minimum": 0.0}}},
+        "synthetic",
+        violations,
+    )
+    assert any("minimum" in v for v in violations)
 
 
 def test_semantically_optional_fields_remain_nullable_after_strict_fix() -> None:
@@ -174,16 +277,40 @@ def test_semantically_optional_fields_remain_nullable_after_strict_fix() -> None
         assert "null" in types_present, f"{field_name} must remain nullable after the strict fix"
 
 
-def test_confidence_bounds_unchanged_by_strict_fix() -> None:
-    """PBI-14-10 must not touch confidence semantics — only schema required/additionalProperties
-    metadata changed."""
+def test_confidence_schema_no_longer_declares_minimum_maximum() -> None:
+    """PBI-14-12B: minimum/maximum are on Azure OpenAI's own documented unsupported-keyword list
+    for Number types — confirmed via PBI-14-12's live diagnosis to be part of why every real
+    semantic-routing call was failing with a 400. The OUTBOUND schema must no longer declare
+    them; see test_confidence_bounds_enforced_at_runtime_after_numeric_keyword_strip immediately
+    below for proof this does not weaken Pydantic's own runtime validation."""
     turn_schema = TurnInterpretation.model_json_schema()
-    assert turn_schema["properties"]["intent_confidence"]["minimum"] == 0.0
-    assert turn_schema["properties"]["intent_confidence"]["maximum"] == 1.0
+    assert "minimum" not in turn_schema["properties"]["intent_confidence"]
+    assert "maximum" not in turn_schema["properties"]["intent_confidence"]
 
     alt_schema = AlternativeIntent.model_json_schema()
-    assert alt_schema["properties"]["confidence"]["minimum"] == 0.0
-    assert alt_schema["properties"]["confidence"]["maximum"] == 1.0
+    assert "minimum" not in alt_schema["properties"]["confidence"]
+    assert "maximum" not in alt_schema["properties"]["confidence"]
+
+
+def test_confidence_bounds_enforced_at_runtime_after_numeric_keyword_strip() -> None:
+    """PBI-14-12B must NOT weaken application-level validation merely to satisfy Azure's schema
+    — stripping minimum/maximum from the OUTBOUND schema is a request-construction concern only;
+    Field(ge=0.0, le=1.0) still rejects out-of-range values at Python construction time and at
+    model_validate_json parse time, completely independent of what the schema dict declares."""
+    with pytest.raises(ValidationError):
+        TurnInterpretation(intent="claims", intent_confidence=1.5)
+    with pytest.raises(ValidationError):
+        TurnInterpretation(intent="claims", intent_confidence=-0.1)
+    with pytest.raises(ValidationError):
+        AlternativeIntent(intent="claims", confidence=1.5)
+    with pytest.raises(ValidationError):
+        TurnInterpretation.model_validate_json(
+            '{"intent": "claims", "intent_confidence": 2.0}'
+        )
+
+    # In-range values still construct and parse normally.
+    ok = TurnInterpretation(intent="claims", intent_confidence=0.85)
+    assert ok.intent_confidence == 0.85
 
 
 def test_empty_turn_interpretation_construction_unchanged_by_strict_fix() -> None:
@@ -207,6 +334,42 @@ def test_empty_domain_interpretation_construction_unchanged_by_strict_fix() -> N
     assert empty.intent == "unknown"
     assert empty.intent_confidence == 0.0
     assert empty.entities == ClaimsEntities()
+
+
+def test_corrections_round_trips_as_correction_entry_list() -> None:
+    """PBI-14-12B: corrections changed from dict[str, str] to list[CorrectionEntry] to satisfy
+    Azure OpenAI Structured Outputs strict mode (a free-form dict cannot set
+    additionalProperties=false). Same semantic content — which field, and its corrected value —
+    must survive construction, JSON serialization, and re-parsing unchanged."""
+    turn = TurnInterpretation(
+        intent="claims",
+        intent_confidence=0.9,
+        corrections=[
+            CorrectionEntry(field="event_date", corrected_value="2026-08-14"),
+            CorrectionEntry(field="loss_type", corrected_value="collision"),
+        ],
+    )
+
+    dumped = turn.model_dump_json()
+    parsed = TurnInterpretation.model_validate_json(dumped)
+
+    assert parsed.corrections == [
+        CorrectionEntry(field="event_date", corrected_value="2026-08-14"),
+        CorrectionEntry(field="loss_type", corrected_value="collision"),
+    ]
+
+    # to_domain_interpretation forwards corrections unchanged (type-agnostic passthrough).
+    domain = to_domain_interpretation(turn, ClaimsSemanticInterpretation)
+    assert domain.corrections == turn.corrections
+
+
+def test_empty_corrections_list_behaves_like_the_old_empty_dict() -> None:
+    """src.supervisor.semantic_routing._is_empty_sentinel checks `not turn.corrections` —
+    an empty list must be just as falsy as the old empty dict was, so that check's behavior is
+    unchanged by this PBI."""
+    turn = TurnInterpretation(intent="unknown", intent_confidence=0.0)
+    assert turn.corrections == []
+    assert not turn.corrections
 
 
 def test_partial_json_parsing_unchanged_by_strict_fix() -> None:
