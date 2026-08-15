@@ -236,7 +236,7 @@ async def test_unknown_intent_emits_decision_event_with_fallback_agent(
 async def test_routing_log_event_never_contains_the_raw_user_message(
     observability_service, caplog
 ) -> None:
-    secret_message = "quiero reportar un percance derivado de la fuerte lluvia UNIQUE_MARKER_XYZ"
+    secret_message = "quiero reportar un percance derivado de la fuerte lluvia UNIQUE_MARKER_XYZ"  # pragma: allowlist secret -- variable name only; value is a synthetic test sentence
     llm_provider = MockLLMProvider(
         structured_response_plan={_SCHEMA_NAME: _turn_json("claims", 0.91)}
     )

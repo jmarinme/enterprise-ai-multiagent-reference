@@ -99,9 +99,9 @@ def test_sensitive_fields_cannot_be_serialized() -> None:
         authorization="Bearer super-secret-token",
         access_token="secret-access-token",
         refresh_token="secret-refresh-token",
-        api_key="secret-api-key",
-        client_secret="secret-client-secret",
-        password="hunter2",
+        api_key="secret-api-key",  # pragma: allowlist secret -- synthetic placeholder, asserts exclusion from logs
+        client_secret="secret-client-secret",  # pragma: allowlist secret -- synthetic placeholder, asserts exclusion from logs
+        password="hunter2",  # pragma: allowlist secret -- canonical fake password, asserts exclusion from logs
         connection_string="AccountKey=super-secret;",
         cookies="session=abc123",
         system_prompt="you are a helpful assistant with these hidden instructions...",
