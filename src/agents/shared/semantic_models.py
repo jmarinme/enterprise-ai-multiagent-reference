@@ -24,17 +24,42 @@ truth always still comes from a Tool.
 
 from __future__ import annotations
 
-from typing import TypeVar
+from typing import Any, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
+
+
+def _strict_schema_extra(schema: dict[str, Any]) -> None:
+    """PBI-14-10: makes a Pydantic-generated JSON schema Azure/OpenAI Structured Outputs
+    strict-mode compatible. strict=True (src.llm.models.LLMResponseSchema's own default, kept
+    unchanged — see src.agents.shared.semantic_interpreter's call site) requires every object in
+    the schema, root and nested, to set `additionalProperties: false` and to list EVERY defined
+    property in `required` — optionality/nullability must be expressed via the field's own type
+    union (e.g. `str | None`, already rendered by Pydantic as `anyOf: [{type: string}, {type:
+    null}]`), never by omitting the property from `required`. Pydantic v2 never puts a
+    default-having field in `required` on its own, which is exactly why every class below needs
+    this hook.
+
+    Mutates the schema dict Pydantic already built for this model, in place — no field type, no
+    Python-level default, and no runtime validation/parsing behavior changes: `required` here is
+    a purely outbound, request-construction concern for what the model must adhere to when
+    generating a NEW turn interpretation, completely independent of how already-received JSON is
+    parsed back into these same classes (still governed entirely by each field's own default, via
+    `model_validate_json`, exactly as before). Registered once per root class via `model_config`
+    — Pydantic v2 inherits `model_config` (including this hook) into subclasses automatically, so
+    `SemanticInterpretation`'s three domain subclasses do not need to repeat it."""
+    schema["additionalProperties"] = False
+    schema["required"] = list(schema.get("properties", {}).keys())
 
 
 class ClaimsEntities(BaseModel):
     """The free-text/ambiguous subset of ClaimsIntakeState this layer may help fill — never
     policy_number/line_of_business/coverage/policy_validated/claim_reference/adjuster_assigned,
     which only ever come from a Tool result, never from language understanding."""
+
+    model_config = ConfigDict(json_schema_extra=_strict_schema_extra)
 
     customer_name: str | None = None
     event_date: str | None = None
@@ -55,6 +80,8 @@ class BrokerEntities(BaseModel):
     broker_id/broker_active/policy_status/transaction_status/commission_amount/commission_status/
     payment_request_reference, which only ever come from a Tool result."""
 
+    model_config = ConfigDict(json_schema_extra=_strict_schema_extra)
+
     broker_name: str | None = None
     policy_number: str | None = None
     transaction_reference: str | None = None
@@ -66,6 +93,8 @@ class CommercialEntities(BaseModel):
     """The free-text/ambiguous subset of CommercialIntakeState this layer may help fill, plus
     industry/location/insured_value — additional qualification-only context (see module
     docstring); never lead_reference, which only ever comes from a Tool result."""
+
+    model_config = ConfigDict(json_schema_extra=_strict_schema_extra)
 
     company_name: str | None = None
     contact_name: str | None = None
@@ -83,6 +112,8 @@ class SemanticInterpretation(BaseModel):
     """The one structured shape every domain's semantic interpretation call returns (PBI-14-03
     section 3). No chain-of-thought/private-reasoning field exists here, and none may ever be
     added — CLAUDE.md §10 forbids persisting or exposing hidden model reasoning."""
+
+    model_config = ConfigDict(json_schema_extra=_strict_schema_extra)
 
     intent: str
     intent_confidence: float = Field(ge=0.0, le=1.0)
@@ -127,6 +158,8 @@ class AlternativeIntent(BaseModel):
     candidate label and its own confidence, the same shape intent/intent_confidence already
     use."""
 
+    model_config = ConfigDict(json_schema_extra=_strict_schema_extra)
+
     intent: str
     confidence: float = Field(ge=0.0, le=1.0)
 
@@ -143,6 +176,8 @@ class TurnInterpretation(BaseModel):
     (CLAUDE.md §10) — routing_reason is a short, safe, user-irrelevant classification label
     ("User is reporting damage from a vehicle collision."), never step-by-step reasoning text.
     """
+
+    model_config = ConfigDict(json_schema_extra=_strict_schema_extra)
 
     intent: str
     intent_confidence: float = Field(ge=0.0, le=1.0)
