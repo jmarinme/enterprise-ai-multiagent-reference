@@ -132,6 +132,13 @@ deviation from the original task framing.
   stages that both write the same Container Apps' image, so whichever finished last won;
   `DeployDev` now depends on `InfrastructureDeploy` for ordering only (its result is never
   checked, preserving "infra issues must never block DEV delivery") — 2026-08-14.
+- PBI-14-11: Forensic investigation of a reported recurring "Blocked request" Web deployment-
+  drift defect found the symptom does not currently reproduce (Web healthy, single revision,
+  correct commit, 7 days of logs with zero occurrences) — see the addendum below. Closed the
+  latent Bicep image-ownership gap PBI-14-08 disclosed but did not fix (`InfrastructureDeploy`
+  now reads and preserves each existing Container App's current image before applying, instead
+  of relying solely on stage-sequencing), and pinned `DeployDev`/Smoke Tests to the immutable
+  image digest rather than a mutable tag — 2026-08-15.
 
 ## Sprint validation
 
@@ -218,3 +225,45 @@ call itself failed"). `apps/api/src/api/routes/chat.py` emits ONE authoritative
 `semantic_routing_decision`/`semantic_routing_fallback` log event per turn, reusing values
 already computed for the existing `observability.record_run()` call — no new computation, no
 change to routing/ReAct/prompts/thresholds/keywords. The raw user message is never logged.
+
+## PBI-14-11 (addendum — DEV deployment stabilization, not multi-agent semantic intelligence)
+
+Tracked here only because of its assigned PBI number — its actual subject is `azure-pipelines.yml`/
+Bicep deployment identity, unrelated to this sprint's own semantic-intelligence objective above.
+See `decisions.md` and `validation.md` for the full write-up.
+
+**Task premise:** DEV Web was reported as intermittently serving a Vite "Blocked request" error
+despite `main` containing PBI-14-05's and PBI-14-08's fixes.
+
+**Finding:** the premise did not hold against live evidence. A full forensic pass (four-way
+identity matrix, live HTTP fetch of the Web root, single-revision/100%-traffic check, and a
+7-day Log Analytics query for `"Blocked request"` on `ca-tmxap-dev-web`) found **zero**
+occurrences and an exact match between `origin/main` HEAD, the latest pipeline run, and the live
+API/Web build identity. `vite.config.ts` was read and confirmed correct and was **not**
+modified, per the task's own explicit instruction not to re-patch it without proof it is wrong.
+The last three main-branch pipeline runs (#52/#55/#57) do show a real, currently-reproducing
+failure, but it is unrelated to Web: `POST /chat` (Smoke test 6/7) fails with HTTP 401 because an
+Entra ID authentication requirement (`fdd9d6d feat(auth)`) now applies to an endpoint the smoke
+test still calls unauthenticated. That mismatch is out of scope for this PBI (a separate auth/
+smoke-test contract issue, not a deployment-image defect) and was reported to the user rather
+than fixed here, but it explains why the pipeline has looked "broken" on every recent main run
+even though DeployDev/Web have been healthy throughout.
+
+**Fix implemented (with explicit user approval to harden despite no active symptom):** the one
+architectural gap PBI-14-08 disclosed but did not close — `ops/bicep/modules/container-app.bicep`
+still bound the Container App `image` directly and unconditionally to
+`dev.bicepparam`'s hardcoded `'pending-first-build'` placeholder on a non-`existing` resource, so
+correctness depended entirely on `DeployDev` always finishing after `InfrastructureDeploy` in the
+same run. `InfrastructureDeploy` now reads each existing Container App's currently-deployed image
+(tag or digest) before calling `az deployment group validate`/`create` and passes it back as a
+parameter override, so an ordinary infrastructure apply is a no-op for image identity regardless
+of stage ordering — the placeholder now applies only on genuine first bootstrap. Separately,
+`ContainerBuildAndPush` now resolves the ACR digest immediately after each push, and `DeployDev`
+deploys `image@sha256:...` instead of `image:tag` (ACR is Basic/Standard SKU here and does not
+support tag-immutability policies, so the tag alone was never a guaranteed-stable reference).
+Smoke tests 1/7 and 2/7 now assert the deployed digest matches both what `DeployDev` deployed
+and what ACR currently reports for that tag, closing the mutable-tag-drift risk end to end.
+
+**Explicitly not touched:** `apps/web/vite.config.ts`, semantic routing (PBI-14-04/14-10),
+authentication/`apps/api/src/api/dependencies.py`, `ops/bicep/parameters/dev.bicepparam` (no
+values changed — the pipeline supplies overrides at deploy time only).

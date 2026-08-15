@@ -619,11 +619,72 @@ stages:
               inlineScript: |
                 set -e
 
+                # PBI-14-11: read the currently-deployed image (tag or digest) for each existing
+                # Container App and feed it back as an override BEFORE applying Bicep, so this
+                # infrastructure deploy is a no-op for image identity whenever the app already
+                # exists. Ownership boundary: infrastructure deploys must never overwrite the
+                # application image identity that DeployDev (a separate, later stage) owns.
+                # Previously apiImageTag/webImageTag came only from dev.bicepparam's hardcoded
+                # 'pending-first-build' placeholder, and modules/container-app.bicep binds a full
+                # (non-`existing`) Container App resource's `image` directly to that value — every
+                # apply reset both Container Apps back to the placeholder, made safe only by
+                # DeployDev's later PBI-14-08 sequencing dependency re-correcting it afterward in
+                # the same run. That made correctness depend on pipeline stage ordering rather
+                # than on infrastructure deploys being genuinely idempotent for a property
+                # application deployment owns. The placeholder is now used only on true first
+                # bootstrap (the Container App does not exist yet) — never on an ordinary
+                # redeploy, regardless of whether InfrastructureDeploy or DeployDev happens to run
+                # first in a given pipeline execution.
+                resolve_current_image_override() {
+                  local name_suffix="$1"
+                  local out_tag_var="$2"
+                  local out_digest_var="$3"
+
+                  local app_name
+                  app_name=$(az containerapp list --resource-group "${{ parameters.resourceGroupName }}" --query "[?ends_with(name, '$name_suffix')].name | [0]" -o tsv 2>/dev/null || echo "")
+                  if [ -z "$app_name" ]; then
+                    echo "No existing Container App ending in '$name_suffix' — true first bootstrap, dev.bicepparam's placeholder tag applies."
+                    printf -v "$out_tag_var" '%s' ""
+                    printf -v "$out_digest_var" '%s' ""
+                    return
+                  fi
+
+                  local current_image
+                  current_image=$(az containerapp show --name "$app_name" --resource-group "${{ parameters.resourceGroupName }}" --query "properties.template.containers[0].image" -o tsv)
+                  echo "Existing Container App '$app_name' currently runs: $current_image"
+                  case "$current_image" in
+                    *@sha256:*)
+                      printf -v "$out_digest_var" '%s' "${current_image##*@}"
+                      printf -v "$out_tag_var" '%s' ""
+                      ;;
+                    *)
+                      printf -v "$out_tag_var" '%s' "${current_image##*:}"
+                      printf -v "$out_digest_var" '%s' ""
+                      ;;
+                  esac
+                }
+
+                resolve_current_image_override "-api" API_TAG_OVERRIDE API_DIGEST_OVERRIDE
+                resolve_current_image_override "-web" WEB_TAG_OVERRIDE WEB_DIGEST_OVERRIDE
+
+                echo "Resolved overrides: apiImageTag='${API_TAG_OVERRIDE:-<bicepparam default>}' apiImageDigest='${API_DIGEST_OVERRIDE:-<none>}' webImageTag='${WEB_TAG_OVERRIDE:-<bicepparam default>}' webImageDigest='${WEB_DIGEST_OVERRIDE:-<none>}'"
+
+                IMAGE_OVERRIDE_ARGS=()
+                [ -n "$API_TAG_OVERRIDE" ] && IMAGE_OVERRIDE_ARGS+=(apiImageTag="$API_TAG_OVERRIDE")
+                [ -n "$API_DIGEST_OVERRIDE" ] && IMAGE_OVERRIDE_ARGS+=(apiImageDigest="$API_DIGEST_OVERRIDE")
+                [ -n "$WEB_TAG_OVERRIDE" ] && IMAGE_OVERRIDE_ARGS+=(webImageTag="$WEB_TAG_OVERRIDE")
+                [ -n "$WEB_DIGEST_OVERRIDE" ] && IMAGE_OVERRIDE_ARGS+=(webImageDigest="$WEB_DIGEST_OVERRIDE")
+
+                DEPLOY_PARAMS=(--parameters ops/bicep/parameters/dev.bicepparam)
+                if [ ${#IMAGE_OVERRIDE_ARGS[@]} -gt 0 ]; then
+                  DEPLOY_PARAMS+=(--parameters "${IMAGE_OVERRIDE_ARGS[@]}")
+                fi
+
                 echo "=== az deployment group validate ==="
                 az deployment group validate \
                   --resource-group "${{ parameters.resourceGroupName }}" \
                   --template-file ops/bicep/main.bicep \
-                  --parameters ops/bicep/parameters/dev.bicepparam
+                  "${DEPLOY_PARAMS[@]}"
 
                 echo "=== az deployment group create ==="
                 set +e
@@ -631,7 +692,7 @@ stages:
                   --resource-group "${{ parameters.resourceGroupName }}" \
                   --name "pipeline-infra-$(Build.BuildId)" \
                   --template-file ops/bicep/main.bicep \
-                  --parameters ops/bicep/parameters/dev.bicepparam \
+                  "${DEPLOY_PARAMS[@]}" \
                   -o json 2>&1)
                 DEPLOY_EXIT=$?
                 set -e
@@ -834,6 +895,14 @@ stages:
                 echo "=== Pushing API image ==="
                 docker push "$ACR_LOGIN_SERVER/$(apiImageName):$(imageTag)"
 
+                # PBI-14-11: resolve the immutable digest ACR assigned this push, so DeployDev can
+                # deploy `image@sha256:...` rather than the mutable `image:tag` reference — ACR at
+                # this SKU does not enforce tag immutability, so pinning by digest removes any
+                # reliance on a tag never being overwritten with different content after this run.
+                API_IMAGE_DIGEST=$(az acr repository show --name "$ACR_NAME" --image "$(apiImageName):$(imageTag)" --query digest -o tsv)
+                echo "API image digest: $API_IMAGE_DIGEST"
+                echo "##vso[task.setvariable variable=apiImageDigest;isOutput=true]$API_IMAGE_DIGEST"
+
                 # VITE_API_URL is baked into the Web image at build time (Vite inlines VITE_*
                 # vars at build, not container runtime — docs/sprint_00/decisions.md,
                 # PBI-00-03). The DEV API Container App already exists and is already running
@@ -860,6 +929,11 @@ stages:
 
                 echo "=== Pushing Web image ==="
                 docker push "$ACR_LOGIN_SERVER/$(webImageName):$(imageTag)"
+
+                # PBI-14-11: same digest resolution as the API image above.
+                WEB_IMAGE_DIGEST=$(az acr repository show --name "$ACR_NAME" --image "$(webImageName):$(imageTag)" --query digest -o tsv)
+                echo "Web image digest: $WEB_IMAGE_DIGEST"
+                echo "##vso[task.setvariable variable=webImageDigest;isOutput=true]$WEB_IMAGE_DIGEST"
             name: buildAndPush
 
   # ============================================================================================
@@ -915,6 +989,9 @@ stages:
         in(dependencies.ContainerBuildAndPush.result, 'Succeeded'),
         in(dependencies.InfrastructureValidation.result, 'Succeeded')
       )
+    variables:
+      apiImageDigest: $[ stageDependencies.ContainerBuildAndPush.ContainerBuildAndPushJob.outputs['buildAndPush.apiImageDigest'] ]
+      webImageDigest: $[ stageDependencies.ContainerBuildAndPush.ContainerBuildAndPushJob.outputs['buildAndPush.webImageDigest'] ]
     jobs:
       - job: DeployDevJob
         displayName: Update DEV Container App revisions
@@ -934,17 +1011,22 @@ stages:
                 API_APP_NAME=$(az containerapp list --resource-group "${{ parameters.resourceGroupName }}" --query "[?ends_with(name, '-api')].name | [0]" -o tsv)
                 WEB_APP_NAME=$(az containerapp list --resource-group "${{ parameters.resourceGroupName }}" --query "[?ends_with(name, '-web')].name | [0]" -o tsv)
 
-                echo "Updating $API_APP_NAME -> $ACR_LOGIN_SERVER/$(apiImageName):$(imageTag)"
+                # PBI-14-11: deploy by the immutable digest ContainerBuildAndPush resolved right
+                # after pushing, not the mutable tag — this is the one stage authorized to change
+                # what image these Container Apps run, and it now pins that change to an exact,
+                # non-reassignable content digest rather than a tag ACR (Basic/Standard SKU, no
+                # tag-immutability policy support) does not itself guarantee is stable.
+                echo "Updating $API_APP_NAME -> $ACR_LOGIN_SERVER/$(apiImageName)@$(apiImageDigest)"
                 az containerapp update \
                   --name "$API_APP_NAME" \
                   --resource-group "${{ parameters.resourceGroupName }}" \
-                  --image "$ACR_LOGIN_SERVER/$(apiImageName):$(imageTag)"
+                  --image "$ACR_LOGIN_SERVER/$(apiImageName)@$(apiImageDigest)"
 
-                echo "Updating $WEB_APP_NAME -> $ACR_LOGIN_SERVER/$(webImageName):$(imageTag)"
+                echo "Updating $WEB_APP_NAME -> $ACR_LOGIN_SERVER/$(webImageName)@$(webImageDigest)"
                 az containerapp update \
                   --name "$WEB_APP_NAME" \
                   --resource-group "${{ parameters.resourceGroupName }}" \
-                  --image "$ACR_LOGIN_SERVER/$(webImageName):$(imageTag)"
+                  --image "$ACR_LOGIN_SERVER/$(webImageName)@$(webImageDigest)"
 
                 API_REVISION=$(az containerapp show --name "$API_APP_NAME" --resource-group "${{ parameters.resourceGroupName }}" --query "properties.latestRevisionName" -o tsv)
                 WEB_REVISION=$(az containerapp show --name "$WEB_APP_NAME" --resource-group "${{ parameters.resourceGroupName }}" --query "properties.latestRevisionName" -o tsv)
@@ -963,6 +1045,12 @@ stages:
                 echo "##vso[task.setvariable variable=webFqdn;isOutput=true]$WEB_FQDN"
                 echo "##vso[task.setvariable variable=apiDeployedImage;isOutput=true]$API_DEPLOYED_IMAGE"
                 echo "##vso[task.setvariable variable=webDeployedImage;isOutput=true]$WEB_DEPLOYED_IMAGE"
+                # Re-published (not just consumed) so SmokeTests — which only depends on
+                # DeployDev, not ContainerBuildAndPush directly — can read the exact digest this
+                # run deployed, the same way it already reads apiFqdn/webFqdn/apiAppName/webAppName
+                # below.
+                echo "##vso[task.setvariable variable=apiImageDigestOut;isOutput=true]$(apiImageDigest)"
+                echo "##vso[task.setvariable variable=webImageDigestOut;isOutput=true]$(webImageDigest)"
             name: deploy
 
   # ============================================================================================
@@ -992,6 +1080,8 @@ stages:
       webFqdn: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.webFqdn'] ]
       apiAppName: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.apiAppName'] ]
       webAppName: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.webAppName'] ]
+      apiImageDigest: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.apiImageDigestOut'] ]
+      webImageDigest: $[ stageDependencies.DeployDev.DeployDevJob.outputs['deploy.webImageDigestOut'] ]
     jobs:
       - job: SmokeTestsJob
         displayName: Run smoke tests against the deployed DEV API and Web apps
@@ -999,7 +1089,7 @@ stages:
           vmImage: ubuntu-latest
         steps:
           - task: AzureCLI@2
-            displayName: 'Smoke test 1/7: verify deployed API image tag'
+            displayName: 'Smoke test 1/7: verify deployed API image digest (PBI-14-11 — pinned by digest, not mutable tag)'
             inputs:
               azureSubscription: '${{ parameters.azureServiceConnection }}'
               scriptType: bash
@@ -1007,19 +1097,26 @@ stages:
               inlineScript: |
                 set -e
                 DEPLOYED_IMAGE=$(az containerapp show --name "$(apiAppName)" --resource-group "${{ parameters.resourceGroupName }}" --query "properties.template.containers[0].image" -o tsv)
-                EXPECTED_IMAGE_SUFFIX="$(apiImageName):$(imageTag)"
-                echo "Deployed API image: $DEPLOYED_IMAGE"
-                echo "Expected tag:        $EXPECTED_IMAGE_SUFFIX"
+                ACR_NAME=$(az acr list --resource-group "${{ parameters.resourceGroupName }}" --query "[0].name" -o tsv)
+                ACR_DIGEST=$(az acr repository show --name "$ACR_NAME" --image "$(apiImageName):$(imageTag)" --query digest -o tsv)
+                EXPECTED_IMAGE_SUFFIX="$(apiImageName)@$ACR_DIGEST"
+                echo "Deployed API image:           $DEPLOYED_IMAGE"
+                echo "This run's tag ($(imageTag)) currently maps in ACR to digest: $ACR_DIGEST"
+                echo "Digest DeployDev deployed:     $(apiImageDigest)"
+                if [ "$ACR_DIGEST" != "$(apiImageDigest)" ]; then
+                  echo "MISMATCH: ACR now reports a different digest for this run's tag than the digest DeployDev actually deployed — mutable-tag drift between build and deploy (ACR at this SKU does not enforce tag immutability)."
+                  exit 1
+                fi
                 case "$DEPLOYED_IMAGE" in
                   *"$EXPECTED_IMAGE_SUFFIX")
-                    echo "Deployed API image matches this pipeline run's image tag: OK" ;;
+                    echo "Deployed API image matches this pipeline run's digest: OK" ;;
                   *)
-                    echo "MISMATCH: the live API Container App is not running the image this run just built and deployed."
+                    echo "MISMATCH: the live API Container App is not running the digest this run just built and deployed."
                     exit 1 ;;
                 esac
 
           - task: AzureCLI@2
-            displayName: 'Smoke test 2/7: verify deployed Web image tag (PBI-14-05 — catches stale-Web drift)'
+            displayName: 'Smoke test 2/7: verify deployed Web image digest (PBI-14-05/PBI-14-11 — catches stale-Web drift, pinned by digest)'
             inputs:
               azureSubscription: '${{ parameters.azureServiceConnection }}'
               scriptType: bash
@@ -1027,14 +1124,21 @@ stages:
               inlineScript: |
                 set -e
                 DEPLOYED_IMAGE=$(az containerapp show --name "$(webAppName)" --resource-group "${{ parameters.resourceGroupName }}" --query "properties.template.containers[0].image" -o tsv)
-                EXPECTED_IMAGE_SUFFIX="$(webImageName):$(imageTag)"
-                echo "Deployed Web image: $DEPLOYED_IMAGE"
-                echo "Expected tag:        $EXPECTED_IMAGE_SUFFIX"
+                ACR_NAME=$(az acr list --resource-group "${{ parameters.resourceGroupName }}" --query "[0].name" -o tsv)
+                ACR_DIGEST=$(az acr repository show --name "$ACR_NAME" --image "$(webImageName):$(imageTag)" --query digest -o tsv)
+                EXPECTED_IMAGE_SUFFIX="$(webImageName)@$ACR_DIGEST"
+                echo "Deployed Web image:           $DEPLOYED_IMAGE"
+                echo "This run's tag ($(imageTag)) currently maps in ACR to digest: $ACR_DIGEST"
+                echo "Digest DeployDev deployed:     $(webImageDigest)"
+                if [ "$ACR_DIGEST" != "$(webImageDigest)" ]; then
+                  echo "MISMATCH: ACR now reports a different digest for this run's tag than the digest DeployDev actually deployed — mutable-tag drift between build and deploy (ACR at this SKU does not enforce tag immutability)."
+                  exit 1
+                fi
                 case "$DEPLOYED_IMAGE" in
                   *"$EXPECTED_IMAGE_SUFFIX")
-                    echo "Deployed Web image matches this pipeline run's image tag: OK" ;;
+                    echo "Deployed Web image matches this pipeline run's digest: OK" ;;
                   *)
-                    echo "MISMATCH: the live Web Container App is not running the image this run just built and deployed — this is exactly the DEV drift PBI-14-05 fixes; if this fires, DeployDev's unconditional Web update did not actually take effect."
+                    echo "MISMATCH: the live Web Container App is not running the digest this run just built and deployed — this is exactly the DEV drift PBI-14-05 fixes; if this fires, DeployDev's unconditional Web update did not actually take effect."
                     exit 1 ;;
                 esac
 

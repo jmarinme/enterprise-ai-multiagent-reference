@@ -429,3 +429,47 @@ this access was exercised for the first time here).
 
 - A real Azure DevOps pipeline execution of THIS fix — per explicit instruction, this PBI does
   not deploy; the fix's real-world effect can only be confirmed on the next actual `main` run.
+
+## PBI-14-11 (DEV deployment stabilization)
+
+### Phase 1-3 forensics (all against real, live Azure/Azure DevOps — no assumptions)
+
+| Check | Command | Result |
+|---|---|---|
+| `origin/main` HEAD | `git fetch origin main && git rev-parse origin/main` | `0d7b3044dfe985edeeaab48357606a633657f4d5` |
+| Latest main pipeline run | `az pipelines build list --branch refs/heads/main --top 1` | Build #57, `sourceVersion=0d7b304...`, result **failed** |
+| Stage timeline, build #57 | `az devops invoke --area build --resource Timeline --route-parameters buildId=57` | `InfrastructureDeploy` succeeded 02:11-02:13Z, **before** `DeployDev` started 02:13-02:14Z (PBI-14-08 ordering held); `SmokeTests` failed 02:15Z |
+| Per-test smoke results, builds #52/#55/#57 | same Timeline query, `records[?contains(name,'Smoke test')]` | Identical pattern all three runs: tests 1-5 (API/Web tag, API/Web build-commit identity, health) **pass**; test 6/7 (`POST /chat`) **fails** |
+| Smoke test 6/7 raw log | `curl .../_apis/build/builds/57/logs/120` | `Bash exited with code '22'` (curl `-f` HTTP-error exit) |
+| Live API/Web Container App state | `az containerapp show --name ca-tmxap-dev-{api,web} ...` | Both running `dev-57-0d7b304...`, `provisioningState: Succeeded` |
+| Live Web root fetch | `curl -s -o ... -w "HTTP_STATUS:%{http_code}" https://ca-tmxap-dev-web.../` | **HTTP 200**, correct `index.html`, `grep -i blocked` → no match |
+| Live API `/version` | `curl https://ca-tmxap-dev-api.../version` | `build_number=20260815.5, commit_sha=0d7b3044...` — matches `origin/main` HEAD exactly |
+| Live `/chat` reproduction | `curl -X POST https://ca-tmxap-dev-api.../chat -d '{...}'` | **HTTP 401** `"A valid Bearer token is required"` — confirms test 6/7's real cause, unrelated to Web |
+| Web revision/traffic state | `az containerapp revision list --name ca-tmxap-dev-web ...` | 1 revision, `active=True`, `trafficWeight=100`, `activeRevisionsMode: Single` |
+| 7-day Web log search | Log Analytics KQL: `ContainerAppConsoleLogs_CL \| where ContainerAppName_s == "ca-tmxap-dev-web" \| where Log_s has "Blocked request" or Log_s has "not allowed"` | **0 rows** |
+| Log window coverage | KQL: `... \| summarize count(), min(TimeGenerated), max(TimeGenerated)` | 166 rows, `2026-08-08T00:35:12Z` → `2026-08-15T02:15:33Z` (full 7-day retention, not a false-negative from a short window) |
+| ACR tag-immutability support | `az acr show --name acrtmxapdevl3fgxt --query policies` | `"Policies are only supported for managed registries in Premium SKU"` — confirms Basic/Standard SKU has no tag-immutability guarantee |
+| Digest consistency (pre-fix) | `az acr repository show --image tmx-web:dev-57-... --query digest` vs. `az containerapp show --query properties.template.containers[0].image` | ACR digest `sha256:ab663f5...` matched the live app's referenced tag at time of check — no drift found, but tag (not digest) was the reference in use |
+
+### Phase 6 implementation validation
+
+| Check | Command | Result |
+|---|---|---|
+| YAML parses | `python -c "import yaml; yaml.safe_load(open('azure-pipelines.yml'))"` | Parsed OK, **11 stages**, same set as before |
+| Bicep builds (main) | `az bicep build --file ops/bicep/main.bicep --stdout` | exit 0, no errors/warnings |
+| Bicep builds (module) | `az bicep build --file ops/bicep/modules/container-app.bicep --stdout` | exit 0, no errors/warnings |
+| Bicep params build | `az bicep build-params --file ops/bicep/parameters/dev.bicepparam --stdout` | exit 0, no errors/warnings |
+| **Live, non-mutating** ARM validation — tag-preservation path | `az deployment group validate -g rg-tmx-agent-platform-dev --template-file ops/bicep/main.bicep --parameters ops/bicep/parameters/dev.bicepparam --parameters apiImageTag=<current live tag> webImageTag=<current live tag>` | `provisioningState: Succeeded` against the real DEV resource group |
+| **Live, non-mutating** ARM validation — digest-pinning path | same command with `apiImageDigest=<real ACR digest> webImageDigest=<real ACR digest>` instead of tags | `provisioningState: Succeeded` against the real DEV resource group |
+| Diff scope | `git status --short` / `git diff --stat` | Exactly 3 files: `azure-pipelines.yml` (+117/-19), `ops/bicep/main.bicep` (+8), `ops/bicep/modules/container-app.bicep` (+6/-1). No `vite.config.ts`, no `src/`, no `apps/api/src/api/dependencies.py`, no `dev.bicepparam` |
+| Existing test suite relevance | `grep -rl "bicep\|azure-pipelines" tests/` | No matches — no existing pytest/vitest suite targets these infra files (consistent with PBI-14-05/14-08, also infra-only changes validated the same way); not applicable rather than skipped |
+
+### Not run (and why)
+
+- A real Azure DevOps pipeline execution of this fix (`az deployment group create`, an actual
+  `main` push) — per the task's explicit "STOP BEFORE COMMIT... DO NOT DEPLOY" instruction, this
+  PBI does not commit, push, or deploy. `az deployment group validate` (non-mutating, read-only)
+  was run against the real resource group instead, as the closest available proof short of an
+  actual apply.
+- A fix for the `/chat` 401 smoke-test failure — out of scope for this PBI (see `decisions.md`);
+  reported to the user, not fixed here.
