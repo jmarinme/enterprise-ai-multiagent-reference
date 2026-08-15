@@ -31,16 +31,39 @@ from pydantic import BaseModel, ConfigDict, Field
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
 
+#: JSON Schema keywords Azure OpenAI Structured Outputs strict mode does not support on `number`/
+#: `integer` properties (Microsoft Learn, "JSON Schema support and limitations" —
+#: learn.microsoft.com/en-us/azure/foundry/openai/how-to/structured-outputs, confirmed live
+#: 2026-08-15 during PBI-14-12's diagnosis). Pydantic's `Field(ge=..., le=...)` renders as
+#: `minimum`/`maximum` in the generated schema; `multipleOf` is included for the same documented
+#: keyword even though nothing here currently emits it, so a future bounded/stepped numeric field
+#: cannot silently reintroduce this exact defect class.
+_UNSUPPORTED_NUMERIC_KEYWORDS = ("minimum", "maximum", "multipleOf")
+
+
 def _strict_schema_extra(schema: dict[str, Any]) -> None:
-    """PBI-14-10: makes a Pydantic-generated JSON schema Azure/OpenAI Structured Outputs
-    strict-mode compatible. strict=True (src.llm.models.LLMResponseSchema's own default, kept
-    unchanged — see src.agents.shared.semantic_interpreter's call site) requires every object in
-    the schema, root and nested, to set `additionalProperties: false` and to list EVERY defined
-    property in `required` — optionality/nullability must be expressed via the field's own type
-    union (e.g. `str | None`, already rendered by Pydantic as `anyOf: [{type: string}, {type:
-    null}]`), never by omitting the property from `required`. Pydantic v2 never puts a
-    default-having field in `required` on its own, which is exactly why every class below needs
-    this hook.
+    """PBI-14-10 (additionalProperties/required) + PBI-14-12B (numeric-constraint keywords):
+    makes a Pydantic-generated JSON schema Azure/OpenAI Structured Outputs strict-mode
+    compatible. strict=True (src.llm.models.LLMResponseSchema's own default, kept unchanged —
+    see src.agents.shared.semantic_interpreter's call site) requires every object in the schema,
+    root and nested, to set `additionalProperties: false` and to list EVERY defined property in
+    `required` — optionality/nullability must be expressed via the field's own type union (e.g.
+    `str | None`, already rendered by Pydantic as `anyOf: [{type: string}, {type: null}]`), never
+    by omitting the property from `required`. Pydantic v2 never puts a default-having field in
+    `required` on its own, which is exactly why every class below needs this hook.
+
+    PBI-14-12B additionally strips `minimum`/`maximum`/`multipleOf` from every property here —
+    confirmed via PBI-14-12's live diagnosis to be on Azure's own documented unsupported-keyword
+    list for Structured Outputs (a real, deployed 400 on every semantic-routing call, not a
+    theoretical gap): Pydantic's `Field(ge=0.0, le=1.0)` on `intent_confidence`/`confidence`
+    rendered `minimum`/`maximum` into the outbound schema, which Azure OpenAI strict-mode
+    validation rejects outright before any model generation occurs. This ONLY changes what is
+    declared in the OUTBOUND schema sent to the provider — `Field(ge=..., le=...)` still enforces
+    the same 0.0-1.0 bound at the Python/Pydantic level on every construction and
+    `model_validate_json` call, completely independent of this schema-dict mutation; see
+    test_confidence_bounds_enforced_at_runtime_after_numeric_keyword_strip in
+    tests/unit/agents/shared/test_turn_interpretation.py for the proof this does not weaken
+    runtime validation.
 
     Mutates the schema dict Pydantic already built for this model, in place — no field type, no
     Python-level default, and no runtime validation/parsing behavior changes: `required` here is
@@ -52,6 +75,9 @@ def _strict_schema_extra(schema: dict[str, Any]) -> None:
     `SemanticInterpretation`'s three domain subclasses do not need to repeat it."""
     schema["additionalProperties"] = False
     schema["required"] = list(schema.get("properties", {}).keys())
+    for property_schema in schema.get("properties", {}).values():
+        for keyword in _UNSUPPORTED_NUMERIC_KEYWORDS:
+            property_schema.pop(keyword, None)
 
 
 class ClaimsEntities(BaseModel):
@@ -108,6 +134,23 @@ class CommercialEntities(BaseModel):
     insured_value: str | None = None
 
 
+class CorrectionEntry(BaseModel):
+    """One field the caller is explicitly correcting from earlier in the conversation summary —
+    a strict-Structured-Outputs-compatible replacement (PBI-14-12B) for what was previously a
+    free-form `dict[str, str]`. Azure OpenAI Structured Outputs strict mode requires
+    `additionalProperties: false` on every object in the schema; a Python dict with arbitrary
+    keys renders as `additionalProperties: {"type": "string"}` (a schema, not `false`) and has no
+    fixed `properties` list — structurally impossible to express as a strict-compatible object.
+    A fixed-shape entry (this class) carries the same semantic content — which field, and its
+    corrected value — as a list, which strict mode fully supports. See PBI-14-12's diagnosis
+    (docs/sprint_14/decisions.md) for the confirmed live 400 this exact shape caused."""
+
+    model_config = ConfigDict(json_schema_extra=_strict_schema_extra)
+
+    field: str
+    corrected_value: str
+
+
 class SemanticInterpretation(BaseModel):
     """The one structured shape every domain's semantic interpretation call returns (PBI-14-03
     section 3). No chain-of-thought/private-reasoning field exists here, and none may ever be
@@ -119,7 +162,7 @@ class SemanticInterpretation(BaseModel):
     intent_confidence: float = Field(ge=0.0, le=1.0)
     alternative_intents: list[str] = Field(default_factory=list)
     confirmation: bool | None = None
-    corrections: dict[str, str] = Field(default_factory=dict)
+    corrections: list[CorrectionEntry] = Field(default_factory=list)
     already_answered: list[str] = Field(default_factory=list)
     missing_information: list[str] = Field(default_factory=list)
 
@@ -184,7 +227,7 @@ class TurnInterpretation(BaseModel):
     alternative_intents: list[AlternativeIntent] = Field(default_factory=list)
     requires_clarification: bool = False
     confirmation: bool | None = None
-    corrections: dict[str, str] = Field(default_factory=dict)
+    corrections: list[CorrectionEntry] = Field(default_factory=list)
     already_answered: list[str] = Field(default_factory=list)
     missing_information: list[str] = Field(default_factory=list)
     routing_reason: str | None = None
