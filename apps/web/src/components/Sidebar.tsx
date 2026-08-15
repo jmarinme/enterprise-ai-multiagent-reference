@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
 import type { ConversationSummary } from "../api/conversations";
+import { useApiStatus } from "../hooks/useApiStatus";
+import { webAppVersion, webBuildNumber, webCommitSha } from "../config/env";
 
 export interface ExamplePrompt {
   label: string;
@@ -53,6 +55,20 @@ export function Sidebar({
   disabled = false,
 }: SidebarProps) {
   const [searchTerm, setSearchTerm] = useState("");
+  const { apiVersionInfo } = useApiStatus();
+
+  // Build/deployment traceability (PBI-14-06): flag Web/API drift only when the API has
+  // actually reported real pipeline-injected values — "local"/"unknown" placeholders (a
+  // developer running docker-compose without the pipeline) are never treated as a mismatch.
+  const versionDrift =
+    apiVersionInfo !== null &&
+    apiVersionInfo.commit_sha !== "unknown" &&
+    webCommitSha !== "unknown" &&
+    (apiVersionInfo.app_version !== webAppVersion || apiVersionInfo.commit_sha !== webCommitSha);
+
+  const versionTooltip = apiVersionInfo
+    ? `Web: v${webAppVersion} · build ${webBuildNumber} · commit ${webCommitSha}\nAPI: v${apiVersionInfo.app_version} · build ${apiVersionInfo.build_number} · commit ${apiVersionInfo.commit_sha}`
+    : `Web: v${webAppVersion} · build ${webBuildNumber} · commit ${webCommitSha}`;
 
   const filteredConversations = useMemo(() => {
     const normalized = searchTerm.trim().toLowerCase();
@@ -134,6 +150,13 @@ export function Sidebar({
         ))}
       </ul>
       <p className="sidebar__note">Datos sintéticos únicamente — sin pólizas, siniestros o clientes reales.</p>
+      <p
+        className={`sidebar__version${versionDrift ? " sidebar__version--drift" : ""}`}
+        title={versionTooltip}
+      >
+        v{webAppVersion} · build {webBuildNumber}
+        {versionDrift && " ⚠"}
+      </p>
     </aside>
   );
 }

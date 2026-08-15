@@ -118,10 +118,20 @@ deviation from the original task framing.
   demoted to a resilience fallback; FallbackAgent gained deterministic clarification templates;
   observability gained routing_source/requires_clarification/alternative_intents; ADR-0014;
   CLAUDE.md §4.1 updated — 2026-08-14.
+- PBI-14-06: Live DEV deployment evidence (confirmed PBI-14-03/PBI-14-04 both deployed) +
+  build/version traceability — `GET /version` extended with `app_version`/`build_number`/
+  `commit_sha`/`component`; Web build metadata via new Dockerfile ARG/ENV; a low-noise Sidebar
+  version indicator with Web/API drift detection; `azure-pipelines.yml` now injects the same
+  commit identity into both images and verifies it post-deploy (2 new Smoke Tests) — 2026-08-14.
 - PBI-14-07: Fixed `JsonFormatter`'s silent-drop-of-`extra=` defect (root cause of "DEV routing
   telemetry is invisible in logs"); added one authoritative structured routing-decision/fallback
   log event per turn (`semantic_routing_decision`/`semantic_routing_fallback`), safe allowlist,
   never logs the raw user message — 2026-08-14.
+- PBI-14-08: Fixed a real production DEV incident (build #50 deployed `pending-first-build`
+  instead of the new image) — `InfrastructureDeploy` and `DeployDev` were unsequenced sibling
+  stages that both write the same Container Apps' image, so whichever finished last won;
+  `DeployDev` now depends on `InfrastructureDeploy` for ordering only (its result is never
+  checked, preserving "infra issues must never block DEV delivery") — 2026-08-14.
 
 ## Sprint validation
 

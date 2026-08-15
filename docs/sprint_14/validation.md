@@ -216,6 +216,107 @@ none of those `dependsOn` lists were touched.
   instruction not to touch it absent contradicting evidence (none was found — see this file's
   PBI-14-05 root-cause section in `README.md`).
 
+## PBI-14-06 (deployment verification + build/version visibility)
+
+This session had real, authenticated `az` CLI access (subscription Owner on the real DEV
+subscription/tenant) — unlike PBI-14-04/14-05, which both disclosed no Azure credentials were
+available. All commands below were actually executed.
+
+### Section 1 — deployment-state evidence (gathered before any implementation)
+
+| Check | Command | Result |
+|---|---|---|
+| Current `origin/main` HEAD | `git fetch origin && git log --oneline -1 origin/main` | `ad67be6` (PR #51 merge, PBI-14-05) |
+| DEV API Container App | `az containerapp show --name ca-tmxap-dev-api ...` | Active revision `ca-tmxap-dev-api--0000035`, 100% traffic, image `...tmx-api:dev-46-ad67be64822245a4d305ef3448544fcac465b9ae` |
+| DEV Web Container App | `az containerapp show --name ca-tmxap-dev-web ...` | Active revision `ca-tmxap-dev-web--0000017`, 100% traffic, image `...tmx-web:dev-46-ad67be64822245a4d305ef3448544fcac465b9ae` |
+| Image tag == `origin/main` HEAD | exact string comparison | Both images' embedded commit SHA exactly matches `origin/main`'s full HEAD SHA — DEV is current, not stale |
+| PBI-14-03 in deployed commit | `git merge-base --is-ancestor 0a71020 ad67be6...` | **Yes — is an ancestor** |
+| PBI-14-04 in deployed commit | `git merge-base --is-ancestor 767bc03 ad67be6...` | **Yes — is an ancestor** |
+| Deployed API's LLM provider | `az containerapp show ... --query env vars` | `LLM_PROVIDER=azure_openai`, endpoint `https://aoai-tmxap-dev-l3fgxt.openai.azure.com/`, deployment `chat`, model `gpt-5-mini` — real Azure OpenAI, not mock |
+| `GET /health` reachable | `curl https://.../health` | `{"status":"ok"}` |
+
+**Conclusion: both PBI-14-03 and PBI-14-04 (universal semantic routing) ARE deployed to DEV** —
+per the driving task's own branching logic, this means section 8 requires a live diagnostic, not
+a "stop and report drift" outcome.
+
+### Backend
+
+| Command | Result |
+|---|---|
+| `python -m ruff check apps/api/src/config/settings.py apps/api/src/api/routes/version.py` | All checks passed |
+| `python -m mypy apps/api/src/config/settings.py apps/api/src/api/routes/version.py` | Success: no issues found in 2 source files |
+| `python -m pytest tests/unit/api -q` (run from repo root) | **89 passed**, 0 failed (the same command run from `apps/api/src` shows 26 unrelated pre-existing failures — `LocalKnowledgeProvider`'s relative path resolves against cwd; a cwd artifact, not a regression, reproduced identically on the unmodified `origin/main` baseline) |
+| `python -m pytest tests/unit/api/test_version.py -v` | **3 passed** — includes 2 new tests: `test_version_includes_build_traceability_fields`, `test_version_build_traceability_fields_are_sourced_from_settings_not_hardcoded` |
+
+### Frontend
+
+| Command | Result |
+|---|---|
+| `npx tsc --noEmit` (apps/web) | Clean, no errors |
+| `npm run lint` (apps/web) | Clean (`eslint .`, no errors) |
+| `npm run test -- --run` (apps/web) | **9 test files, 50 tests passed** |
+
+### Pipeline
+
+| Command | Result |
+|---|---|
+| `python -c "import yaml; yaml.safe_load(open('azure-pipelines.yml'))"` | Parsed OK, **11 stages** — identical count to the pre-change file |
+| `git diff -U0 azure-pipelines.yml \| grep '^@@'` | Every hunk falls within `variables` (~line 187), `ContainerBuildAndPush` (~817-855), `SmokeTests` (~929-1109), `DeploymentSummary` (~1235) — `ContainerBuildValidation`, `BackendQuality`, `FrontendQuality`, `SecurityScan`, `InfrastructureValidation`, `InfrastructureDeploy`, `ArtifactPublication` all have zero diff hunks |
+
+### Real end-to-end Docker verification (this sandbox has a working Docker daemon)
+
+Actually built both images with pipeline-shaped build-args and ran the containers — not just a
+structural review:
+
+| Step | Command | Result |
+|---|---|---|
+| Build API image | `docker build --file apps/api/Dockerfile --build-arg APP_VERSION=14.6.0 --build-arg BUILD_NUMBER=999 --build-arg COMMIT_SHA=testsha1234 -t tmx-api:pbi1406test .` | Succeeded |
+| Verify Settings picked up build-args | `docker run --rm tmx-api:pbi1406test python -c "from config.settings import Settings; ..."` | `app_version=14.6.0 build_number=999 commit_sha=testsha1234` |
+| Boot container, call real endpoint | `docker run -d -p 18000:8000 ...` then `curl http://localhost:18000/version` | `{"name":"tmx-enterprise-ai-reference-platform","version":"0.1.0","environment":"local","app_version":"14.6.0","build_number":"999","commit_sha":"testsha1234","component":"api"}` |
+| Build Web image | `docker build --build-arg VITE_APP_VERSION=14.6.0 --build-arg VITE_BUILD_NUMBER=999 --build-arg VITE_COMMIT_SHA=testsha1234 -t tmx-web:pbi1406test apps/web` | Succeeded |
+| Boot container, verify commit SHA in served bundle | `curl http://localhost:18001/` → extract `/assets/main-*.js` → `curl .../assets/main-*.js \| grep testsha1234` | Commit SHA literal found in the served JS bundle — **this is the exact mechanism the new Smoke Test 4/7 uses, now proven working, not just theoretically correct** |
+
+Both test images and containers were removed after verification (`docker rmi`/`docker rm -f`) —
+nothing pushed to any registry, no Azure resource touched.
+
+### Section 8 — live semantic-routing diagnostic (real Azure OpenAI, real repo code)
+
+Ran `src.supervisor.semantic_routing.resolve_turn` (unmodified) against the real DEV Azure
+OpenAI resource (`https://aoai-tmxap-dev-l3fgxt.openai.azure.com/`, deployment `chat`, model
+`gpt-5-mini`) using `AzureOpenAIProvider`'s own `DefaultAzureCredential` path, for the exact
+(unaccented) regression sentence: *"quiero reportar un percance derivado de la fuerte lluvia que
+cayó hoy un camión me pego por atras"*.
+
+| Step | Result |
+|---|---|
+| Prompt render (`supervisor.turn_interpretation`) | **Succeeded** — `[prompt=supervisor.turn_interpretation@1.0.0]` |
+| Request construction (model/deployment/temperature handling) | **Correct** — reasoning-family capability gap for `gpt-5-mini` handled as designed (temperature omitted, WARNING logged) |
+| Network call to real Azure OpenAI endpoint | **Reached the real endpoint** |
+| Call result | `401 PermissionDenied`: *"The principal `jose_marin@tokiomarine.com.mx` lacks the required data action `Microsoft.CognitiveServices/accounts/OpenAI/deployments/chat/completions/action`"* |
+| `resolve_turn` graceful degradation | Worked exactly as designed: `routing_source=deterministic_fallback`, `routing_reason=semantic_service_unavailable`, fell back to `RuleBasedIntentResolver`, which also resolved this sentence to `UNKNOWN` (no keyword match) |
+
+This is a genuine, disclosed limitation, not a bug: my own Azure CLI identity (subscription
+Owner) was never expected to carry Azure OpenAI **data-plane** access — the built-in Owner role's
+`DataActions` is empty by Azure's own design; only the deployed app's managed identity
+(`id-tmxap-dev`) was explicitly granted "Cognitive Services OpenAI User"
+(`az role assignment list --assignee e4fb11f4-cf47-4926-a1e3-a8dfaf04d77c --all`, confirmed).
+Completing this diagnostic as the deployed application's own identity requires either a real
+delegated Entra user Bearer token (blocked: `az account get-access-token --resource
+api://67d95215-... ` fails with `AADSTS65001 consent_required`, interactive-only) or granting
+this session's identity the same data-plane RBAC role (a real Azure IAM change, not made without
+explicit authorization — outside "implement code for the current PBI"). See `decisions.md` item 5
+for the full writeup.
+
+### Not run (and why)
+
+- A real Azure DevOps pipeline execution — still not reachable from this sandbox even with real
+  `az` CLI access (the pipeline itself runs on Azure DevOps-hosted agents, a separate system from
+  the subscription's own control/data planes this session can reach directly).
+- The real semantic-routing call as the deployed application's own managed identity, or via a
+  real delegated user token through `POST /chat` — both blocked by independently-confirmed,
+  disclosed auth boundaries (see Section 8 above), neither of which this PBI is authorized to
+  work around (would require either an IAM grant or touching authentication, both out of scope).
+
 ## PBI-14-07 (structured routing telemetry fix)
 
 All commands below were actually executed in this session.
@@ -295,3 +396,36 @@ Semantic service failure (provider outage, deterministic fallback recovered via 
   PBI does not deploy. Section 20/25's exact post-deployment validation procedure is documented
   in `decisions.md`/the final report rather than executed here.
 - `apps/web` tests — nothing under `apps/web` changed in this PBI (see "Frontend impact" above).
+
+## PBI-14-08 (DeployDev / InfrastructureDeploy race condition)
+
+Unlike prior PBIs in this sprint, this diagnosis was backed by a REAL Azure DevOps pipeline
+execution — the `azure-devops` `az` CLI extension successfully queried the actual build #50
+timeline and step logs (previously listed as "Not run (and why)" in earlier PBIs of this sprint;
+this access was exercised for the first time here).
+
+| Check | Command | Result |
+|---|---|---|
+| Real build timeline (stage start/finish) | `az devops invoke --area build --resource Timeline --route-parameters buildId=50 ...` | Confirmed: stage 5 (DeployDev) finished `23:14:37Z`, stage 4b (InfrastructureDeploy) finished `23:17:50Z` — 4b after 5 |
+| Cross-check against a known-good run | same query, `buildId=46` | Confirmed opposite ordering (4b finished `16:59:14Z`, before 5's `17:00:21Z`) — proves the race is real and non-deterministic, not a new deterministic regression |
+| DeployDev's own step log | `az devops invoke --area build --resource Logs --route-parameters buildId=50 logId=94 ...` | Confirmed both `az containerapp update` calls succeeded with the correct `dev-50-321ce9fe...` images at the time they ran |
+| Live Azure state (API) | `az containerapp show --name ca-tmxap-dev-api ...` | `pending-first-build`, revision `--0000037`, created `23:17:22Z` (inside 4b's window) |
+| Live Azure state (Web) | `az containerapp show --name ca-tmxap-dev-web ...` | `pending-first-build`, revision `--0000019`, created `23:16:02Z` |
+| ACR contents | `az acr repository show-tags --name acrtmxapdevl3fgxt --repository tmx-api/tmx-web` | Both `dev-50-321ce9fe...` tags present — confirms build/push was never at fault |
+| `ops/bicep/parameters/dev.bicepparam` | `grep pending-first-build ops/bicep/parameters/*.bicepparam` | `apiImageTag`/`webImageTag = 'pending-first-build'` confirmed hardcoded |
+| `ops/bicep/modules/container-app.bicep` | manual read | `resource containerApp ... = {...}` (full, non-`existing` declaration), `image: '${...}/${imageName}:${imageTag}'` bound directly to the hardcoded parameter |
+
+### After the fix
+
+| Check | Command | Result |
+|---|---|---|
+| YAML parses | `python -c "import yaml; yaml.safe_load(open('azure-pipelines.yml'))"` | Parsed OK, **11 stages** — identical count to the pre-change file |
+| `DeployDev.dependsOn` includes `InfrastructureDeploy` | same script, inspect `dependsOn` | `['ContainerBuildAndPush', 'InfrastructureValidation', 'InfrastructureDeploy']` |
+| `DeployDev.condition` never checks `InfrastructureDeploy`'s result | same script, inspect `condition` | Explicit `in(dependencies.ContainerBuildAndPush.result, 'Succeeded')` / `in(dependencies.InfrastructureValidation.result, 'Succeeded')` checks only — no reference to `InfrastructureDeploy` |
+| `git diff --stat` | `git diff --stat` | `azure-pipelines.yml` — single hunk, 29 insertions/1 deletion, strictly inside `DeployDev`'s own block |
+| Nothing else touched | `git status --short ops/bicep/ src/ apps/` | Empty — zero Bicep or application code changes |
+
+### Not run (and why)
+
+- A real Azure DevOps pipeline execution of THIS fix — per explicit instruction, this PBI does
+  not deploy; the fix's real-world effect can only be confirmed on the next actual `main` run.
