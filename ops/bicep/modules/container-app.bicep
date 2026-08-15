@@ -28,6 +28,9 @@ param imageName string
 @description('Image tag to deploy. Must be supplied per environment; never defaulted here.')
 param imageTag string
 
+@description('Full image digest (sha256:...) to pin the deployment to, taking precedence over imageTag when non-empty (PBI-14-11). CI/CD resolves this right after pushing, so ordinary deploys reference an immutable digest rather than a mutable tag. Empty string (the default) falls back to imageTag — used only for first bootstrap, before any digest has ever been resolved.')
+param imageDigest string = ''
+
 @description('Port the container listens on.')
 param targetPort int
 
@@ -109,7 +112,9 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
       containers: [
         {
           name: name
-          image: '${containerRegistryLoginServer}/${imageName}:${imageTag}'
+          image: empty(imageDigest)
+            ? '${containerRegistryLoginServer}/${imageName}:${imageTag}'
+            : '${containerRegistryLoginServer}/${imageName}@${imageDigest}'
           resources: {
             cpu: json(cpuCores)
             memory: memory

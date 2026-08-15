@@ -190,6 +190,9 @@ param apiImageName string
 @description('API image tag to deploy. Must be supplied by the environment parameter file — never defaulted here.')
 param apiImageTag string
 
+@description('API image digest (sha256:...) to pin the deployment to, taking precedence over apiImageTag when non-empty (PBI-14-11). Empty string (the default) uses apiImageTag instead — see modules/container-app.bicep imageDigest.')
+param apiImageDigest string = ''
+
 @description('API container CPU cores, e.g. 0.25.')
 param apiCpuCores string = '0.25'
 
@@ -209,6 +212,9 @@ param webImageName string
 
 @description('Web image tag to deploy. Must be supplied by the environment parameter file — never defaulted here.')
 param webImageTag string
+
+@description('Web image digest (sha256:...) to pin the deployment to, taking precedence over webImageTag when non-empty (PBI-14-11). Empty string (the default) uses webImageTag instead — see modules/container-app.bicep imageDigest.')
+param webImageDigest string = ''
 
 @description('Web container CPU cores, e.g. 0.25.')
 param webCpuCores string = '0.25'
@@ -559,6 +565,7 @@ module apiContainerApp 'modules/container-app.bicep' = {
     containerRegistryLoginServer: containerRegistry.outputs.loginServer
     imageName: apiImageName
     imageTag: apiImageTag
+    imageDigest: apiImageDigest
     targetPort: 8000
     externalIngress: true
     cpuCores: apiCpuCores
@@ -657,6 +664,7 @@ module webContainerApp 'modules/container-app.bicep' = {
     containerRegistryLoginServer: containerRegistry.outputs.loginServer
     imageName: webImageName
     imageTag: webImageTag
+    imageDigest: webImageDigest
     targetPort: 3000
     externalIngress: true
     cpuCores: webCpuCores

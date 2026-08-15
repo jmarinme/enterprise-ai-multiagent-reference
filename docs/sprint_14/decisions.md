@@ -393,3 +393,80 @@ placeholder image parameter on a non-`existing` resource) remains a real, if now
 sequencing-neutralized, architectural sharp edge; a future PBI could still consider parameterizing
 `dev.bicepparam`'s image tags dynamically or referencing the Container Apps as `existing` post-
 bootstrap, but neither is required to close this specific defect.
+
+## PBI-14-11 (DEV deployment stabilization — the task's premise did not survive evidence)
+
+**Driving task's framing.** DEV Web was reported as *"intermittently"* serving a Vite "Blocked
+request" error despite `main` already containing PBI-14-05's and PBI-14-08's fixes, and asked for
+a 7-phase forensic investigation culminating in a permanent architectural fix, explicitly
+prohibiting re-touching `apps/web/vite.config.ts` "unless evidence proves main itself is wrong."
+
+**What the evidence actually showed (Phase 1-4).** A four-way identity check (`origin/main` HEAD
+`0d7b3044dfe985edeeaab48357606a633657f4d5`, the latest main pipeline run's source SHA, the live
+API's `GET /version`, and the live Web bundle's embedded commit SHA) matched exactly, with no
+drift. A direct live fetch of `https://ca-tmxap-dev-web.../` returned HTTP 200 with the correct
+`index.html` and no "blocked" text. The Web Container App has exactly one active revision at
+100% traffic (`activeRevisionsMode: Single`), ruling out a traffic-split explanation for
+"intermittent." A Log Analytics query across `ca-tmxap-dev-web`'s full 7-day retention window
+(2026-08-08 through 2026-08-15, 166 log lines) found zero occurrences of "Blocked request" or
+"not allowed." The last three main pipeline runs (build #52, #55, #57) all show identical
+results: Smoke tests 1-5 (API/Web image tag, API/Web build-commit identity, health) pass every
+time; only test 6/7 (`POST /chat`) fails, with a live-reproduced HTTP 401 `"A valid Bearer token
+is required"` — an authentication requirement introduced by an earlier, unrelated commit
+(`fdd9d6d feat(auth)`) that the smoke test was never updated to satisfy. This resolves Phase 3's
+own "smoke tests passed but the browser is broken — this contradiction MUST be resolved"
+requirement, but not in the direction the task assumed: the contradiction dissolves because the
+Web-blocking symptom is not currently occurring at all; the pipeline's red status has an
+unrelated, real cause.
+
+**Root-cause classification (Phase 4).** None of categories A-I (all Web-artifact-specific)
+apply — there is no currently-reproducing Web defect to classify. The closest fit is J: no active
+symptom, but the exact latent risk PBI-14-08 already disclosed (`ops/bicep/modules/
+container-app.bicep` still binds `image` directly to `dev.bicepparam`'s hardcoded
+`'pending-first-build'` on a non-`existing` resource, made safe only by stage-ordering) remains
+real and worth closing regardless.
+
+**Decision, made with the user (`AskUserQuestion`), on how to proceed.** Rather than fabricate a
+Web root cause the evidence did not support, or silently stop, the findings were reported and the
+user chose "harden anyway": close the Bicep ownership gap and adopt digest-pinning even without a
+currently-reproducing symptom, since both were already independently justified by the evidence
+above and match Phase 5's own explicit requirements. The `/chat` 401 finding was surfaced but
+deliberately left unfixed here — it is an authentication/smoke-test contract mismatch, not a
+deployment-image defect, and fixing it is a distinct concern outside this PBI's scope (CLAUDE.md
+§7: "do not touch semantic routing/PBI-14-10 except as necessary for deployment verification";
+the same "smallest viable change" principle applies to auth, which PBI-14-11 never owned).
+
+**Fix.** Two coordinated changes, ownership boundary: infrastructure deploys must never overwrite
+the image identity application deployment (`DeployDev`) owns.
+1. `InfrastructureDeploy` now queries each existing Container App's currently-deployed image
+   (tag or digest, parsed from `properties.template.containers[0].image`) immediately before
+   `az deployment group validate`/`create`, and passes it back as a Bicep parameter override
+   (`apiImageTag`/`apiImageDigest`/`webImageTag`/`webImageDigest`). An ordinary apply against an
+   app that already exists is now a genuine no-op for image identity — `dev.bicepparam`'s
+   placeholder is used only when the app does not exist yet (true first bootstrap). This makes
+   PBI-14-08's sequencing dependency (`DeployDev` waits for `InfrastructureDeploy`) a
+   belt-and-suspenders nicety rather than the sole thing preventing regression; it is left in
+   place unchanged.
+2. `ContainerBuildAndPush` resolves the ACR digest for each image immediately after pushing
+   (`az acr repository show --query digest`) and passes it through to `DeployDev`, which now
+   calls `az containerapp update --image name@sha256:...` instead of `name:tag`. This was added
+   because ACR at this subscription's SKU (Basic/Standard) does not support tag-immutability
+   policies (confirmed via `az acr show --query policies` — `"Policies are only supported for
+   managed registries in Premium SKU"`), so a tag alone was never a guaranteed-stable reference,
+   even though in practice every tag already embeds a unique `Build.BuildId` + full commit SHA.
+   Smoke tests 1/7 and 2/7 were updated to assert three things together: the digest ACR currently
+   reports for this run's tag, the digest `DeployDev` actually deployed, and the digest the live
+   Container App references, all match — closing the mutable-tag-drift risk (Phase 4 category D)
+   end to end rather than only checking the tag string.
+
+**Why `ops/bicep/parameters/dev.bicepparam` was not changed.** The override values are supplied
+by the pipeline at deploy time (`--parameters ops/bicep/parameters/dev.bicepparam --parameters
+apiImageTag=... ...`, later flags win); the file's own placeholder defaults remain correct and
+necessary for true first-bootstrap deploys of a brand-new environment, so it was left untouched —
+the smallest change that closes the ownership gap.
+
+**Why `apps/web/vite.config.ts`, semantic routing, and auth were not touched.** The task itself
+prohibited re-touching `vite.config.ts` without proof `main` is wrong; the evidence found the
+opposite (it is correct and the live symptom does not reproduce). Semantic routing (PBI-14-04/
+14-10) and Entra ID authentication (`apps/api/src/api/dependencies.py`) are unrelated to
+deployment image identity and were out of this PBI's explicit scope.
