@@ -4,6 +4,7 @@ Covers: configuration validation, mocked success, mocked timeout, mocked rate li
 generic provider error, and the Entra ID vs. SecretProvider-backed API-key auth paths.
 """
 
+import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -23,6 +24,7 @@ from src.llm.models import (
     LLMMessage,
     LLMMessageRole,
     LLMRequest,
+    LLMResponseSchema,
     LLMToolDefinition,
     ToolCallArgument,
     ToolCallRequest,
@@ -174,6 +176,69 @@ async def test_generate_generic_status_error_raises_llm_provider_error(
         await provider.generate(
             LLMRequest(messages=[LLMMessage(role=LLMMessageRole.USER, content="hello")])
         )
+
+
+@patch("src.llm.azure_openai_provider.AsyncAzureOpenAI")
+@patch("azure.identity.aio.DefaultAzureCredential")
+@patch("azure.identity.aio.get_bearer_token_provider")
+async def test_generate_status_error_logs_sanitized_provider_diagnostic(
+    mock_token_provider: MagicMock,
+    mock_credential_cls: MagicMock,
+    mock_client_cls: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """PBI-14-13: the real Azure OpenAI error detail (status/code/type/param/message/deployment/
+    api_version) must reach the logs so a live DEV 400 is diagnosable — sanitized, never
+    leaking secrets/tokens/Authorization headers/raw prompts/raw user messages/raw request or
+    response bodies. Body shape and message text are copied verbatim from a real, live DEV
+    reproduction (PBI-14-13, correlationId ce901473-5337-4e28-acad-8b853ccca2b4): Azure's SDK
+    exposes APIStatusError.body FLAT (message/type/param/code as top-level keys), not wrapped
+    in an {"error": {...}} envelope as OpenAI's own docs show — an earlier version of this
+    diagnostic assumed the wrapped shape and silently logged None for every field against this
+    exact real response."""
+    mock_client = mock_client_cls.return_value
+    mock_client.chat.completions.create = AsyncMock(
+        side_effect=APIStatusError(
+            "Bad Request",
+            response=_fake_response(400),
+            body={
+                "message": (
+                    "Invalid schema for response_format 'turn_interpretation': In "
+                    "context=(), 'required' is required to be supplied and to be an array "
+                    "including every key in properties. Extra required key 'corrections' "
+                    "supplied."
+                ),
+                "type": "invalid_request_error",
+                "param": "response_format",
+                "code": None,
+            },
+        )
+    )
+    provider = _build_provider(deployment="chat")
+
+    with (
+        caplog.at_level(logging.ERROR, logger="src.llm.azure_openai_provider"),
+        pytest.raises(LLMProviderError),
+    ):
+        await provider.generate(
+            LLMRequest(
+                messages=[LLMMessage(role=LLMMessageRole.USER, content="hello")],
+                response_schema=LLMResponseSchema(
+                    name="turn_interpretation", schema={"type": "object"}
+                ),
+            )
+        )
+
+    logged = " ".join(record.getMessage() for record in caplog.records)
+    assert "http_status=400" in logged
+    assert "invalid_request_error" in logged
+    assert "response_format" in logged  # provider_error_param
+    assert "corrections" in logged  # the real, actionable schema-validation detail
+    assert "deployment=chat" in logged
+    assert "api_version=2024-10-21" in logged
+    # Never a secret/token/header, regardless of provider error content.
+    for forbidden in ("Bearer ", "Authorization", "api-key", "api_key=sk-"):
+        assert forbidden not in logged
 
 
 @patch("src.llm.azure_openai_provider.AsyncAzureOpenAI")

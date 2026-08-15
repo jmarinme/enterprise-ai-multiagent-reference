@@ -47,6 +47,28 @@ SchemaT = TypeVar("SchemaT", bound=BaseModel)
 _FALLBACK_INTENT = "unknown"
 _FALLBACK_CONFIDENCE = 0.0
 
+# PBI-14-13: scoped ONLY to this function's own LLMGenerationSettings construction — never the
+# global LLMGenerationSettings default (src.llm.models, still 512, unchanged, still what
+# src.core.tool_calling.orchestrator.ToolCallingOrchestrator and
+# src.agents.shared.annotation.annotate_with_prompt_and_llm use for every non-semantic-
+# interpretation call). interpret_semantics has exactly 4 call sites (Supervisor's
+# resolve_turn, ClaimsAgent/BrokerAgent/CommercialIntakeAgent's own backward-compat direct-call
+# fallback paths) and is used for NOTHING else — every one of them needs this same larger
+# budget, so raising it here (rather than threading a new parameter through 4 call sites) is
+# the smallest change that is still correctly scoped to "semantic interpretation calls only".
+#
+# Root cause (PBI-14-13 live DEV diagnosis, correlationId 55c38af7-c8c1-4e87-a3f4-5e65b0a2f91d):
+# the deployed model (gpt-5-mini) is reasoning-family — it spends tokens from this SAME budget
+# on hidden reasoning before emitting any visible output. The previous 512-token budget was
+# exhausted entirely by reasoning, leaving `message.content` empty, which
+# `model_validate_json("")` correctly rejected ("EOF while parsing a value") — Azure OpenAI had
+# already accepted the request (200 OK); the schema was never the problem for this failure.
+# 4096 is a conservative starting budget (not the max the model supports) sized to leave room
+# for both reasoning overhead and the full TurnInterpretation JSON payload (intent, confidence,
+# alternatives, and one domain's entities) — see decisions.md for why this value, not a larger
+# one, was chosen first.
+_SEMANTIC_CALL_MAX_OUTPUT_TOKENS = 4096
+
 
 async def interpret_semantics(  # noqa: UP047
     schema_name: str,
@@ -80,7 +102,9 @@ async def interpret_semantics(  # noqa: UP047
                     LLMMessage(role=LLMMessageRole.SYSTEM, content=rendered_prompt.text),
                     LLMMessage(role=LLMMessageRole.USER, content=user_message),
                 ],
-                settings=LLMGenerationSettings(),
+                settings=LLMGenerationSettings(
+                    max_output_tokens=_SEMANTIC_CALL_MAX_OUTPUT_TOKENS
+                ),
                 response_schema=LLMResponseSchema(
                     name=schema_name, schema=schema_type.model_json_schema()
                 ),
