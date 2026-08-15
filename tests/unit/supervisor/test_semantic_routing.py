@@ -16,6 +16,8 @@ from src.supervisor.semantic_routing import (
     ROUTING_SOURCE_CLARIFICATION,
     ROUTING_SOURCE_DETERMINISTIC_FALLBACK,
     ROUTING_SOURCE_SEMANTIC,
+    SEMANTIC_ERROR_PROVIDER,
+    SEMANTIC_ERROR_SCHEMA_VALIDATION,
     SemanticRoutingConfig,
     resolve_turn,
 )
@@ -75,6 +77,9 @@ async def test_high_confidence_claims_routes_semantically() -> None:
     assert decision.category == IntentCategory.CLAIMS
     assert decision.routing_source == ROUTING_SOURCE_SEMANTIC
     assert decision.requires_clarification is False
+    # PBI-14-07: successful semantic routing must never be reported as a semantic failure.
+    assert decision.semantic_call_succeeded is True
+    assert decision.semantic_error_category is None
 
 
 async def test_high_confidence_broker_routes_semantically() -> None:
@@ -160,6 +165,11 @@ async def test_medium_confidence_without_corroboration_requires_clarification() 
     assert decision.category == IntentCategory.UNKNOWN
     assert decision.routing_source == ROUTING_SOURCE_CLARIFICATION
     assert decision.requires_clarification is True
+    # PBI-14-07: ambiguity is not a technical failure — the semantic call itself succeeded, it
+    # just found two plausible intents. Must be distinguishable from a real provider/schema
+    # failure in observability, even though both currently route through non-"semantic" sources.
+    assert decision.semantic_call_succeeded is True
+    assert decision.semantic_error_category is None
 
 
 async def test_explicit_requires_clarification_flag_always_clarifies() -> None:
@@ -212,6 +222,13 @@ async def test_low_confidence_falls_back_to_keyword_resolver() -> None:
     assert decision.category == IntentCategory.CLAIMS
     assert decision.routing_source == ROUTING_SOURCE_DETERMINISTIC_FALLBACK
     assert decision.routing_reason == "low_semantic_confidence"
+    # PBI-14-07: the critical case routing_source/routing_reason alone cannot disambiguate — the
+    # semantic call SUCCEEDED here (it returned a real, if low-confidence, classification); only
+    # the deterministic ROUTING choice fell back to keywords. Must never be reported the same way
+    # as test_semantic_service_unavailable_falls_back_to_rule_based_resolver's genuine failure
+    # below, even though both share routing_source=deterministic_fallback.
+    assert decision.semantic_call_succeeded is True
+    assert decision.semantic_error_category is None
 
 
 async def test_unknown_intent_routes_to_fallback_without_clarification() -> None:
@@ -254,6 +271,10 @@ async def test_semantic_service_unavailable_falls_back_to_rule_based_resolver() 
     assert decision.category == IntentCategory.CLAIMS
     assert decision.routing_source == ROUTING_SOURCE_DETERMINISTIC_FALLBACK
     assert decision.routing_reason == "semantic_service_unavailable"
+    # PBI-14-07: a real technical failure (the LLM call itself raised) — must be reported as
+    # such, distinguishable from the "succeeded but low confidence" case above.
+    assert decision.semantic_call_succeeded is False
+    assert decision.semantic_error_category == SEMANTIC_ERROR_PROVIDER
 
 
 async def test_malformed_structured_output_falls_back_to_rule_based_resolver() -> None:
@@ -272,3 +293,37 @@ async def test_malformed_structured_output_falls_back_to_rule_based_resolver() -
 
     assert decision.category == IntentCategory.CLAIMS
     assert decision.routing_source == ROUTING_SOURCE_DETERMINISTIC_FALLBACK
+    # PBI-14-07: the completion arrived (unlike the provider-outage case above) but failed
+    # schema validation — a distinct, correctly-classified failure category.
+    assert decision.semantic_call_succeeded is False
+    assert decision.semantic_error_category == SEMANTIC_ERROR_SCHEMA_VALIDATION
+
+
+def test_classify_semantic_error_prompt_render_failure() -> None:
+    """PBI-14-07: an empty diagnostic means the prompt never rendered (PromptError, caught
+    before any LLM call) — a distinct category from a provider or schema-validation failure.
+    Tested directly against the private classifier since resolve_turn's own prompt_identifier
+    is fixed and always resolves successfully against the real prompts directory."""
+    from src.supervisor.semantic_routing import SEMANTIC_ERROR_PROMPT, _classify_semantic_error
+
+    assert _classify_semantic_error("") == SEMANTIC_ERROR_PROMPT
+
+
+def test_classify_semantic_error_provider_failure() -> None:
+    from src.supervisor.semantic_routing import _classify_semantic_error
+
+    assert (
+        _classify_semantic_error("[prompt=supervisor.turn_interpretation@1.0.0]")
+        == SEMANTIC_ERROR_PROVIDER
+    )
+
+
+def test_classify_semantic_error_schema_validation_failure() -> None:
+    from src.supervisor.semantic_routing import _classify_semantic_error
+
+    assert (
+        _classify_semantic_error(
+            "[prompt=supervisor.turn_interpretation@1.0.0] [llm=gpt-5-mini]"
+        )
+        == SEMANTIC_ERROR_SCHEMA_VALIDATION
+    )

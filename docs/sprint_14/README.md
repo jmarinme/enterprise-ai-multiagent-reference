@@ -123,6 +123,10 @@ deviation from the original task framing.
   `commit_sha`/`component`; Web build metadata via new Dockerfile ARG/ENV; a low-noise Sidebar
   version indicator with Web/API drift detection; `azure-pipelines.yml` now injects the same
   commit identity into both images and verifies it post-deploy (2 new Smoke Tests) — 2026-08-14.
+- PBI-14-07: Fixed `JsonFormatter`'s silent-drop-of-`extra=` defect (root cause of "DEV routing
+  telemetry is invisible in logs"); added one authoritative structured routing-decision/fallback
+  log event per turn (`semantic_routing_decision`/`semantic_routing_fallback`), safe allowlist,
+  never logs the raw user message — 2026-08-14.
 - PBI-14-08: Fixed a real production DEV incident (build #50 deployed `pending-first-build`
   instead of the new image) — `InfrastructureDeploy` and `DeployDev` were unsequenced sibling
   stages that both write the same Container Apps' image, so whichever finished last won;
@@ -181,3 +185,36 @@ one) — exactly the check that would have caught this class of drift had it exi
 comment already documented this exact root cause from a prior occurrence), Entra ID, Azure
 resource definitions/topology, `InfrastructureDeploy`'s `az deployment group create` path,
 `BackendQuality`/`FrontendQuality`/`SecurityScan`/`InfrastructureValidation` gates.
+
+## PBI-14-07 (addendum — structured routing telemetry fix, not multi-agent semantic intelligence)
+
+Tracked here only because of its assigned PBI number — its actual subject is fixing why a real
+DEV routing decision could not be diagnosed from logs, discovered while investigating a live
+production report of this sprint's own regression sentence returning FallbackAgent. See
+`decisions.md` and `validation.md` for the full write-up.
+
+**Problem:** `apps/api/src/observability/logging.py`'s `JsonFormatter` built its JSON payload
+from a fixed set of keys only (`timestamp`/`level`/`logger`/`message`/`correlationId`/
+`exception`) — every field a caller passed via Python logging's `extra={...}` mechanism
+(including `src.supervisor.orchestrator`'s own pre-existing `supervisor_turn_latency` event,
+which already set `routingSource`/`conversationId`/`agent`/...) was silently discarded, with no
+error and no warning. A live DEV investigation confirmed this directly: real
+`supervisor_turn_latency` log lines in Container App console logs contained only the five fixed
+keys, nothing else — routing telemetry the code clearly intended to emit never reached any log
+sink. This is a distinct, previously-undiscovered defect from the separately-disclosed
+"Application Insights is provisioned but never instrumented" gap (PBI-13-01 §0 finding #7,
+independently re-confirmed live during PBI-14-06) — fixing this one does not require or imply
+fixing that one.
+
+**Fix:** `JsonFormatter` now copies a strict, named allowlist (`_ALLOWED_EXTRA_FIELDS`) of
+routing-telemetry keys from a `LogRecord`'s `extra`-set attributes into the JSON payload — never
+`record.__dict__` wholesale, so an unapproved or accidentally-sensitive field is silently
+excluded by construction, not by a denylist pattern someone had to think of in advance.
+`src.supervisor.semantic_routing.RoutingDecision` gained two new fields
+(`semantic_call_succeeded`/`semantic_error_category`), set explicitly at all 7 of its
+construction sites (never inferred after the fact — `routing_source=deterministic_fallback`
+alone cannot distinguish "the semantic call succeeded with low confidence" from "the semantic
+call itself failed"). `apps/api/src/api/routes/chat.py` emits ONE authoritative
+`semantic_routing_decision`/`semantic_routing_fallback` log event per turn, reusing values
+already computed for the existing `observability.record_run()` call — no new computation, no
+change to routing/ReAct/prompts/thresholds/keywords. The raw user message is never logged.

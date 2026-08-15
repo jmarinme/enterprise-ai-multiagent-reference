@@ -317,6 +317,86 @@ for the full writeup.
   disclosed auth boundaries (see Section 8 above), neither of which this PBI is authorized to
   work around (would require either an IAM grant or touching authentication, both out of scope).
 
+## PBI-14-07 (structured routing telemetry fix)
+
+All commands below were actually executed in this session.
+
+### Root-cause verification (section 1's mandatory pre-implementation gate)
+
+| Check | Result |
+|---|---|
+| Read `apps/api/src/observability/logging.py` | `JsonFormatter.format()` builds `payload` from 5 fixed keys only; never reads `record.__dict__` beyond `correlation_id` |
+| Live confirmation (Log Analytics, same session) | Real `supervisor_turn_latency` log lines from the deployed API contained only `timestamp`/`level`/`logger`/`message`/`correlationId` — the `extra=` fields the code sets were absent, matching the code-read diagnosis exactly |
+| Conclusion | Root cause confirmed as diagnosed — proceeded to implementation, no scope deviation |
+
+### Manual formatter verification (real code, not a mock)
+
+```
+$ python -c "... logger.info('Semantic routing decision', extra={...25 fields incl. authorization=...})"
+{"timestamp": "...", ..., "authorization" NOT present, all 15 allowlisted fields present}
+```
+Confirmed: allowlisted fields survive, `authorization` and one deliberately-unapproved key are
+both silently absent, `null` and list values both handled cleanly. See `decisions.md` for the
+full field-by-field design rationale.
+
+### Backend tests
+
+| Command | Result |
+|---|---|
+| `pytest tests/unit/api/test_json_formatter.py -v` | **10 passed** (new file) |
+| `pytest tests/unit/api/test_semantic_routing_log_events.py -v` | **5 passed** (new file) |
+| `pytest tests/unit/supervisor/test_semantic_routing.py -v` | **13 passed** (10 pre-existing + 3 new `_classify_semantic_error` unit tests; 5 pre-existing tests gained additive `semantic_call_succeeded`/`semantic_error_category` assertions, none had their prior assertions changed) |
+| `pytest tests/unit/supervisor/test_pbi_14_04_production_regression.py -v` | **3 passed, completely unmodified** — per explicit instruction |
+| `pytest tests/unit tests/conversational -q` (full suite, repo root) | **871 passed**, 0 failed, 1 pre-existing unrelated warning (StarletteDeprecationWarning) |
+| `ruff check` (7 touched files) | **All checks passed** (6 mechanical issues — unused `noqa: S106` since that rule isn't enabled in this repo, import sort order, one unused import — auto-fixed via `ruff check --fix`, then re-verified clean) |
+| `mypy` (4 non-test touched files: `semantic_routing.py`, `orchestrator.py`, `logging.py`, `chat.py`) | **Success: no issues found in 4 source files** |
+
+### Frontend impact
+
+**None.** No frontend file was read or modified for this PBI — the driving task's own section 18
+asked to confirm this rather than touch the frontend "merely to create work." `npm run
+test`/`lint`/`typecheck` were not re-run since nothing under `apps/web` changed in this PBI (they
+were already run, clean, under PBI-14-06 earlier in this session).
+
+### Application Insights compatibility (section 16)
+
+No new telemetry backend was introduced — the fix operates entirely within the existing stdout
+JSON logging path (`configure_logging()` → `logging.StreamHandler(sys.stdout)` →
+`JsonFormatter`). Per PBI-14-06's own investigation (still valid, re-confirmed, not
+re-litigated): Application Insights receives **zero** telemetry today because no code anywhere
+in the repo calls `configure_azure_monitor()` or initializes any Azure Monitor/OpenTelemetry
+exporter — this JSON still lands only in Container App stdout, forwarded to Log Analytics'
+`ContainerAppConsoleLogs_CL` table (confirmed live, real data, during PBI-14-06). It is **not**
+true that Application Insights automatically maps this JSON's fields into queryable
+`customDimensions` — that requires an actual exporter, which does not exist in this codebase.
+Until that gap is closed (a separate, larger PBI — instrumenting `configure_azure_monitor()` is
+an infrastructure/dependency change, correctly out of this PBI's own scope), the query path is:
+`ContainerAppConsoleLogs_CL | where Log_s has 'semantic_routing_decision' | extend parsed =
+parse_json(Log_s)` (KQL, Log Analytics) — the exact table and pattern already used to confirm
+this defect live.
+
+### Real, locally-generated formatter output (section 17 — not hand-written)
+
+Captured verbatim from `pytest -s` output of the new integration tests (real
+`SupervisorOrchestrator` → real `resolve_turn` → real `chat.py` → real `JsonFormatter`):
+
+Successful semantic routing:
+```json
+{"timestamp": "2026-08-14T13:49:50-0600", "level": "INFO", "logger": "api.routes.chat", "message": "Semantic routing decision", "correlationId": "test-correlation-id", "event": "semantic_routing_decision", "durationMs": 7.2, "conversationId": "9e85d538-14ae-4b13-ba89-4f898b389ee4", "semanticCallAttempted": true, "intentConfidence": 0.91, "messageId": "f5ac2481-e139-451d-a2b0-b63eff26d51f", "semanticErrorCategory": null, "routingSource": "semantic", "detectedIntent": "CLAIMS", "selectedAgent": "ClaimsAgent", "alternativeIntents": null, "semanticCallSucceeded": true, "routingReason": "semantic_match:claims", "requiresClarification": false, "runId": "f7696b50-4083-486e-8d66-362d296b8652"}
+```
+
+Semantic service failure (provider outage, deterministic fallback recovered via keyword match):
+```json
+{"timestamp": "2026-08-14T13:49:56-0600", "level": "INFO", "logger": "api.routes.chat", "message": "Semantic routing fallback", "correlationId": "test-correlation-id", "alternativeIntents": null, "selectedAgent": "ClaimsAgent", "intentConfidence": 0.0, "durationMs": 6.4, "semanticCallSucceeded": false, "messageId": "f64eb1da-2371-4a4c-b694-230b8e5fc491", "detectedIntent": "CLAIMS", "event": "semantic_routing_fallback", "conversationId": "71daed41-800e-4b33-9316-7e6cdeb58cec", "runId": "629bc84e-b505-41c4-a55e-ab33887ae63b", "routingSource": "deterministic_fallback", "semanticCallAttempted": true, "routingReason": "semantic_service_unavailable", "semanticErrorCategory": "provider_error", "requiresClarification": false}
+```
+
+### Not run (and why)
+
+- A real deployment / real DEV log query for THIS specific fix — per explicit instruction, this
+  PBI does not deploy. Section 20/25's exact post-deployment validation procedure is documented
+  in `decisions.md`/the final report rather than executed here.
+- `apps/web` tests — nothing under `apps/web` changed in this PBI (see "Frontend impact" above).
+
 ## PBI-14-08 (DeployDev / InfrastructureDeploy race condition)
 
 Unlike prior PBIs in this sprint, this diagnosis was backed by a REAL Azure DevOps pipeline
@@ -349,4 +429,3 @@ this access was exercised for the first time here).
 
 - A real Azure DevOps pipeline execution of THIS fix — per explicit instruction, this PBI does
   not deploy; the fix's real-world effect can only be confirmed on the next actual `main` run.
-

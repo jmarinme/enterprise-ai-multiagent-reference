@@ -57,6 +57,17 @@ ROUTING_SOURCE_SEMANTIC = "semantic"
 ROUTING_SOURCE_DETERMINISTIC_FALLBACK = "deterministic_fallback"
 ROUTING_SOURCE_CLARIFICATION = "clarification"
 
+# Normalized semantic-failure categories for observability (PBI-14-07) — derived only from the
+# diagnostic string src.agents.shared.semantic_interpreter.interpret_semantics already returns,
+# without widening that function's shared return contract (it has 4 call sites: this module plus
+# every specialist Agent's own backward-compat fallback path). This means auth/timeout/rate-limit
+# failures cannot currently be told apart — all of them collapse to SEMANTIC_ERROR_PROVIDER — see
+# docs/sprint_14/decisions.md (PBI-14-07) for why finer granularity was judged out of this PBI's
+# surgical scope.
+SEMANTIC_ERROR_PROMPT = "prompt_error"
+SEMANTIC_ERROR_PROVIDER = "provider_error"
+SEMANTIC_ERROR_SCHEMA_VALIDATION = "schema_validation_error"
+
 
 @dataclass(frozen=True)
 class SemanticRoutingConfig:
@@ -83,6 +94,12 @@ class RoutingDecision:
     requires_clarification: bool
     turn_interpretation: TurnInterpretation
     diagnostic: str
+    # semantic_call_succeeded/semantic_error_category (PBI-14-07): set explicitly at every
+    # return site below — never inferred after the fact from routing_source/routing_reason,
+    # because "deterministic_fallback" alone is ambiguous (it also fires when the semantic call
+    # SUCCEEDED but returned low confidence — see the final return in resolve_turn).
+    semantic_call_succeeded: bool
+    semantic_error_category: str | None
 
 
 def _is_empty_sentinel(turn: TurnInterpretation) -> bool:
@@ -115,6 +132,26 @@ def _semantic_call_succeeded(diagnostic: str, turn: TurnInterpretation) -> bool:
     interpretation — so the diagnostic check alone is not sufficient; a genuine "semantic
     classification failure" per PBI-14-04 section 17 must catch all three cases uniformly."""
     return "[llm=" in diagnostic and not _is_empty_sentinel(turn)
+
+
+def _classify_semantic_error(diagnostic: str) -> str:
+    """Normalizes WHY the semantic call failed (PBI-14-07), using only the diagnostic string
+    already produced by interpret_semantics — no exception type is propagated past it. Only
+    called when _semantic_call_succeeded() has already returned False for this same diagnostic.
+
+    - diagnostic == "" -> the prompt itself never rendered (PromptError, caught before any LLM
+      call was attempted).
+    - "[prompt=...]" present, "[llm=...]" absent -> the LLM call itself raised (any LLMError
+      subtype: config, provider, rate-limit, timeout, or content-safety — interpret_semantics
+      collapses all of these into one generic catch, so no finer distinction is available here).
+    - "[llm=...]" present -> the completion arrived but failed to validate against
+      TurnInterpretation's schema.
+    """
+    if not diagnostic:
+        return SEMANTIC_ERROR_PROMPT
+    if "[llm=" not in diagnostic:
+        return SEMANTIC_ERROR_PROVIDER
+    return SEMANTIC_ERROR_SCHEMA_VALIDATION
 
 
 async def resolve_turn(
@@ -158,6 +195,8 @@ async def resolve_turn(
             requires_clarification=False,
             turn_interpretation=turn_interpretation,
             diagnostic=diagnostic,
+            semantic_call_succeeded=False,
+            semantic_error_category=_classify_semantic_error(diagnostic),
         )
 
     if turn_interpretation.requires_clarification:
@@ -168,6 +207,8 @@ async def resolve_turn(
             requires_clarification=True,
             turn_interpretation=turn_interpretation,
             diagnostic=diagnostic,
+            semantic_call_succeeded=True,
+            semantic_error_category=None,
         )
 
     category = _INTENT_STRING_TO_CATEGORY.get(turn_interpretation.intent, IntentCategory.UNKNOWN)
@@ -180,6 +221,8 @@ async def resolve_turn(
             requires_clarification=False,
             turn_interpretation=turn_interpretation,
             diagnostic=diagnostic,
+            semantic_call_succeeded=True,
+            semantic_error_category=None,
         )
 
     if turn_interpretation.intent_confidence >= config.high_confidence:
@@ -192,6 +235,8 @@ async def resolve_turn(
             requires_clarification=False,
             turn_interpretation=turn_interpretation,
             diagnostic=diagnostic,
+            semantic_call_succeeded=True,
+            semantic_error_category=None,
         )
 
     if turn_interpretation.intent_confidence >= config.low_confidence:
@@ -207,6 +252,8 @@ async def resolve_turn(
                 requires_clarification=False,
                 turn_interpretation=turn_interpretation,
                 diagnostic=diagnostic,
+                semantic_call_succeeded=True,
+                semantic_error_category=None,
             )
         return RoutingDecision(
             category=IntentCategory.UNKNOWN,
@@ -215,6 +262,8 @@ async def resolve_turn(
             requires_clarification=True,
             turn_interpretation=turn_interpretation,
             diagnostic=diagnostic,
+            semantic_call_succeeded=True,
+            semantic_error_category=None,
         )
 
     # Below low_confidence: the semantic call itself succeeded but is genuinely unsure — defer
@@ -229,4 +278,6 @@ async def resolve_turn(
         requires_clarification=False,
         turn_interpretation=turn_interpretation,
         diagnostic=diagnostic,
+        semantic_call_succeeded=True,
+        semantic_error_category=None,
     )

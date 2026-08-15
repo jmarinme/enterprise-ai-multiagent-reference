@@ -258,6 +258,88 @@ PBI-14-04/14-05 both carried. See `validation.md` for the full evidence.
    Entra `access_as_user` flow"). Reported here as a disclosed finding for a future PBI, not
    silently fixed or silently ignored.
 
+## PBI-14-07 (structured routing telemetry fix — unrelated theme, see README.md)
+
+1. **Root cause confirmed exactly as diagnosed before implementation began (per the driving
+   task's own section 1 "STOP if incorrect" gate) — no scope change needed.** Reading
+   `apps/api/src/observability/logging.py`'s `JsonFormatter.format()` showed it builds its
+   output `payload` dict from five fixed keys only and never inspects any `extra`-set
+   `LogRecord` attribute. Confirmed live: `src.supervisor.orchestrator`'s pre-existing
+   `supervisor_turn_latency` event (already setting `routingSource`/`conversationId`/`agent`/
+   timing fields via `extra=`) produced real Container App log lines containing only
+   `timestamp`/`level`/`logger`/`message`/`correlationId` — proving the fields were being lost
+   in production, not merely in theory.
+
+2. **`RoutingDecision` gained `semantic_call_succeeded`/`semantic_error_category`, set explicitly
+   at all 7 of `resolve_turn`'s return sites — never inferred afterward from
+   `routing_source`/`routing_reason`.** `routing_source=ROUTING_SOURCE_DETERMINISTIC_FALLBACK`
+   is genuinely ambiguous on its own: it fires both when the semantic call itself failed
+   (`routing_reason="semantic_service_unavailable"`) AND when it succeeded but returned low
+   confidence (`routing_reason="low_semantic_confidence"`) — `test_low_confidence_falls_back_to_
+   keyword_resolver` in `tests/unit/supervisor/test_semantic_routing.py` is the concrete
+   regression this distinction protects: without it, a low-confidence-but-real classification
+   would be indistinguishable in logs from a genuine Azure OpenAI outage.
+
+3. **`semantic_error_category` normalization is coarser than the driving task's own example list
+   (`provider_authentication_error`/`provider_timeout`/... collapse into one `provider_error`).**
+   Achieving that finer granularity would require `src.agents.shared.semantic_interpreter.
+   interpret_semantics` to propagate the specific caught exception type instead of collapsing
+   every `LLMError` subtype into one generic swallow — but `interpret_semantics` is a shared
+   function with 4 call sites (this module plus each specialist Agent's own backward-compat
+   fallback path), and widening its return contract for all of them was judged to cross into the
+   "architecture redesign" this PBI's own section 22 says to STOP for, given the driving task's
+   explicit "keep this surgical... a small number of application modules" scope. Only 3 safely
+   distinguishable categories were implemented (`prompt_error`/`provider_error`/
+   `schema_validation_error`), derived entirely from the diagnostic string `interpret_semantics`
+   already returns — zero changes to that shared function or its 4 call sites.
+
+4. **The allowlist (`_ALLOWED_EXTRA_FIELDS`) covers exactly the routing-telemetry fields the
+   driving task's own "conceptual allowlist" listed (translated to this repo's existing
+   camelCase convention for this exact field family — `_routing_diagnostics_payload`,
+   `chat.py`), not every pre-existing `extra=` call site's fields.** Several OTHER call sites
+   (`orchestrator.py`'s own `agent`/`contextLoadMs`/`semanticMs`/`agentHandleMs`/`persistMs`/
+   `totalMs`; `health.py`'s `dependency`; `src/core/tool_provider/azure_function.py` and
+   `src/core/workflow_provider/durable.py`'s `tool_name`/`error`/snake_case `correlation_id`)
+   were ALSO silently dropped by the same defect and remain so after this fix — deliberately, to
+   keep the change surgical per the driving task's own file-scope instruction. Restoring those is
+   a natural, low-risk follow-up (the allowlist only needs new entries, no formatter redesign)
+   but was not bundled into this PBI.
+
+5. **`correlationId`/`correlation_id` are deliberately excluded from the allowlist.** The
+   correlation id in every log line always comes from `correlation_id_ctx_var` (set once per
+   request by `CorrelationIdMiddleware`) via the pre-existing `CorrelationIdFilter` — never from
+   a caller-supplied `extra` value. This preserves a real security/consistency property already
+   implicit in the original (broken) formatter: no individual log call site can spoof or drift
+   from the one authoritative, request-scoped correlation id. Tested explicitly
+   (`test_correlation_id_always_comes_from_context_var_not_caller_supplied_extra`).
+
+6. **The new log event is emitted from `apps/api/src/api/routes/chat.py`, not
+   `src.supervisor.orchestrator` or `src.supervisor.semantic_routing`.** `chat.py`'s own
+   docstring states it "contains no business logic" — but emitting an already-computed,
+   already-authoritative routing decision as a log line is observability, not business logic
+   (the same reasoning `src.observability.service.ObservabilityService`'s own docstring already
+   uses: "Instrumented at one architectural boundary — the API layer, after
+   SupervisorOrchestrator.handle() returns"). Reuses the exact local variables already unpacked
+   for the pre-existing `observability.record_run()` call — no new computation, no second pass
+   over `routing_diagnostics`.
+
+7. **`_routing_diagnostics_payload` (orchestrator.py) gained two new string-keyed entries
+   (`semanticCallSucceeded`, `semanticErrorCategory`) rather than widening
+   `AgentResponse.routing_diagnostics`'s type from `dict[str, str]` to `dict[str, str | None]`.**
+   `semanticErrorCategory` is represented as `""` (never Python `None`) in this dict specifically
+   to avoid touching `src/supervisor/models.py`'s field type — `chat.py` maps `"" -> None` when
+   building the log event's JSON. A one-line, additive, purely-representational choice, not a
+   behavior change.
+
+8. **The existing production regression test
+   (`tests/unit/supervisor/test_pbi_14_04_production_regression.py`) was left completely
+   untouched, per the driving task's explicit instruction.** New assertions for the two fields
+   above were instead added to the existing, more granular `tests/unit/supervisor/
+   test_semantic_routing.py` (which already had one test per routing-decision branch) and to two
+   new dedicated files (`tests/unit/api/test_json_formatter.py`,
+   `tests/unit/api/test_semantic_routing_log_events.py`) — the regression test continues to
+   validate routing behavior independently of the logging change, exactly as required.
+
 ## PBI-14-08 (DeployDev / InfrastructureDeploy race condition — unrelated theme, see README.md)
 
 **Root cause.** `InfrastructureDeploy` (stage 4b) and `DeployDev` (stage 5) were unsequenced
@@ -311,4 +393,3 @@ placeholder image parameter on a non-`existing` resource) remains a real, if now
 sequencing-neutralized, architectural sharp edge; a future PBI could still consider parameterizing
 `dev.bicepparam`'s image tags dynamically or referencing the Container Apps as `existing` post-
 bootstrap, but neither is required to close this specific defect.
-
