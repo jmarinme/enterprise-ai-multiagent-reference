@@ -97,6 +97,46 @@ _CIRCUIT_BREAKER_FAILURE_THRESHOLD = 5
 _CIRCUIT_BREAKER_RESET_TIMEOUT_SECONDS = 30.0
 
 
+def _log_provider_status_error(exc: APIStatusError, deployment: str, api_version: str) -> None:
+    """DEV diagnostic — logs only four sanitized, whitelisted fields (`message`/`type`/`code`/
+    `param`) extracted from the SDK's own typed exception (never str(exc), which can embed
+    provider-formatted request context, and never the full body). Confirmed live (PBI-14-13,
+    correlationId ce901473-5337-4e28-acad-8b853ccca2b4) that Azure's SDK exposes APIStatusError
+    .body FLAT — message/type/param/code as top-level keys, not wrapped in an {"error": {...}}
+    envelope as OpenAI's own docs/most examples show; the original {"error": {...}} extraction
+    silently produced None for every field against a real Azure response. Safe by construction:
+    these four fields are Azure's own schema/request-validation description (what was wrong
+    with the SCHEMA/PARAMETERS), never conversation content — Azure never echoes the raw prompt
+    or user message back inside a 4xx error body for this failure class. No bearer token, API
+    key, Authorization header, raw prompt, raw user message, or raw/full request or response
+    body is ever read or logged here. `message` is truncated defensively in case a future,
+    different error class ever embeds something unexpectedly long.
+    """
+    body = exc.body if isinstance(exc.body, dict) else {}
+    request_id = None
+    response = getattr(exc, "response", None)
+    if response is not None:
+        request_id = response.headers.get("x-ms-request-id") or response.headers.get(
+            "x-request-id"
+        )
+    provider_message = body.get("message")
+    if isinstance(provider_message, str) and len(provider_message) > 500:
+        provider_message = provider_message[:500] + "...(truncated)"
+    logger.error(
+        "azure_openai_provider_error: http_status=%s provider_error_code=%s "
+        "provider_error_type=%s provider_error_param=%s provider_error_message=%s "
+        "request_id=%s deployment=%s api_version=%s",
+        exc.status_code,
+        body.get("code"),
+        body.get("type"),
+        body.get("param"),
+        provider_message,
+        request_id,
+        deployment,
+        api_version,
+    )
+
+
 def _is_reasoning_model(model: str) -> bool:
     """True for OpenAI/Azure OpenAI "reasoning-family" models, which reject a caller-supplied
     temperature other than the API's own fixed default."""
@@ -280,6 +320,7 @@ class AzureOpenAIProvider:
         except APIConnectionError as exc:
             raise LLMProviderError(_PROVIDER_NAME, str(exc)) from exc
         except APIStatusError as exc:
+            _log_provider_status_error(exc, model, self._api_version)
             if "content_filter" in str(exc).lower():
                 raise LLMContentSafetyError(_PROVIDER_NAME, str(exc)) from exc
             raise LLMProviderError(_PROVIDER_NAME, str(exc)) from exc

@@ -473,3 +473,57 @@ this access was exercised for the first time here).
   actual apply.
 - A fix for the `/chat` 401 smoke-test failure — out of scope for this PBI (see `decisions.md`);
   reported to the user, not fixed here.
+
+## PBI-14-12 (Structured Outputs failure — three chained defects)
+
+This entry documents evidence already gathered during the implementation session that produced
+commit `4a2421e`, reconstructed here because no `validation.md` entry existed for it (see
+`decisions.md`). No test/lint/type-check command was re-executed in this documentation-only
+session; the table below cites `4a2421e`'s own commit message and diff, not a fresh run.
+
+### Diagnosis and live DEV reproduction (from commit `4a2421e`'s message)
+
+| Check | Result |
+|---|---|
+| Exact acceptance sentence, real DEV Azure OpenAI, after all three fixes | `semanticCallSucceeded=true`, `semanticErrorCategory=null`, `detectedIntent=CLAIMS`, `selectedAgent=ClaimsAgent`, `routingSource=semantic` |
+| `routingReason` consistency | Not `semantic_service_unavailable` — per PBI-14-07's `RoutingDecision` contract (this file's PBI-14-07 section), that reason string only ever accompanies `routing_source=deterministic_fallback`, never `routing_source=semantic` |
+
+### Code changes (`4a2421e` vs. its parent `9447b28`; this session's `git diff --numstat`)
+
+| File | Insertions | Deletions |
+|---|---|---|
+| `src/agents/shared/semantic_models.py` | 54 | 11 |
+| `src/agents/shared/semantic_interpreter.py` | 25 | 1 |
+| `src/llm/azure_openai_provider.py` | 41 | 0 |
+| `tests/unit/agents/shared/test_semantic_interpreter.py` | 78 | 1 |
+| `tests/unit/agents/shared/test_turn_interpretation.py` | 207 | 44 |
+| `tests/unit/llm/test_azure_openai_provider.py` | 65 | 0 |
+
+### PR/branch forensics (commands actually executed in this documentation-only session)
+
+| Check | Command | Result |
+|---|---|---|
+| `49c661b` (PR #57) ancestry vs. `main` | `git merge-base --is-ancestor 49c661b main` | Not an ancestor — never merged into `main` |
+| `49c661b` (PR #57) ancestry vs. `4a2421e` | `git merge-base --is-ancestor 49c661b 4a2421e` | Not an ancestor — `4a2421e` was not built on top of it |
+| `49c661b` PR ref state | `git ls-remote origin "refs/pull/57/*"` | Only `refs/pull/57/head`, no `refs/pull/57/merge` — closed without merging |
+| `4a2421e` (PR #58) PR ref state | `git ls-remote origin "refs/pull/58/*"` | Both `refs/pull/58/head` and a live `refs/pull/58/merge` — open, currently mergeable against `main` |
+| Shared parent | `git merge-base 49c661b 4a2421e` and `git merge-base 49c661b main` | Both resolve to `9447b28` — true siblings, both branched directly from the same `main` commit |
+| `49c661b`'s full diff scope | `git diff 49c661b^ 49c661b --stat` | Exactly 2 files: `src/agents/shared/semantic_models.py`, `tests/unit/agents/shared/test_turn_interpretation.py` |
+| File-level overlap, `semantic_models.py` | `git diff 49c661b 4a2421e -- src/agents/shared/semantic_models.py` | Empty — byte-identical between the two commits |
+| File-level overlap, `test_turn_interpretation.py` | `git diff 49c661b 4a2421e -- tests/unit/agents/shared/test_turn_interpretation.py` | Empty — byte-identical between the two commits |
+| Conclusion | — | `49c661b`'s entire diff is a strict, content-identical subset of `4a2421e`'s diff — fully superseded, nothing unique |
+| `docs/sprint_14/` touched by either branch before this session | `git diff main <branch> -- docs/sprint_14/`, run for both `fix/pbi-14-12b-structured-outputs-schema-fix` and `fix/pbi-14-13-dev-diagnostic-loop` | Empty both times — confirms the documentation gap this entry closes |
+
+### Not run (and why)
+
+- `pytest`/`ruff`/`mypy` for the six changed files — not re-executed in this documentation-only
+  session; per the user's explicit instruction, this session updates only
+  `docs/sprint_14/README.md`, `decisions.md`, `validation.md` and touches no code, tests,
+  prompts, pipeline, Bicep, auth, frontend, or routing logic. The six files' own test additions
+  (`+470/-57` across the six files combined, per `git diff --stat`) are the evidence tests were
+  added alongside the fix in the original implementation session; re-running the full suite is a
+  natural pre-merge step for PR #58, not part of this documentation task.
+- A fresh live DEV call for this documentation update — the live DEV evidence quoted above is
+  `4a2421e`'s own previously-recorded result, not reproduced again here.
+- Merging PR #58 or deploying anything — explicitly out of scope for this documentation-only
+  update; PR #58 remains open, unmerged, as of this writing.
