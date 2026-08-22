@@ -20,6 +20,10 @@ improvement actually worked, without turning this sprint into another observabil
       specialist agent to the Supervisor, so semantic understanding runs BEFORE routing — the
       remaining root cause a live Azure validation surfaced (a keyword-free Claims message was
       misrouted to FallbackAgent, which never calls an LLM at all).
+- [x] PBI-14-12 (implementation): resolved a live DEV Azure OpenAI Structured Outputs failure in
+      the semantic-routing layer (PBI-14-10's strict-mode fix was incomplete) through three
+      chained defects; an earlier partial fix (PR #57, commit `49c661b`, schema-only) was
+      superseded by the final, complete fix (PR #58, commit `4a2421e`) — see `decisions.md`.
 
 ## Out of scope (this sprint)
 
@@ -74,6 +78,17 @@ improvement actually worked, without turning this sprint into another observabil
       `RunRecord`/`ObservabilityService`/`chat.py`/`observability.py` routes gained
       `routing_source`/`requires_clarification`/`alternative_intents`; `ADR-0014`; `CLAUDE.md`
       §4.1 updated to describe semantic-first routing.
+- [x] PBI-14-12: `src/agents/shared/semantic_models.py` — `_strict_schema_extra` strips
+      `minimum`/`maximum`/`multipleOf` from outbound Structured Outputs schemas; `corrections`
+      changed from `dict[str, str]` to `list[CorrectionEntry]`; the PBI-14-10 compliance checker
+      replaced with a recursive walker (root/`$defs`/properties/anyOf/items). `src/agents/shared/
+      semantic_interpreter.py` — `interpret_semantics` now requests an explicit 4096-token
+      `LLMGenerationSettings` budget (up from the shared 512-token default), scoped to its own
+      construction only. `src/llm/azure_openai_provider.py` — `APIStatusError` logging now reads
+      Azure SDK's flat `.body` (message/type/code/param as top-level keys) instead of assuming
+      OpenAI's nested `{"error": {...}}` wrapper. Tests: `tests/unit/agents/shared/
+      test_semantic_interpreter.py`, `tests/unit/agents/shared/test_turn_interpretation.py`,
+      `tests/unit/llm/test_azure_openai_provider.py`.
 
 ## Acceptance criteria
 
@@ -139,6 +154,20 @@ deviation from the original task framing.
   now reads and preserves each existing Container App's current image before applying, instead
   of relying solely on stage-sequencing), and pinned `DeployDev`/Smoke Tests to the immutable
   image digest rather than a mutable tag — 2026-08-15.
+- PBI-14-12: Diagnosed and fixed a live DEV Azure OpenAI Structured Outputs failure in three
+  chained defects — (1) strict-mode schema rejection of `minimum`/`maximum`/sub-schema
+  `additionalProperties` on `TurnInterpretation`/`SemanticInterpretation`'s generated schema
+  (PBI-14-10's fix was incomplete); (2) the PBI-14-10 compliance checker never inspecting
+  map-shaped schemas, replaced with a recursive keyword walker; (3) `gpt-5-mini`'s default
+  512-token budget exhausted by hidden reasoning before any visible output, fixed with an
+  explicit 4096-token budget scoped to `interpret_semantics` only. Also fixed an unrelated
+  diagnostic-logging defect in `AzureOpenAIProvider`'s `APIStatusError` handling. Live DEV
+  reproduction after all three fixes: `semanticCallSucceeded=true`, `semanticErrorCategory=null`,
+  `detectedIntent=CLAIMS`, `selectedAgent=ClaimsAgent`, `routingSource=semantic`. An earlier
+  partial fix (PR #57 / commit `49c661b`, schema-stripping only) was opened first, then closed
+  without merging once the token-budget defect was found still unfixed; its entire diff is a
+  strict, byte-identical subset of the final commit (`4a2421e`, PR #58) — see `decisions.md` —
+  2026-08-15.
 
 ## Sprint validation
 

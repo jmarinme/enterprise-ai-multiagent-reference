@@ -470,3 +470,89 @@ prohibited re-touching `vite.config.ts` without proof `main` is wrong; the evide
 opposite (it is correct and the live symptom does not reproduce). Semantic routing (PBI-14-04/
 14-10) and Entra ID authentication (`apps/api/src/api/dependencies.py`) are unrelated to
 deployment image identity and were out of this PBI's explicit scope.
+
+## PBI-14-12 (Structured Outputs failure — three chained defects, consolidated from PR #57/#58)
+
+1. **Documentation retroactively reconstructed after the fact.** Commit `4a2421e` (the final fix)
+   was implemented, tested, and pushed before any `docs/sprint_14/` artifact existed for it — a
+   gap discovered only when a later session inspected branch `fix/pbi-14-13-dev-diagnostic-loop`
+   and found a commit whose content and message ("resolve semantic-routing structured-output
+   failures end to end") did not match its own branch name, while no PBI-14-12 or PBI-14-13 entry
+   existed anywhere in the repository (`git diff main <branch> -- docs/sprint_14/` was empty for
+   both this branch and the earlier `fix/pbi-14-12b-structured-outputs-schema-fix`, confirmed this
+   session). This entry, and the corresponding `README.md`/`validation.md` updates, close that gap
+   without altering any already-implemented, already-tested code — see CLAUDE.md §12/13, which
+   requires sprint documentation before a PBI can be considered complete.
+
+2. **Branch/PBI naming mismatch, left as-is.** The final commit lives on
+   `fix/pbi-14-13-dev-diagnostic-loop`, a branch name that describes neither this fix's content
+   nor its own commit message. Per explicit user direction, the delivered work is documented here
+   as **PBI-14-12** — matching commit `49c661b`'s own message ("PBI-14-12's diagnosis proved
+   PBI-14-10's strict-mode fix was incomplete") and the PR #57 branch name
+   `fix/pbi-14-12b-structured-outputs-schema-fix` — rather than inventing a PBI-14-13 scope that
+   was never defined anywhere. The branch itself was not renamed; that is out of scope for a
+   documentation-only change.
+
+3. **Original failure and diagnosis.** PBI-14-10 (commit `0854e88`) had already made
+   `TurnInterpretation`/`SemanticInterpretation` "strict-compatible" for Azure OpenAI Structured
+   Outputs, but live DEV traffic continued to show semantic-routing calls degrading to the
+   safe-empty fallback. Diagnosis (tracked informally as PBI-14-12, never itself published as a
+   standalone artifact until now) found the strict-mode fix was incomplete: Azure OpenAI
+   Structured Outputs also rejects `minimum`/`maximum`/`multipleOf` on number properties and any
+   object schema whose `additionalProperties` is a sub-schema rather than the literal `false` —
+   both present in the generated schema via `Field(ge=0.0, le=1.0)` on confidence fields and
+   `corrections: dict[str, str]`, on every one of the 9 schemas actually sent as `response_schema`.
+
+4. **Three chained defects, each proven live in DEV before being fixed (per commit `4a2421e`'s own
+   message):**
+   - **Defect 1 — strict schema incompatibility (HTTP 400).** `_strict_schema_extra` now strips
+     `minimum`/`maximum`/`multipleOf` from the outbound schema; Pydantic's own
+     `Field(ge=..., le=...)` runtime validation is untouched — only the outbound schema
+     declaration changed. `corrections` changed from `dict[str, str]` to `list[CorrectionEntry]`
+     (`field`, `corrected_value`) — the only shape that can express `additionalProperties=false`
+     while keeping the same semantic content.
+   - **Defect 2 — compliance-checker blind spot.** The PBI-14-10 compliance checker only
+     inspected object schemas with a `properties` key, silently skipping `corrections`'
+     map-shaped schema, and never checked for `minimum`/`maximum`/`multipleOf` at all. Replaced
+     with a recursive walker (root, `$defs`, `properties`, `anyOf`, `items`) built independently
+     from Azure's own documented keyword table, with tests proving it detects both violation
+     classes rather than mirroring the implementation.
+   - **Defect 3 — reasoning-token budget exhaustion.** Once the schema was accepted (200 OK),
+     `gpt-5-mini` (a reasoning-family model) exhausted the shared default 512-token generation
+     budget on hidden reasoning before emitting any visible output, leaving `message.content`
+     empty. `interpret_semantics` now requests an explicit 4096-token budget, scoped to its own
+     `LLMGenerationSettings` construction only — the shared `LLMGenerationSettings` default (512)
+     is unchanged for `ToolCallingOrchestrator`/`annotate_with_prompt_and_llm`.
+   - **Incidental fix — diagnostic logging.** `AzureOpenAIProvider`'s `APIStatusError` logging
+     assumed OpenAI's `{"error": {...}}` body wrapper; Azure's SDK actually exposes `.body` flat
+     (`message`/`type`/`code`/`param` as top-level keys), so the four whitelisted fields always
+     logged as `None`. Fixed to extract them directly, never logging the full body.
+
+5. **Live DEV validation (from commit `4a2421e`'s own message; not re-run in this
+   documentation-only session).** The exact acceptance sentence, run against the real DEV Azure
+   OpenAI resource after all three fixes, returned: `semanticCallSucceeded=true`,
+   `semanticErrorCategory=null`, `detectedIntent=CLAIMS`, `selectedAgent=ClaimsAgent`,
+   `routingSource=semantic`. This is also consistent with PBI-14-07's `RoutingDecision` contract
+   (see this file's PBI-14-07 entry, item 2): `routing_reason="semantic_service_unavailable"` is
+   only ever paired with `routing_source=deterministic_fallback`, never with
+   `routing_source=semantic` — so a successful `routingSource=semantic` result is definitionally
+   inconsistent with that reason string, exactly as required.
+
+6. **PR #57 / commit `49c661b` — partial fix, closed without merging, fully superseded.** Opened
+   one day earlier (2026-08-14) as a schema-only fix (Defect 1 + Defect 2 above; not Defect 3 or
+   the logging fix). Verified this session via `git ls-remote origin "refs/pull/57/*"` to have
+   only a `refs/pull/57/head` ref, no live `refs/pull/57/merge` ref, while also not being an
+   ancestor of `main` (`git merge-base --is-ancestor 49c661b main` → false) — the pattern GitHub
+   produces for a PR that was closed without merging, not one still open or already merged. A
+   direct diff this session (`git diff 49c661b 4a2421e -- src/agents/shared/semantic_models.py
+   tests/unit/agents/shared/test_turn_interpretation.py`) confirms both files `49c661b` touches
+   are byte-identical in `4a2421e` — its entire 2-file diff is a strict subset of `4a2421e`'s
+   6-file diff, with nothing unique. It is correctly considered dead; no cherry-pick or
+   reconciliation is needed.
+
+7. **PR #58 / commit `4a2421e` — final implementation.** Opened 2026-08-15 on
+   `fix/pbi-14-13-dev-diagnostic-loop`. Verified this session via `git ls-remote origin
+   "refs/pull/58/*"` to be currently **open**, with a live `refs/pull/58/merge` ref indicating a
+   clean, conflict-free test-merge against `main` at the time of this check. This commit is the
+   complete, final fix for PBI-14-12 and is the one this documentation update describes; it has
+   not been merged as of this writing.
